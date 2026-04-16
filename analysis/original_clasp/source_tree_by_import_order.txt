@@ -6,8 +6,9 @@
 
 clasp/util/pod_vector.h: ported
     src/clasp/util/pod_vector.rs
-libpotassco/potassco/platform.h: partially ported, ExpressionInfo and ANSI/file/alarm helpers are missing
+libpotassco/potassco/platform.h: ported
     src/potassco/platform.rs
+    tests/ported/potassco/test_platform.rs
 clasp/claspfwd.h:
     src/clasp/claspfwd.rs
 clasp/mt/thread.h:
@@ -39,8 +40,9 @@ libpotassco/potassco/bits.h: partially ported, C++20 bit wrappers and full Bitse
     src/potassco/bits.rs
 clasp/config.h.in:
     src/clasp/config.rs
-libpotassco/src/platform.cpp: partially ported, terminal color, file locking, alarm, and FPU support are missing
+libpotassco/src/platform.cpp: ported
     src/potassco/platform.rs
+    tests/ported/potassco/test_platform.rs
 libpotassco/potassco/program_opts/value.h: ported
     src/potassco/program_opts/value.rs
 src/timer.cpp: ported
