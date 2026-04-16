@@ -1,0 +1,290 @@
+# Format:
+# - Each non-indented line names one original C++ header, source, or test file in import order.
+# - Add `: ported` when the file is fully covered, or `: partially ported, ...` with a short note on what is still missing.
+# - Indented lines below an entry list the Rust files and tests that currently implement or validate that original file.
+# - If one original file is split across several Rust modules, list every Rust path on its own indented line under the same entry.
+
+clasp/util/pod_vector.h: ported
+    src/clasp/util/pod_vector.rs
+libpotassco/potassco/platform.h: partially ported, ExpressionInfo and ANSI/file/alarm helpers are missing
+    src/potassco/platform.rs
+clasp/claspfwd.h:
+    src/clasp/claspfwd.rs
+clasp/mt/thread.h:
+    src/clasp/mt/thread.rs
+clasp/util/left_right_sequence.h: ported
+    src/clasp/util/left_right_sequence.rs
+clasp/cli/clasp_cli_configs.inl:
+    src/clasp/cli/clasp_cli_configs.rs
+libpotassco/potassco/program_opts/intrusive_ptr.h: ported
+    src/potassco/program_opts/intrusive_ptr.rs
+    tests/ported/potassco/test_intrusive_ptr.rs
+clasp/cli/clasp_cli_options.inl: partially ported, option catalog macros are missing
+    src/clasp/cli/clasp_cli_options.rs
+clasp/util/multi_queue.h:
+    src/clasp/util/multi_queue.rs
+clasp/util/timer.h: ported
+    src/clasp/util/timer.rs
+libpotassco/potassco/program_opts/errors.h: partially ported, DuplicateOption and related wrapper errors are missing
+    src/potassco/program_opts/errors.rs
+libpotassco/potassco/graph.h:
+    src/potassco/graph.rs
+clasp/pod_vector.h: ported
+    src/clasp/pod_vector.rs
+clasp/util/indexed_priority_queue.h: ported
+    src/clasp/util/indexed_priority_queue.rs
+libpotassco/potassco/enum.h: partially ported, DefaultEnum and EnumEntries metadata helpers are missing
+    src/potassco/enums.rs
+libpotassco/potassco/bits.h: partially ported, C++20 bit wrappers and full Bitset surface are missing
+    src/potassco/bits.rs
+clasp/config.h.in:
+    src/clasp/config.rs
+libpotassco/src/platform.cpp: partially ported, terminal color, file locking, alarm, and FPU support are missing
+    src/potassco/platform.rs
+libpotassco/potassco/program_opts/value.h: ported
+    src/potassco/program_opts/value.rs
+src/timer.cpp: ported
+    src/clasp/util/timer.rs
+libpotassco/tests/test_graph.cpp:
+    tests/ported/potassco/test_graph.rs
+clasp/literal.h:
+    src/clasp/literal.rs
+libpotassco/potassco/error.h:
+    src/potassco/error.rs
+libpotassco/potassco/program_opts/string_convert.h: ported
+    src/potassco/program_opts/string_convert.rs
+clasp/util/misc_types.h: partially ported, TaggedPtr, Range32, Event, LockedValue, RefCount, and SigAtomic are missing
+    src/clasp/util/misc_types.rs
+libpotassco/potassco/basic_types.h: ported
+    src/potassco/basic_types.rs
+libpotassco/potassco/utils.h: ported
+    src/potassco/utils.rs
+libpotassco/potassco/program_opts/program_options.h: ported
+    src/potassco/program_opts/program_options.rs
+clasp/asp_preprocessor.h:
+    src/clasp/asp_preprocessor.rs
+libpotassco/potassco/program_opts/typed_value.h: ported
+    src/potassco/program_opts/typed_value.rs
+clasp/constraint.h:
+    src/clasp/constraint.rs
+clasp/program_builder.h:
+    src/clasp/program_builder.rs
+libpotassco/potassco/clingo.h:
+    src/potassco/clingo.rs
+libpotassco/potassco/theory_data.h:
+    src/potassco/theory_data.rs
+libpotassco/potassco/match_basic_types.h:
+    src/potassco/match_basic_types.rs
+libpotassco/tests/test_common.h:
+    tests/ported/potassco/test_common.rs
+libpotassco/potassco/rule_utils.h:
+    src/potassco/rule_utils.rs
+libpotassco/potassco/format.h: partially ported, BasicCharBuffer formatted append APIs are missing
+    src/potassco/format.rs
+libpotassco/src/utils.cpp: ported
+    src/potassco/utils.rs
+libpotassco/src/program_options.cpp: ported
+    src/potassco/program_opts/errors.rs
+    src/potassco/program_opts/program_options.rs
+libpotassco/tests/test_options.cpp: ported
+    tests/ported/potassco/test_options.rs
+clasp/solver_strategies.h: partially ported, HeuristicType, SolverParams, RestartParams, ReduceParams, ContextParams, configuration types, and solve events are missing
+    src/clasp/solver_strategies.rs
+clasp/solver_types.h:
+    src/clasp/solver_types.rs
+clasp/weight_constraint.h:
+    src/clasp/weight_constraint.rs
+src/constraint.cpp:
+    src/clasp/constraint.rs
+clasp/statistics.h:
+    src/clasp/statistics.rs
+libpotassco/tests/test_error.cpp:
+    tests/ported/potassco/test_error.rs
+libpotassco/src/theory_data.cpp:
+    src/potassco/theory_data.rs
+clasp/parser.h:
+    src/clasp/parser.rs
+libpotassco/potassco/aspif.h:
+    src/potassco/aspif.rs
+libpotassco/potassco/aspif_text.h:
+    src/potassco/aspif_text.rs
+libpotassco/potassco/convert.h:
+    src/potassco/convert.rs
+libpotassco/potassco/smodels.h:
+    src/potassco/smodels.rs
+libpotassco/src/match_basic_types.cpp:
+    src/potassco/match_basic_types.rs
+clasp/logic_program_types.h:
+    src/clasp/logic_program_types.rs
+libpotassco/src/rule_utils.cpp:
+    src/potassco/rule_utils.rs
+libpotassco/potassco/application.h:
+    src/potassco/application.rs
+libpotassco/src/clingo.cpp:
+    src/potassco/clingo.rs
+libpotassco/src/error.cpp:
+    src/potassco/error.rs
+libpotassco/src/string_convert.cpp: partially ported, TextStyle parsing and formatted buffer helpers are missing from the mapped Rust file
+    src/potassco/program_opts/string_convert.rs
+libpotassco/tests/test_string_convert.cpp: partially ported, full toString and sequence-conversion coverage is missing
+    tests/ported/potassco/test_string_convert.rs
+clasp/minimize_constraint.h:
+    src/clasp/minimize_constraint.rs
+clasp/shared_context.h:
+    src/clasp/shared_context.rs
+clasp/solve_algorithms.h:
+    src/clasp/solve_algorithms.rs
+clasp/clause.h:
+    src/clasp/clause.rs
+tests/literal_test.cpp:
+    tests/ported/clasp/literal_test.rs
+src/statistics.cpp:
+    src/clasp/statistics.rs
+libpotassco/potassco/reify.h:
+    src/potassco/reify.rs
+libpotassco/src/aspif.cpp:
+    src/potassco/aspif.rs
+libpotassco/src/aspif_text.cpp:
+    src/potassco/aspif_text.rs
+libpotassco/tests/test_aspif.cpp:
+    tests/ported/potassco/test_aspif.rs
+libpotassco/tests/test_text.cpp:
+    tests/ported/potassco/test_text.rs
+libpotassco/src/convert.cpp:
+    src/potassco/convert.rs
+libpotassco/src/smodels.cpp:
+    src/potassco/smodels.rs
+libpotassco/tests/test_smodels.cpp:
+    tests/ported/potassco/test_smodels.rs
+clasp/logic_program.h:
+    src/clasp/logic_program.rs
+libpotassco/src/application.cpp:
+    src/potassco/application.rs
+libpotassco/tests/test_application.cpp:
+    tests/ported/potassco/test_application.rs
+clasp/enumerator.h:
+    src/clasp/enumerator.rs
+clasp/solver.h:
+    src/clasp/solver.rs
+clasp/mt/parallel_solve.h:
+    src/clasp/mt/parallel_solve.rs
+libpotassco/app/lpconvert.cpp:
+    src/potassco/app/lpconvert.rs
+libpotassco/src/reify.cpp:
+    src/potassco/reify.rs
+libpotassco/tests/test_reify.cpp:
+    tests/ported/potassco/test_reify.rs
+clasp/dependency_graph.h:
+    src/clasp/dependency_graph.rs
+src/asp_preprocessor.cpp:
+    src/clasp/asp_preprocessor.rs
+tests/lpcompare.h:
+    tests/ported/clasp/lpcompare.rs
+clasp/cb_enumerator.h:
+    src/clasp/cb_enumerator.rs
+clasp/model_enumerators.h:
+    src/clasp/model_enumerators.rs
+clasp/clingo.h:
+    src/clasp/clingo.rs
+clasp/heuristics.h:
+    src/clasp/heuristics.rs
+clasp/lookahead.h:
+    src/clasp/lookahead.rs
+clasp/satelite.h:
+    src/clasp/satelite.rs
+src/clause.cpp:
+    src/clasp/clause.rs
+src/enumerator.cpp:
+    src/clasp/enumerator.rs
+src/logic_program_types.cpp:
+    src/clasp/logic_program_types.rs
+src/minimize_constraint.cpp:
+    src/clasp/minimize_constraint.rs
+src/program_builder.cpp:
+    src/clasp/program_builder.rs
+src/solve_algorithms.cpp:
+    src/clasp/solve_algorithms.rs
+src/solver.cpp:
+    src/clasp/solver.rs
+src/solver_types.cpp:
+    src/clasp/solver_types.rs
+src/weight_constraint.cpp:
+    src/clasp/weight_constraint.rs
+tests/clause_creator_test.cpp:
+    tests/ported/clasp/clause_creator_test.rs
+tests/clause_test.cpp:
+    tests/ported/clasp/clause_test.rs
+tests/minimize_test.cpp:
+    tests/ported/clasp/minimize_test.rs
+tests/weight_constraint_test.cpp:
+    tests/ported/clasp/weight_constraint_test.rs
+clasp/clasp_facade.h:
+    src/clasp/clasp_facade.rs
+src/parallel_solve.cpp:
+    src/clasp/mt/parallel_solve.rs
+tests/solver_test.cpp:
+    tests/ported/clasp/solver_test.rs
+clasp/unfounded_check.h:
+    src/clasp/unfounded_check.rs
+src/dependency_graph.cpp:
+    src/clasp/dependency_graph.rs
+src/logic_program.cpp:
+    src/clasp/logic_program.rs
+src/parser.cpp:
+    src/clasp/parser.rs
+src/shared_context.cpp:
+    src/clasp/shared_context.rs
+tests/dependency_graph_test.cpp:
+    tests/ported/clasp/dependency_graph_test.rs
+tests/parser_test.cpp:
+    tests/ported/clasp/parser_test.rs
+tests/rule_test.cpp:
+    tests/ported/clasp/rule_test.rs
+src/cb_enumerator.cpp:
+    src/clasp/cb_enumerator.rs
+src/model_enumerators.cpp:
+    src/clasp/model_enumerators.rs
+src/clingo.cpp:
+    src/clasp/clingo.rs
+src/heuristics.cpp:
+    src/clasp/heuristics.rs
+src/lookahead.cpp:
+    src/clasp/lookahead.rs
+src/solver_strategies.cpp: partially ported, HeuristicType, SolverParams, RestartParams, ReduceParams, ContextParams, configuration types, and solve events are missing
+    src/clasp/solver_strategies.rs
+tests/decision_heuristic_test.cpp:
+    tests/ported/clasp/decision_heuristic_test.rs
+src/satelite.cpp:
+    src/clasp/satelite.rs
+tests/satelite_test.cpp:
+    tests/ported/clasp/satelite_test.rs
+clasp/cli/clasp_options.h: partially ported, ConfigIter and ClaspCliConfig are missing
+    src/clasp/cli/clasp_options.rs
+clasp/cli/clasp_output.h:
+    src/clasp/cli/clasp_output.rs
+tests/facade_test.cpp:
+    tests/ported/clasp/facade_test.rs
+src/clasp_facade.cpp:
+    src/clasp/clasp_facade.rs
+src/unfounded_check.cpp:
+    src/clasp/unfounded_check.rs
+tests/dlp_builder_test.cpp:
+    tests/ported/clasp/dlp_builder_test.rs
+tests/enumerator_test.cpp:
+    tests/ported/clasp/enumerator_test.rs
+tests/program_builder_test.cpp:
+    tests/ported/clasp/program_builder_test.rs
+tests/unfounded_check_test.cpp:
+    tests/ported/clasp/unfounded_check_test.rs
+src/clasp_options.cpp: partially ported, ClaspCliConfig option application and key navigation are missing
+    src/clasp/cli/clasp_options.rs
+clasp/cli/clasp_app.h: partially ported, ClaspAppBase, ClaspAppOptions, WriteCnf, and LemmaLogger are missing
+    src/clasp/cli/clasp_app.rs
+src/clasp_output.cpp:
+    src/clasp/cli/clasp_output.rs
+tests/cli_test.cpp: partially ported, broader CLI app/output/runtime coverage is missing
+    tests/ported/clasp/cli_test.rs
+app/main.cpp:
+    src/app/main.rs
+src/clasp_app.cpp: partially ported, application runtime and option handling are missing
+    src/clasp/cli/clasp_app.rs

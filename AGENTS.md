@@ -4,43 +4,42 @@ The C++ code under `original_clasp/` is the behavioral reference. Preserve origi
 
 ## Source Of Truth
 
-- Use `analysis/original_clasp/porting_order.json` as the primary source for porting order.
+- Use `analysis/original_clasp/source_tree_by_import_order.txt` as the primary worklist and progress tracker.
+- Use `analysis/original_clasp/porting_order.json` only as supplemental dependency detail when the file-level order is not sufficient.
 - Use `analysis/original_clasp/README.md` to understand what the analysis includes.
 - Use `original_clasp/` as the implementation and behavior reference.
 - Use original tests under `original_clasp/tests/` and `original_clasp/libpotassco/tests/` as the reference test suite to port.
 
-## How To Read `porting_order.json`
+## How To Read `source_tree_by_import_order.txt`
 
-The porting order is more detailed than file-level planning. It is an entity graph.
+The source tree file is a file-level worklist ordered by import dependencies.
 
-- `batches` are topological layers. Prefer lower layers before higher layers.
-- Each entry in a batch is a port unit such as a class or function.
-- `depends_on_internal` lists prerequisites inside the analyzed codebase.
-- `depends_on_external_project` lists dependencies outside the current internal ordering. Treat these as external references that still need to exist on the Rust side if they are required.
-- `ported` is the status field. When an entity is fully ported, set it to `true`.
-- `cycles` contains strongly connected components. Members of one cycle should usually be ported together as a small unit.
+- Each non-indented line names one original C++ header, source, or test file in dependency order.
+- A suffix like `: ported` or `: partially ported, ...` records progress for that original file.
+- Indented lines below an entry list the Rust files and tests that currently implement it.
+- If one original C++ file is split across several Rust modules, list all corresponding Rust paths under the same entry.
 
-Do not treat one JSON entry as meaning one Rust file. The order file is intentionally fine-grained. It tells you dependency order, not the final Rust module boundaries.
+Do not treat one source-tree entry as meaning one Rust file. It is acceptable to map one original C++ file to several Rust files when that keeps the Rust port readable and maintainable.
 
 ## Porting Workflow
 
 For each task:
 
-1. Find the target entity or entities in `analysis/original_clasp/porting_order.json`.
-2. Confirm all internal prerequisites are already ported.
+1. Find the next target file or coherent file group in `analysis/original_clasp/source_tree_by_import_order.txt`.
+2. Confirm earlier dependency entries that the target relies on are already ported enough for the change. If the file-level order is ambiguous, consult `analysis/original_clasp/porting_order.json` as a secondary reference.
 3. If prerequisites are not ported, stop and warn clearly.
 4. Inspect the corresponding C++ header, source, and original tests.
 5. Port the smallest coherent Rust unit that preserves behavior.
 6. Add thorough Rust tests in a dedicated test file.
 7. Port matching original tests when they exist.
-8. Update `ported` flags for the completed entities.
+8. Update the matching entry in `analysis/original_clasp/source_tree_by_import_order.txt` with its current status and the Rust files that now cover it.
 
-When the order file is very detailed, work like this:
+When a source entry expands during porting, work like this:
 
 - If several helper functions and a class form one cohesive implementation unit, port them together.
 - If a C++ file contains multiple unrelated entities, split them into multiple Rust modules.
-- If one C++ class naturally maps to several Rust types or modules, that is acceptable.
-- If an item in `cycles` is tightly coupled, port the whole cycle in one change.
+- If one original C++ file naturally maps to several Rust types or modules, that is acceptable.
+- If one target Rust file becomes too large, split it into several Rust files by responsibility and list all of them under the same source-tree entry.
 
 ## Rules For Parity
 
@@ -99,10 +98,10 @@ Before finishing a Rust change, run formatting, clippy, and the relevant tests u
 - Be thorough.
 - Prefer small, dependency-respecting increments.
 - Warn when a requested port violates the dependency order.
-- Warn when a missing prerequisite from `porting_order.json` would force guessing.
+- Warn when the source-tree order and supplemental dependency data still leave prerequisites unclear enough that continuing would require guessing.
 - Do not silently skip original tests.
-- After completing a ported entity, mark it as ported in `analysis/original_clasp/porting_order.json`.
+- After completing work on an original file, update its status and Rust file list in `analysis/original_clasp/source_tree_by_import_order.txt`.
 
 ## Summary Rule
 
-Use `porting_order.json` for order, use `original_clasp/` for behavior, and use a clean Rust module structure for the final code layout.
+Use `source_tree_by_import_order.txt` for work order and progress tracking, use `original_clasp/` for behavior, and use a clean Rust module structure for the final code layout.

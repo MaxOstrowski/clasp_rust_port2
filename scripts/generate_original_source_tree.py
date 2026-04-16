@@ -7,6 +7,8 @@ import json
 from collections import defaultdict, deque
 from pathlib import Path
 
+from scaffold_port_stubs import build_header_index, map_original_to_target
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ORIGINAL_ROOT = REPO_ROOT / "original_clasp"
@@ -58,6 +60,57 @@ def collect_target_files() -> list[str]:
 def load_file_usage() -> list[dict[str, object]]:
     data = json.loads(ANALYSIS_FILE.read_text())
     return data["files"]
+
+
+def parse_explicit_target_mappings(target_files: set[str]) -> dict[str, set[str]]:
+    mapping = {path: set() for path in target_files}
+    rust_files = []
+    for root in (REPO_ROOT / "src", REPO_ROOT / "tests", REPO_ROOT / "examples"):
+        if root.exists():
+            rust_files.extend(root.rglob("*.rs"))
+
+    for rust_file in rust_files:
+        lines = rust_file.read_text().splitlines()
+        header_lines: list[str] = []
+        collecting = False
+        for line in lines[:10]:
+            if line.startswith("//! Port target for "):
+                collecting = True
+                header_lines.append(line[len("//! Port target for "):])
+            elif collecting and line.startswith("//! "):
+                header_lines.append(line[len("//! "):])
+            else:
+                break
+        if not header_lines:
+            continue
+
+        text = " ".join(header_lines)
+        if text.endswith("."):
+            text = text[:-1]
+        for part in text.split(","):
+            part = part.strip()
+            prefix = "original_clasp/"
+            if not part.startswith(prefix):
+                continue
+            original = part[len(prefix):]
+            if original in mapping:
+                mapping[original].add(rust_file.relative_to(REPO_ROOT).as_posix())
+    return mapping
+
+
+def build_target_mapping(target_files: set[str]) -> dict[str, list[str]]:
+    explicit_mapping = parse_explicit_target_mappings(target_files)
+    header_index = build_header_index(sorted(target_files))
+    resolved: dict[str, list[str]] = {}
+
+    for original in sorted(target_files):
+        targets = set(explicit_mapping.get(original, set()))
+        _, conventional_target = map_original_to_target(original, header_index)
+        if conventional_target.exists():
+            targets.add(conventional_target.relative_to(REPO_ROOT).as_posix())
+        resolved[original] = sorted(targets)
+
+    return resolved
 
 
 def build_dependency_graph(target_files: set[str]) -> dict[str, set[str]]:
@@ -228,9 +281,30 @@ def topo_sort_files(graph: dict[str, set[str]], secondary_graph: dict[str, set[s
     return ordered_files
 
 
-def write_output(output_path: Path, ordered_files: list[str]) -> None:
+def validate_target_mapping(target_mapping: dict[str, list[str]]) -> None:
+    missing_originals = [original for original, targets in target_mapping.items() if not targets]
+    if missing_originals:
+        preview = ", ".join(missing_originals[:10])
+        raise RuntimeError(f"no existing Rust targets found for: {preview}")
+
+    nonexistent_targets = []
+    for original, targets in target_mapping.items():
+        for target in targets:
+            if not (REPO_ROOT / target).exists():
+                nonexistent_targets.append((original, target))
+    if nonexistent_targets:
+        preview = ", ".join(f"{original} -> {target}" for original, target in nonexistent_targets[:10])
+        raise RuntimeError(f"listed Rust targets do not exist: {preview}")
+
+
+def write_output(output_path: Path, ordered_files: list[str], target_mapping: dict[str, list[str]]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text("".join(f"{path}:\n" for path in ordered_files))
+    lines: list[str] = []
+    for original in ordered_files:
+        lines.append(f"{original}:\n")
+        for target in target_mapping[original]:
+            lines.append(f"    {target}\n")
+    output_path.write_text("".join(lines))
 
 
 def parse_args() -> argparse.Namespace:
@@ -251,9 +325,11 @@ def main() -> None:
     target_files = set(collect_target_files())
     include_graph = build_include_graph(target_files)
     dependency_graph = build_dependency_graph(target_files)
+    target_mapping = build_target_mapping(target_files)
+    validate_target_mapping(target_mapping)
     ordered_files = topo_sort_files(include_graph, dependency_graph)
-    write_output(args.output, ordered_files)
-    print(f"wrote {len(ordered_files)} files to {args.output.relative_to(REPO_ROOT)}")
+    write_output(args.output, ordered_files, target_mapping)
+    print(f"wrote {len(ordered_files)} files with validated Rust targets to {args.output.relative_to(REPO_ROOT)}")
 
 
 if __name__ == "__main__":
