@@ -66,9 +66,6 @@ Use this structure as the default description of the port:
 ## Test Structure
 
 - Never place tests next to source, use a separate file.
-- Always put tests in a dedicated test directory next to the source file, e.g.
-utils/pod_vector.rs
-utils/tests/pod_vector.rs
 - Port original tests whenever the original code has them.
 - Keep ported tests separate from handwritten Rust-only tests, e.g.
 tests/ 
@@ -77,7 +74,25 @@ tests/
 Recommended layout once the Rust crate exists:
 
 - production code under `src/`
+- handwritten Rust integration tests under `tests/`
 - ported original tests under `tests/ported/`
+
+Current bootstrap layout in this repository:
+
+- `Cargo.toml` defines the root Rust crate `rust_clasp`
+- `src/lib.rs` is the current Rust library entry point
+- `tests/ported/` is reserved for translated upstream tests
+
+## Rust Tooling
+
+Run all Rust tooling from the repository root.
+
+- Format in place with `cargo fmt --all`
+- Check formatting without changing files with `cargo fmt --all -- --check`
+- Run linting with `cargo clippy --workspace --all-targets -- -D warnings`
+- Run the Rust test suite with `cargo test --workspace`
+
+Before finishing a Rust change, run formatting, clippy, and the relevant tests unless the environment prevents it. If a command cannot be run, say so clearly.
 
 ## Practical Expectations
 
