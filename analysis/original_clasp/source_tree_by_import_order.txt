@@ -9,37 +9,47 @@ clasp/util/pod_vector.h: ported
 libpotassco/potassco/platform.h: ported
     src/potassco/platform.rs
     tests/ported/potassco/test_platform.rs
-clasp/claspfwd.h:
+clasp/claspfwd.h: ported
     src/clasp/claspfwd.rs
-clasp/mt/thread.h:
+    tests/claspfwd.rs
+clasp/mt/thread.h: ported
     src/clasp/mt/thread.rs
+    tests/clasp_mt_thread.rs
 clasp/util/left_right_sequence.h: ported
     src/clasp/util/left_right_sequence.rs
-clasp/cli/clasp_cli_configs.inl:
+clasp/cli/clasp_cli_configs.inl: ported
     src/clasp/cli/clasp_cli_configs.rs
+    tests/ported/clasp/clasp_cli_configs_test.rs
 libpotassco/potassco/program_opts/intrusive_ptr.h: ported
     src/potassco/program_opts/intrusive_ptr.rs
     tests/ported/potassco/test_intrusive_ptr.rs
-clasp/cli/clasp_cli_options.inl: partially ported, option catalog macros are missing
+clasp/cli/clasp_cli_options.inl: ported
     src/clasp/cli/clasp_cli_options.rs
-clasp/util/multi_queue.h:
+    tests/ported/clasp/cli_test.rs
+clasp/util/multi_queue.h: ported
     src/clasp/util/multi_queue.rs
+    tests/clasp_util_multi_queue.rs
 clasp/util/timer.h: ported
     src/clasp/util/timer.rs
-libpotassco/potassco/program_opts/errors.h: partially ported, DuplicateOption and related wrapper errors are missing
+libpotassco/potassco/program_opts/errors.h: ported
     src/potassco/program_opts/errors.rs
-libpotassco/potassco/graph.h:
+    tests/ported/potassco/test_options.rs
+libpotassco/potassco/graph.h: ported
     src/potassco/graph.rs
 clasp/pod_vector.h: ported
     src/clasp/pod_vector.rs
 clasp/util/indexed_priority_queue.h: ported
     src/clasp/util/indexed_priority_queue.rs
-libpotassco/potassco/enum.h: partially ported, DefaultEnum and EnumEntries metadata helpers are missing
+libpotassco/potassco/enum.h: ported
     src/potassco/enums.rs
-libpotassco/potassco/bits.h: partially ported, C++20 bit wrappers and full Bitset surface are missing
+    tests/ported/potassco/test_enum.rs
+libpotassco/potassco/bits.h: ported
     src/potassco/bits.rs
-clasp/config.h.in:
+    tests/ported/potassco/test_bits.rs
+clasp/config.h.in: ported
     src/clasp/config.rs
+    src/clasp/mt/mod.rs
+    tests/clasp_config.rs
 libpotassco/src/platform.cpp: ported
     src/potassco/platform.rs
     tests/ported/potassco/test_platform.rs
@@ -47,7 +57,7 @@ libpotassco/potassco/program_opts/value.h: ported
     src/potassco/program_opts/value.rs
 src/timer.cpp: ported
     src/clasp/util/timer.rs
-libpotassco/tests/test_graph.cpp:
+libpotassco/tests/test_graph.cpp: ported
     tests/ported/potassco/test_graph.rs
 clasp/literal.h:
     src/clasp/literal.rs

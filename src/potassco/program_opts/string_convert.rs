@@ -9,7 +9,7 @@ use crate::clasp::cli::clasp_options::{
     ConfigKey, OffType, parse_bool_flag, parse_config_key, parse_opt_params, parse_sat_pre_params,
 };
 use crate::clasp::solver_strategies::{OptParams, SatPreParams};
-use crate::potassco::enums::EnumTag;
+use crate::potassco::enums::{EnumTag, HasEnumEntries as EnumEntriesMeta, enum_entries};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Errc {
@@ -93,6 +93,15 @@ pub mod parse {
 
 pub trait EnumEntries: EnumTag {
     fn enum_entries() -> &'static [(Self, &'static str)];
+}
+
+impl<E> EnumEntries for E
+where
+    E: EnumEntriesMeta,
+{
+    fn enum_entries() -> &'static [(Self, &'static str)] {
+        enum_entries::<Self>()
+    }
 }
 
 pub trait ParseChars: Sized {

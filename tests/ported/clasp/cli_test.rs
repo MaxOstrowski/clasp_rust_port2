@@ -1,10 +1,11 @@
 use rust_clasp::clasp::cli::clasp_cli_options::{
-    CliEnum, HeuristicType, MinimizeMode, ProjectMode, VarType, asp_logic_program, context_params,
-    default_unfounded_check, distributor_policy, enum_map, from_chars, heu_params, opt_params,
-    parse_exact, reduce_strategy, restart_params, restart_schedule, solve_options, solver_params,
-    solver_strategies, to_chars,
+    CliEnum, CliOptionGroup, HeuristicType, MinimizeMode, ProjectMode, VarType, asp_logic_program,
+    context_params, default_unfounded_check, distributor_policy, enum_map, from_chars, heu_params,
+    opt_params, option_catalog, option_paths, parse_exact, reduce_strategy, restart_params,
+    restart_schedule, solve_options, solver_params, solver_strategies, to_chars,
 };
 use rust_clasp::clasp::util::misc_types::MovingAvgType;
+use std::collections::HashSet;
 
 fn assert_enum_cases<E>(cases: &[(&str, E)])
 where
@@ -333,4 +334,166 @@ fn unmapped_values_do_not_serialize_and_are_not_parsed() {
     assert!(parse_exact::<HeuristicType>("user").is_err());
     assert!(parse_exact::<asp_logic_program::ExtendedRuleMode>("nhcf").is_err());
     assert!(parse_exact::<solve_options::EnumType>("consequences").is_err());
+}
+
+fn group_keys(group: CliOptionGroup) -> Vec<&'static str> {
+    option_catalog()
+        .iter()
+        .filter(|entry| entry.group == group)
+        .map(|entry| entry.key)
+        .collect()
+}
+
+#[test]
+fn option_catalog_matches_upstream_groups() {
+    assert_eq!(option_catalog().len(), 74);
+
+    assert_eq!(
+        group_keys(CliOptionGroup::Context),
+        vec!["share", "learn_explicit", "short_simp_mode", "sat_prepro"]
+    );
+    assert_eq!(
+        group_keys(CliOptionGroup::Global),
+        vec!["stats", "parse_ext", "parse_maxsat"]
+    );
+    assert_eq!(
+        group_keys(CliOptionGroup::Solver),
+        vec![
+            "opt_strategy",
+            "opt_usc_shrink",
+            "opt_heuristic",
+            "restart_on_model",
+            "lookahead",
+            "heuristic",
+            "init_moms",
+            "score_res",
+            "score_other",
+            "sign_def",
+            "sign_fix",
+            "berk_huang",
+            "vsids_acids",
+            "vsids_progress",
+            "nant",
+            "dom_mod",
+            "save_progress",
+            "init_watches",
+            "update_mode",
+            "acyc_prop",
+            "seed",
+            "no_lookback",
+            "forget_on_step",
+            "strengthen",
+            "otfs",
+            "update_lbd",
+            "update_act",
+            "reverse_arcs",
+            "contraction",
+            "loops",
+        ]
+    );
+    assert_eq!(
+        group_keys(CliOptionGroup::Search),
+        vec![
+            "partial_check",
+            "sign_def_disj",
+            "rand_freq",
+            "rand_prob",
+            "restarts",
+            "reset_restarts",
+            "local_restarts",
+            "counter_restarts",
+            "block_restarts",
+            "shuffle",
+            "deletion",
+            "del_grow",
+            "del_cfl",
+            "del_init",
+            "del_estimate",
+            "del_max",
+            "del_glue",
+            "del_on_restart",
+        ]
+    );
+    assert_eq!(
+        group_keys(CliOptionGroup::Asp),
+        vec![
+            "trans_ext",
+            "eq",
+            "sort_atoms",
+            "backprop",
+            "supp_models",
+            "no_ufs_check",
+            "no_gamma",
+            "eq_dfs",
+            "dlp_old_map",
+        ]
+    );
+    assert_eq!(
+        group_keys(CliOptionGroup::Solve),
+        vec![
+            "solve_limit",
+            "parallel_mode",
+            "global_restarts",
+            "distribute",
+            "integrate",
+            "enum_mode",
+            "project",
+            "models",
+            "opt_mode",
+            "opt_stop",
+        ]
+    );
+}
+
+#[test]
+fn option_paths_match_upstream_leaf_enumeration() {
+    let keys = option_paths();
+    let unique: HashSet<_> = keys.iter().collect();
+    assert_eq!(keys.len(), unique.len());
+    assert_eq!(keys.len(), 147);
+    assert_eq!(keys[0], "configuration");
+    assert_eq!(keys[1], "tester.configuration");
+
+    for entry in option_catalog() {
+        assert!(keys.contains(&entry.path()));
+        match entry.group {
+            CliOptionGroup::Global => {
+                assert!(entry.tester_path().is_none());
+            }
+            _ => {
+                assert!(keys.contains(&entry.tester_path().unwrap()));
+            }
+        }
+    }
+
+    assert!(!keys.contains(&String::from("tester.stats")));
+    assert!(!keys.contains(&String::from("tester.parse_ext")));
+    assert!(!keys.contains(&String::from("tester.parse_maxsat")));
+
+    let sample_cli_names: Vec<_> = option_catalog()
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.key,
+                "learn_explicit"
+                    | "short_simp_mode"
+                    | "restart_on_model"
+                    | "counter_restarts"
+                    | "sort_atoms"
+                    | "opt_mode"
+            )
+        })
+        .map(|entry| entry.cli_name())
+        .collect();
+    assert_eq!(
+        sample_cli_names,
+        vec![
+            "learn-explicit",
+            "short-simp-mode",
+            "restart-on-model",
+            "counter-restarts",
+            "sort-atoms",
+            "opt-mode",
+        ]
+    );
 }

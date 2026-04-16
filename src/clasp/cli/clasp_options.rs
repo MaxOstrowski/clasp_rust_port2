@@ -3,8 +3,9 @@
 
 use core::fmt;
 
+pub use crate::clasp::cli::clasp_cli_configs::ConfigKey;
 use crate::clasp::cli::clasp_cli_options::{
-    self as cli, CliEnum, HeuristicType, KeyVal, asp_logic_program, context_params,
+    self as cli, CliEnum, HeuristicType, asp_logic_program, context_params,
     default_unfounded_check, distributor_policy, heu_params, opt_params, parse_exact,
     reduce_strategy, restart_params, restart_schedule, solve_options, solver_params,
     solver_strategies,
@@ -36,59 +37,6 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
-
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConfigKey {
-    Default = 0,
-    Tweety = 1,
-    Trendy = 2,
-    Frumpy = 3,
-    Crafty = 4,
-    Jumpy = 5,
-    Handy = 6,
-    Many = 17,
-}
-
-impl CliEnum for ConfigKey {
-    fn entries() -> &'static [KeyVal<Self>] {
-        const ENTRIES: &[KeyVal<ConfigKey>] = &[
-            KeyVal {
-                key: "auto",
-                value: ConfigKey::Default,
-            },
-            KeyVal {
-                key: "frumpy",
-                value: ConfigKey::Frumpy,
-            },
-            KeyVal {
-                key: "jumpy",
-                value: ConfigKey::Jumpy,
-            },
-            KeyVal {
-                key: "tweety",
-                value: ConfigKey::Tweety,
-            },
-            KeyVal {
-                key: "handy",
-                value: ConfigKey::Handy,
-            },
-            KeyVal {
-                key: "crafty",
-                value: ConfigKey::Crafty,
-            },
-            KeyVal {
-                key: "trendy",
-                value: ConfigKey::Trendy,
-            },
-            KeyVal {
-                key: "many",
-                value: ConfigKey::Many,
-            },
-        ];
-        ENTRIES
-    }
-}
 
 struct Cursor<'a> {
     remaining: &'a str,

@@ -3,6 +3,7 @@
 
 use std::error::Error as StdError;
 use std::fmt;
+use std::ops::Deref;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyntaxErrorType {
@@ -122,6 +123,116 @@ impl fmt::Display for ContextError {
 }
 
 impl StdError for ContextError {}
+
+macro_rules! context_wrapper_common {
+    ($name:ident) => {
+        impl $name {
+            pub fn into_inner(self) -> ContextError {
+                self.0
+            }
+        }
+
+        impl Deref for $name {
+            type Target = ContextError;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Display::fmt(&self.0, f)
+            }
+        }
+
+        impl StdError for $name {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                Some(&self.0)
+            }
+        }
+
+        impl From<$name> for ContextError {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl From<$name> for Error {
+            fn from(value: $name) -> Self {
+                Self::Context(value.0)
+            }
+        }
+    };
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DuplicateOption(ContextError);
+
+impl DuplicateOption {
+    pub fn new(ctx: impl Into<String>, key: impl Into<String>) -> Self {
+        Self(ContextError::new(
+            ctx,
+            ContextErrorType::DuplicateOption,
+            key,
+            "",
+        ))
+    }
+}
+
+context_wrapper_common!(DuplicateOption);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnknownOption(ContextError);
+
+impl UnknownOption {
+    pub fn new(ctx: impl Into<String>, key: impl Into<String>) -> Self {
+        Self(ContextError::new(
+            ctx,
+            ContextErrorType::UnknownOption,
+            key,
+            "",
+        ))
+    }
+}
+
+context_wrapper_common!(UnknownOption);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmbiguousOption(ContextError);
+
+impl AmbiguousOption {
+    pub fn new(
+        ctx: impl Into<String>,
+        key: impl Into<String>,
+        alternatives: impl Into<String>,
+    ) -> Self {
+        Self(ContextError::new(
+            ctx,
+            ContextErrorType::AmbiguousOption,
+            key,
+            alternatives,
+        ))
+    }
+}
+
+context_wrapper_common!(AmbiguousOption);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnknownGroup(ContextError);
+
+impl UnknownGroup {
+    pub fn new(ctx: impl Into<String>, key: impl Into<String>) -> Self {
+        Self(ContextError::new(
+            ctx,
+            ContextErrorType::UnknownGroup,
+            key,
+            "",
+        ))
+    }
+}
+
+context_wrapper_common!(UnknownGroup);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValueErrorType {

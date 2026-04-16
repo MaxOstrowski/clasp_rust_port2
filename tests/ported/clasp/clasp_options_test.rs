@@ -17,6 +17,7 @@ fn config_key_roundtrips_known_presets() {
         ("handy", ConfigKey::Handy),
         ("crafty", ConfigKey::Crafty),
         ("trendy", ConfigKey::Trendy),
+        ("tester", ConfigKey::Tester),
         ("many", ConfigKey::Many),
     ];
     for (text, key) in cases {
@@ -24,7 +25,8 @@ fn config_key_roundtrips_known_presets() {
         assert_eq!(parse_config_key(&text.to_ascii_uppercase()).unwrap(), key);
         assert_eq!(format_config_key(key), text);
     }
-    assert!(parse_config_key("tester").is_err());
+    assert_eq!(parse_config_key("s6").unwrap(), ConfigKey::S6);
+    assert_eq!(parse_config_key("nolearn").unwrap(), ConfigKey::Nolearn);
 }
 
 #[test]

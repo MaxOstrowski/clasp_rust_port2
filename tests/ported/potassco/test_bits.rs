@@ -1,8 +1,10 @@
 use rust_clasp::potassco::bits::{
-    BitIndex, Bitset, bit_count, bit_max, clear_bit, clear_mask, nth_bit, right_most_bit, set_bit,
-    set_mask, store_clear_bit, store_set_bit, store_toggle_bit, test_any, test_bit, test_mask,
-    toggle_bit,
+    BitIndex, Bitset, bit_ceil, bit_count, bit_floor, bit_max, bit_width, clear_bit, clear_mask,
+    countl_one, countl_zero, countr_one, countr_zero, has_single_bit, left_most_bit, log2, nth_bit,
+    popcount, right_most_bit, rotl, rotr, set_bit, set_mask, store_clear_bit, store_set_bit,
+    store_toggle_bit, test_any, test_bit, test_mask, toggle_bit,
 };
+use std::mem::size_of;
 
 #[derive(Copy, Clone)]
 enum DummyEnum {
@@ -35,7 +37,32 @@ fn bit_functions_match_upstream_behavior() {
     assert_eq!(bit_max::<u32>(3), 7);
     assert_eq!(bit_max::<u32>(32), u32::MAX);
     assert_eq!(right_most_bit(0b0001_0100u32), 0b0000_0100);
+    assert_eq!(left_most_bit(0b0001_0100u32), 0b0001_0000);
+    assert_eq!(log2(0u32), 0);
+    assert_eq!(log2(1u32), 0);
+    assert_eq!(log2(255u32), 7);
     assert_eq!(bit_count(127u32), 7);
+}
+
+#[test]
+fn cxx20_bit_wrappers_match_upstream_expectations() {
+    assert_eq!(bit_ceil(0u32), 1);
+    assert_eq!(bit_ceil(1u32), 1);
+    assert_eq!(bit_ceil(9u32), 16);
+    assert_eq!(bit_floor(0u32), 0);
+    assert_eq!(bit_floor(20u32), 16);
+    assert_eq!(bit_width(0u32), 0);
+    assert_eq!(bit_width(255u32), 8);
+    assert_eq!(countl_one(0b1110_0000u8), 3);
+    assert_eq!(countl_zero(0b0001_0100u8), 3);
+    assert_eq!(countr_one(0b0001_0111u8), 3);
+    assert_eq!(countr_zero(0b0001_0100u8), 2);
+    assert!(!has_single_bit(0u32));
+    assert!(has_single_bit(8u32));
+    assert!(!has_single_bit(10u32));
+    assert_eq!(popcount(127u32), 7);
+    assert_eq!(rotl(0x12u8, 1), 0x24);
+    assert_eq!(rotr(0x12u8, 1), 0x09);
 }
 
 #[test]
@@ -51,12 +78,16 @@ fn store_bit_helpers_mutate_in_place() {
 
 #[test]
 fn bitset_supports_unsigned_and_enum_indices() {
-    let mut bitset = Bitset::<u32>::from_iter([1u32, 2, 5]);
+    let mut bitset = Bitset::<u32>::from([1u32, 2, 5]);
     assert_eq!(bitset.count(), 3);
     assert!(bitset.contains(1));
     assert!(bitset.contains(2));
     assert!(bitset.contains(5));
     assert!(!bitset.contains(3));
+    assert_eq!(Bitset::<u32>::MAX_COUNT, 32);
+    assert_eq!(Bitset::<u32>::new().rep(), 0);
+    assert!(Bitset::<u32>::from_rep(8).contains(3));
+    assert_eq!(Bitset::<u32>::from_rep(15).count(), 4);
 
     bitset.remove_max(5);
     assert!(!bitset.contains(5));
@@ -70,6 +101,25 @@ fn bitset_supports_unsigned_and_enum_indices() {
     assert!(!bitset.contains(5));
     assert!(bitset.remove(3));
     assert_eq!(bitset.count(), 2);
+
+    let copy = bitset;
+    bitset.remove_max(0);
+    assert_eq!(bitset.count(), 0);
+    assert_eq!(copy.count(), 2);
+
+    let mut copy = copy;
+    copy.clear();
+    assert_eq!(copy.count(), 0);
+
+    bitset.add(31);
+    bitset.add(30);
+    assert_eq!(bitset.count(), 2);
+    bitset.remove_max(32);
+    assert_eq!(bitset.count(), 2);
+    bitset.remove_max(31);
+    assert_eq!(bitset.count(), 1);
+
+    assert_eq!(size_of::<Bitset<u32, DummyEnum>>(), size_of::<u32>());
 
     let mut enum_set = Bitset::<u32, DummyEnum>::default();
     assert!(enum_set.add(DummyEnum::Eight));

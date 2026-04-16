@@ -13,6 +13,386 @@ pub struct KeyVal<E> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ParseError;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CliOptionGroup {
+    Context,
+    Global,
+    Solver,
+    Search,
+    Asp,
+    Solve,
+}
+
+impl CliOptionGroup {
+    #[must_use]
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::Context | Self::Global => "",
+            Self::Solver | Self::Search => "solver.",
+            Self::Asp => "asp.",
+            Self::Solve => "solve.",
+        }
+    }
+
+    #[must_use]
+    pub const fn tester_prefix(self) -> Option<&'static str> {
+        match self {
+            Self::Context => Some("tester."),
+            Self::Global => None,
+            Self::Solver | Self::Search => Some("tester.solver."),
+            Self::Asp => Some("tester.asp."),
+            Self::Solve => Some("tester.solve."),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CliOptionEntry {
+    pub key: &'static str,
+    pub group: CliOptionGroup,
+}
+
+impl CliOptionEntry {
+    #[must_use]
+    pub fn cli_name(self) -> String {
+        self.key.replace('_', "-")
+    }
+
+    #[must_use]
+    pub fn path(self) -> String {
+        let mut out = String::from(self.group.prefix());
+        out.push_str(self.key);
+        out
+    }
+
+    #[must_use]
+    pub fn tester_path(self) -> Option<String> {
+        self.group.tester_prefix().map(|prefix| {
+            let mut out = String::from(prefix);
+            out.push_str(self.key);
+            out
+        })
+    }
+}
+
+const OPTION_CATALOG: &[CliOptionEntry] = &[
+    CliOptionEntry {
+        key: "share",
+        group: CliOptionGroup::Context,
+    },
+    CliOptionEntry {
+        key: "learn_explicit",
+        group: CliOptionGroup::Context,
+    },
+    CliOptionEntry {
+        key: "short_simp_mode",
+        group: CliOptionGroup::Context,
+    },
+    CliOptionEntry {
+        key: "sat_prepro",
+        group: CliOptionGroup::Context,
+    },
+    CliOptionEntry {
+        key: "stats",
+        group: CliOptionGroup::Global,
+    },
+    CliOptionEntry {
+        key: "parse_ext",
+        group: CliOptionGroup::Global,
+    },
+    CliOptionEntry {
+        key: "parse_maxsat",
+        group: CliOptionGroup::Global,
+    },
+    CliOptionEntry {
+        key: "opt_strategy",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "opt_usc_shrink",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "opt_heuristic",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "restart_on_model",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "lookahead",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "heuristic",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "init_moms",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "score_res",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "score_other",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "sign_def",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "sign_fix",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "berk_huang",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "vsids_acids",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "vsids_progress",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "nant",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "dom_mod",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "save_progress",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "init_watches",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "update_mode",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "acyc_prop",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "seed",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "no_lookback",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "forget_on_step",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "strengthen",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "otfs",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "update_lbd",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "update_act",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "reverse_arcs",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "contraction",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "loops",
+        group: CliOptionGroup::Solver,
+    },
+    CliOptionEntry {
+        key: "partial_check",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "sign_def_disj",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "rand_freq",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "rand_prob",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "restarts",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "reset_restarts",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "local_restarts",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "counter_restarts",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "block_restarts",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "shuffle",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "deletion",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "del_grow",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "del_cfl",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "del_init",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "del_estimate",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "del_max",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "del_glue",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "del_on_restart",
+        group: CliOptionGroup::Search,
+    },
+    CliOptionEntry {
+        key: "trans_ext",
+        group: CliOptionGroup::Asp,
+    },
+    CliOptionEntry {
+        key: "eq",
+        group: CliOptionGroup::Asp,
+    },
+    CliOptionEntry {
+        key: "sort_atoms",
+        group: CliOptionGroup::Asp,
+    },
+    CliOptionEntry {
+        key: "backprop",
+        group: CliOptionGroup::Asp,
+    },
+    CliOptionEntry {
+        key: "supp_models",
+        group: CliOptionGroup::Asp,
+    },
+    CliOptionEntry {
+        key: "no_ufs_check",
+        group: CliOptionGroup::Asp,
+    },
+    CliOptionEntry {
+        key: "no_gamma",
+        group: CliOptionGroup::Asp,
+    },
+    CliOptionEntry {
+        key: "eq_dfs",
+        group: CliOptionGroup::Asp,
+    },
+    CliOptionEntry {
+        key: "dlp_old_map",
+        group: CliOptionGroup::Asp,
+    },
+    CliOptionEntry {
+        key: "solve_limit",
+        group: CliOptionGroup::Solve,
+    },
+    CliOptionEntry {
+        key: "parallel_mode",
+        group: CliOptionGroup::Solve,
+    },
+    CliOptionEntry {
+        key: "global_restarts",
+        group: CliOptionGroup::Solve,
+    },
+    CliOptionEntry {
+        key: "distribute",
+        group: CliOptionGroup::Solve,
+    },
+    CliOptionEntry {
+        key: "integrate",
+        group: CliOptionGroup::Solve,
+    },
+    CliOptionEntry {
+        key: "enum_mode",
+        group: CliOptionGroup::Solve,
+    },
+    CliOptionEntry {
+        key: "project",
+        group: CliOptionGroup::Solve,
+    },
+    CliOptionEntry {
+        key: "models",
+        group: CliOptionGroup::Solve,
+    },
+    CliOptionEntry {
+        key: "opt_mode",
+        group: CliOptionGroup::Solve,
+    },
+    CliOptionEntry {
+        key: "opt_stop",
+        group: CliOptionGroup::Solve,
+    },
+];
+
+#[must_use]
+pub fn option_catalog() -> &'static [CliOptionEntry] {
+    OPTION_CATALOG
+}
+
+#[must_use]
+pub fn option_paths() -> Vec<String> {
+    let mut out = Vec::with_capacity(2 + option_catalog().len() * 2);
+    out.push(String::from("configuration"));
+    out.push(String::from("tester.configuration"));
+    for entry in option_catalog() {
+        out.push(entry.path());
+        if let Some(tester_path) = entry.tester_path() {
+            out.push(tester_path);
+        }
+    }
+    out
+}
+
 pub trait CliEnum: Copy + Eq + 'static {
     fn entries() -> &'static [KeyVal<Self>];
 

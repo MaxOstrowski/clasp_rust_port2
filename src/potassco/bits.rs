@@ -20,9 +20,18 @@ pub trait UnsignedInt:
 
     fn one() -> Self;
     fn max_value() -> Self;
+    fn bit_ceil(self) -> Self;
+    fn bit_floor(self) -> Self;
+    fn bit_width(self) -> u32;
+    fn leading_ones(self) -> u32;
     fn wrapping_neg(self) -> Self;
     fn leading_zeros(self) -> u32;
+    fn trailing_ones(self) -> u32;
+    fn trailing_zeros(self) -> u32;
     fn count_ones(self) -> u32;
+    fn is_power_of_two(self) -> bool;
+    fn rotate_left(self, n: u32) -> Self;
+    fn rotate_right(self, n: u32) -> Self;
 }
 
 macro_rules! impl_unsigned_int {
@@ -39,6 +48,26 @@ macro_rules! impl_unsigned_int {
 					<$ty>::MAX
 				}
 
+                fn bit_ceil(self) -> Self {
+                    self.next_power_of_two()
+                }
+
+                fn bit_floor(self) -> Self {
+                    if self == 0 {
+                        0
+                    } else {
+                        1 << (<$ty>::BITS - 1 - self.leading_zeros())
+                    }
+                }
+
+                fn bit_width(self) -> u32 {
+                    <$ty>::BITS - self.leading_zeros()
+                }
+
+                fn leading_ones(self) -> u32 {
+                    self.leading_ones()
+                }
+
 				fn wrapping_neg(self) -> Self {
 					self.wrapping_neg()
 				}
@@ -47,15 +76,79 @@ macro_rules! impl_unsigned_int {
 					self.leading_zeros()
 				}
 
+                fn trailing_ones(self) -> u32 {
+                    self.trailing_ones()
+                }
+
+                fn trailing_zeros(self) -> u32 {
+                    self.trailing_zeros()
+                }
+
 				fn count_ones(self) -> u32 {
 					self.count_ones()
 				}
+
+                fn is_power_of_two(self) -> bool {
+                    self.is_power_of_two()
+                }
+
+                fn rotate_left(self, n: u32) -> Self {
+                    self.rotate_left(n)
+                }
+
+                fn rotate_right(self, n: u32) -> Self {
+                    self.rotate_right(n)
+                }
 			}
 		)+
 	};
 }
 
 impl_unsigned_int!(u8, u16, u32, u64, u128, usize);
+
+pub fn bit_ceil<T: UnsignedInt>(x: T) -> T {
+    x.bit_ceil()
+}
+
+pub fn bit_floor<T: UnsignedInt>(x: T) -> T {
+    x.bit_floor()
+}
+
+pub fn bit_width<T: UnsignedInt>(x: T) -> u32 {
+    x.bit_width()
+}
+
+pub fn countl_one<T: UnsignedInt>(x: T) -> u32 {
+    x.leading_ones()
+}
+
+pub fn countl_zero<T: UnsignedInt>(x: T) -> u32 {
+    x.leading_zeros()
+}
+
+pub fn countr_one<T: UnsignedInt>(x: T) -> u32 {
+    x.trailing_ones()
+}
+
+pub fn countr_zero<T: UnsignedInt>(x: T) -> u32 {
+    x.trailing_zeros()
+}
+
+pub fn has_single_bit<T: UnsignedInt>(x: T) -> bool {
+    x.is_power_of_two()
+}
+
+pub fn popcount<T: UnsignedInt>(x: T) -> u32 {
+    x.count_ones()
+}
+
+pub fn rotl<T: UnsignedInt>(x: T, n: u32) -> T {
+    x.rotate_left(n)
+}
+
+pub fn rotr<T: UnsignedInt>(x: T, n: u32) -> T {
+    x.rotate_right(n)
+}
 
 pub fn nth_bit<T: UnsignedInt>(n: u32) -> T {
     assert!(n < T::BITS);
@@ -141,23 +234,15 @@ pub fn right_most_bit<T: UnsignedInt>(x: T) -> T {
 }
 
 pub fn left_most_bit<T: UnsignedInt>(x: T) -> T {
-    if x == T::default() {
-        T::default()
-    } else {
-        nth_bit::<T>(log2(x))
-    }
+    bit_floor(x)
 }
 
 pub fn log2<T: UnsignedInt>(x: T) -> u32 {
-    if x == T::default() {
-        0
-    } else {
-        T::BITS - 1 - x.leading_zeros()
-    }
+    bit_width(x) - u32::from(x != T::default())
 }
 
 pub fn bit_count<T: UnsignedInt>(x: T) -> u32 {
-    x.count_ones()
+    popcount(x)
 }
 
 pub trait BitIndex {
@@ -178,6 +263,7 @@ macro_rules! impl_bit_index_unsigned {
 
 impl_bit_index_unsigned!(u8, u16, u32, u64, usize);
 
+#[repr(transparent)]
 #[derive(Copy, Clone, Debug)]
 pub struct Bitset<T, Elem = u32> {
     set: T,
@@ -195,6 +281,18 @@ impl<T: UnsignedInt, Elem> Default for Bitset<T, Elem> {
 
 impl<T: UnsignedInt, Elem> Bitset<T, Elem> {
     pub const MAX_COUNT: u32 = T::BITS;
+
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn from_elems<I>(elems: I) -> Self
+    where
+        I: IntoIterator<Item = Elem>,
+        Elem: BitIndex,
+    {
+        elems.into_iter().collect()
+    }
 
     pub fn from_rep(rep: T) -> Self {
         Self {
@@ -248,11 +346,17 @@ impl<T: UnsignedInt, Elem: BitIndex> Bitset<T, Elem> {
 
 impl<T: UnsignedInt, Elem: BitIndex> FromIterator<Elem> for Bitset<T, Elem> {
     fn from_iter<I: IntoIterator<Item = Elem>>(iter: I) -> Self {
-        let mut bitset = Self::default();
+        let mut bitset = Self::new();
         for elem in iter {
             bitset.add(elem);
         }
         bitset
+    }
+}
+
+impl<T: UnsignedInt, Elem: BitIndex, const N: usize> From<[Elem; N]> for Bitset<T, Elem> {
+    fn from(value: [Elem; N]) -> Self {
+        Self::from_elems(value)
     }
 }
 

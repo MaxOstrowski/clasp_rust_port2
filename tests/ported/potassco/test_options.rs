@@ -5,11 +5,12 @@ use std::io::Cursor;
 use std::rc::Rc;
 
 use rust_clasp::potassco::program_opts::{
-    COMMAND_LINE_ALLOW_FLAG_VALUE, ContextErrorType, DefaultFormat, DefaultFormatElement,
-    DefaultParseContext, DescriptionLevel, Error, FindType, OptState, Option as ProgramOption,
-    OptionContext, OptionGroup, OptionGroupInit, ParseContext, Str, SyntaxErrorType, ValueAction,
-    ValueDesc, ValueErrorType, action_default, flag, make_action, make_custom, parse,
-    parse_cfg_file, parse_command_array, parse_command_string, store_to, value, value_with_id,
+    AmbiguousOption, COMMAND_LINE_ALLOW_FLAG_VALUE, ContextError, ContextErrorType, DefaultFormat,
+    DefaultFormatElement, DefaultParseContext, DescriptionLevel, DuplicateOption, Error, FindType,
+    OptState, Option as ProgramOption, OptionContext, OptionGroup, OptionGroupInit, ParseContext,
+    Str, SyntaxErrorType, UnknownGroup, UnknownOption, ValueAction, ValueDesc, ValueErrorType,
+    action_default, flag, make_action, make_custom, parse, parse_cfg_file, parse_command_array,
+    parse_command_string, store_to, value, value_with_id,
 };
 
 struct RecordingAction {
@@ -196,6 +197,42 @@ fn assert_value_error(error: Error, kind: ValueErrorType) {
         Error::Value(error) => assert_eq!(error.kind(), kind),
         other => panic!("expected value error, got {other:?}"),
     }
+}
+
+#[test]
+fn context_error_wrappers_preserve_types_and_messages() {
+    let duplicate = DuplicateOption::new("ctx", "opt");
+    assert_eq!(duplicate.kind(), ContextErrorType::DuplicateOption);
+    assert_eq!(duplicate.ctx(), "ctx");
+    assert_eq!(duplicate.key(), "opt");
+    assert_eq!(
+        duplicate.to_string(),
+        "In context 'ctx': duplicate option: 'opt'"
+    );
+
+    let unknown = UnknownOption::new("", "flag");
+    assert_eq!(unknown.kind(), ContextErrorType::UnknownOption);
+    assert_eq!(unknown.to_string(), "unknown option: 'flag'");
+
+    let ambiguous = AmbiguousOption::new("ctx", "he", "  help\n  hello");
+    assert_eq!(ambiguous.kind(), ContextErrorType::AmbiguousOption);
+    assert_eq!(
+        ambiguous.to_string(),
+        "In context 'ctx': ambiguous option: 'he' could be:\n  help\n  hello"
+    );
+
+    let unknown_group = UnknownGroup::new("ctx", "hidden");
+    assert_eq!(unknown_group.kind(), ContextErrorType::UnknownGroup);
+    assert_eq!(
+        unknown_group.to_string(),
+        "In context 'ctx': unknown group: 'hidden'"
+    );
+
+    let duplicate_context: ContextError = duplicate.clone().into();
+    assert_eq!(duplicate_context.kind(), ContextErrorType::DuplicateOption);
+
+    let duplicate_error: Error = duplicate.into();
+    assert_context_error(duplicate_error, ContextErrorType::DuplicateOption);
 }
 
 #[test]

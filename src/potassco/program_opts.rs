@@ -14,7 +14,8 @@ pub mod typed_value;
 pub mod value;
 
 pub use errors::{
-    ContextError, ContextErrorType, Error, SyntaxError, SyntaxErrorType, ValueError, ValueErrorType,
+    AmbiguousOption, ContextError, ContextErrorType, DuplicateOption, Error, SyntaxError,
+    SyntaxErrorType, UnknownGroup, UnknownOption, ValueError, ValueErrorType,
 };
 pub use intrusive_ptr::{IntrusiveRefCounted, IntrusiveSharedPtr, make_shared};
 pub use program_options::{
