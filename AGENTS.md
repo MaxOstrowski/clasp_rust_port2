@@ -16,6 +16,7 @@ The source tree file is a file-level worklist ordered by import dependencies.
 
 - Each non-indented line names one original C++ header, source, or test file in dependency order.
 - A suffix like `: ported` or `: partially ported, ...` records progress for that original file.
+- A suffix like `: blocked by x, y` records a file that cannot yet be ported honestly because prerequisite source-tree entries are still not ported enough.
 - Indented lines below an entry list the Rust files and tests that currently implement it.
 - If one original C++ file is split across several Rust modules, list all corresponding Rust paths under the same entry.
 
@@ -27,7 +28,7 @@ For each task:
 
 1. Find the next target file or coherent file group in `analysis/original_clasp/source_tree_by_import_order.txt`.
 2. Confirm earlier dependency entries that the target relies on are already ported enough for the change. If the file-level order is ambiguous, consult `analysis/original_clasp/porting_order.json` as a secondary reference.
-3. If prerequisites are not ported, stop and warn clearly.
+3. If prerequisites are not ported, update the source-tree entry to `: blocked by x, y` using the prerequisite source-tree entries, warn clearly, and then continue with the next unported entry unless the user explicitly asks you to stop at blockers.
 4. Inspect the corresponding C++ header, source, and original tests.
 5. Port the smallest coherent Rust unit that preserves behavior.
 6. Add thorough Rust tests in a dedicated test file.

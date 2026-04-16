@@ -1,9 +1,63 @@
+use rust_clasp::clasp::constraint::{Antecedent, Constraint, ConstraintDyn, PropResult, Solver};
 use rust_clasp::clasp::literal::{
     Literal, WeightLiteral, decode_lit, decode_var, encode_lit, false_value, hash_lit, is_sentinel,
     lit_false, lit_true, neg_lit, pos_lit, sent_var, swap, to_int, to_lit, true_value, val_sign,
     value_false, value_true, var_max,
 };
 use std::cmp::Ordering;
+
+struct TestConstraint;
+
+impl ConstraintDyn for TestConstraint {
+    fn propagate(&mut self, _s: &mut Solver, _p: Literal, _data: &mut u32) -> PropResult {
+        PropResult::new(true, true)
+    }
+
+    fn reason(
+        &mut self,
+        _s: &mut Solver,
+        _p: Literal,
+        _lits: &mut rust_clasp::clasp::literal::LitVec,
+    ) {
+    }
+
+    fn clone_attach(&self, _other: &mut Solver) -> Option<Box<Constraint>> {
+        None
+    }
+}
+
+fn test_bin(p: Literal) {
+    let ap = Antecedent::from_literal(p);
+    let anotp = Antecedent::from_literal(!p);
+    assert!(!ap.is_null());
+    assert_eq!(Antecedent::BINARY, ap.type_());
+    assert_eq!(p, ap.first_literal());
+
+    assert!(!anotp.is_null());
+    assert_eq!(Antecedent::BINARY, anotp.type_());
+    assert_eq!(!p, anotp.first_literal());
+}
+
+fn test_tern(p: Literal, q: Literal) {
+    let app = Antecedent::from_literals(p, q);
+    let apn = Antecedent::from_literals(p, !q);
+    let anp = Antecedent::from_literals(!p, q);
+    let ann = Antecedent::from_literals(!p, !q);
+
+    assert!(!app.is_null());
+    assert_eq!(Antecedent::TERNARY, app.type_());
+    assert!(!apn.is_null());
+    assert_eq!(Antecedent::TERNARY, apn.type_());
+    assert!(!anp.is_null());
+    assert_eq!(Antecedent::TERNARY, anp.type_());
+    assert!(!ann.is_null());
+    assert_eq!(Antecedent::TERNARY, ann.type_());
+
+    assert_eq!((p, q), (app.first_literal(), app.second_literal()));
+    assert_eq!((p, !q), (apn.first_literal(), apn.second_literal()));
+    assert_eq!((!p, q), (anp.first_literal(), anp.second_literal()));
+    assert_eq!((!p, !q), (ann.first_literal(), ann.second_literal()));
+}
 
 #[test]
 fn test_ctor() {
@@ -234,4 +288,39 @@ fn test_value_sign_and_display() {
 }
 
 #[test]
-fn upstream_literal_test_antecedent_sections_remain_blocked_on_solver_types() {}
+fn test_antecedent_null_pointer() {
+    let a = Antecedent::new();
+    let b = Antecedent::from_constraint_ptr(core::ptr::null_mut());
+    assert!(a.is_null());
+    assert!(b.is_null());
+}
+
+#[test]
+fn test_antecedent_pointer() {
+    let constraint = Box::new(Constraint::new(TestConstraint));
+    let raw = Box::into_raw(constraint);
+    let a = Antecedent::from_constraint_ptr(raw);
+    assert!(!a.is_null());
+    assert_eq!(Antecedent::GENERIC, a.type_());
+    assert_eq!(raw.cast_const(), a.constraint() as *const Constraint);
+    unsafe {
+        Constraint::destroy_raw(raw, None, false);
+    }
+}
+
+#[test]
+fn test_antecedent_bin() {
+    test_bin(pos_lit(var_max - 1));
+    test_bin(lit_true);
+    test_bin(pos_lit(var_max / 2));
+}
+
+#[test]
+fn test_antecedent_tern() {
+    let values = [pos_lit(var_max - 1), pos_lit(var_max / 2), lit_true];
+    for left in values {
+        for right in values {
+            test_tern(left, right);
+        }
+    }
+}

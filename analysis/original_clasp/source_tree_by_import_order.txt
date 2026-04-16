@@ -75,12 +75,15 @@ libpotassco/potassco/utils.h: ported
     src/potassco/utils.rs
 libpotassco/potassco/program_opts/program_options.h: ported
     src/potassco/program_opts/program_options.rs
-clasp/asp_preprocessor.h:
+clasp/asp_preprocessor.h: blocked by clasp/logic_program.h, clasp/shared_context.h
     src/clasp/asp_preprocessor.rs
 libpotassco/potassco/program_opts/typed_value.h: ported
     src/potassco/program_opts/typed_value.rs
-clasp/constraint.h:
+clasp/constraint.h: ported
     src/clasp/constraint.rs
+    tests/clasp_constraint.rs
+    tests/ported/clasp/constraint_test.rs
+    tests/ported/clasp/literal_test.rs
 clasp/program_builder.h:
     src/clasp/program_builder.rs
 libpotassco/potassco/clingo.h:
@@ -108,8 +111,9 @@ clasp/solver_types.h:
     src/clasp/solver_types.rs
 clasp/weight_constraint.h:
     src/clasp/weight_constraint.rs
-src/constraint.cpp:
+src/constraint.cpp: ported
     src/clasp/constraint.rs
+    tests/clasp_constraint.rs
 clasp/statistics.h:
     src/clasp/statistics.rs
 libpotassco/tests/test_error.cpp: partially ported, assertion/error and scope-exit sections are covered; statistics sections still depend on statistics.h
@@ -150,7 +154,7 @@ clasp/solve_algorithms.h:
     src/clasp/solve_algorithms.rs
 clasp/clause.h:
     src/clasp/clause.rs
-tests/literal_test.cpp: partially ported, literal-only sections are covered; Antecedent cases still depend on solver_types.h
+tests/literal_test.cpp: ported
     tests/ported/clasp/literal_test.rs
 src/statistics.cpp:
     src/clasp/statistics.rs

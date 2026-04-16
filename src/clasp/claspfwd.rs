@@ -13,15 +13,14 @@ opaque_type!(SharedContext);
 opaque_type!(MinimizeBuilder);
 opaque_type!(SharedMinimizeData);
 opaque_type!(Configuration);
-opaque_type!(Constraint);
-opaque_type!(ConstraintInfo);
-opaque_type!(Solver);
 opaque_type!(Model);
 opaque_type!(ProgramBuilder);
 opaque_type!(ProgramParser);
 opaque_type!(SatBuilder);
 opaque_type!(PBBuilder);
 opaque_type!(ExtDepGraph);
+
+pub use crate::clasp::constraint::{Constraint, ConstraintInfo, Solver};
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
