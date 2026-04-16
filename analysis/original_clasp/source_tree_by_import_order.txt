@@ -59,14 +59,16 @@ src/timer.cpp: ported
     src/clasp/util/timer.rs
 libpotassco/tests/test_graph.cpp: ported
     tests/ported/potassco/test_graph.rs
-clasp/literal.h:
+clasp/literal.h: ported
     src/clasp/literal.rs
-libpotassco/potassco/error.h:
+    tests/ported/clasp/literal_test.rs
+libpotassco/potassco/error.h: ported
     src/potassco/error.rs
 libpotassco/potassco/program_opts/string_convert.h: ported
     src/potassco/program_opts/string_convert.rs
-clasp/util/misc_types.h: partially ported, TaggedPtr, Range32, Event, LockedValue, RefCount, and SigAtomic are missing
+clasp/util/misc_types.h: ported
     src/clasp/util/misc_types.rs
+    tests/ported/clasp/util/misc_types_test.rs
 libpotassco/potassco/basic_types.h: ported
     src/potassco/basic_types.rs
 libpotassco/potassco/utils.h: ported
@@ -110,7 +112,7 @@ src/constraint.cpp:
     src/clasp/constraint.rs
 clasp/statistics.h:
     src/clasp/statistics.rs
-libpotassco/tests/test_error.cpp:
+libpotassco/tests/test_error.cpp: partially ported, assertion/error and scope-exit sections are covered; statistics sections still depend on statistics.h
     tests/ported/potassco/test_error.rs
 libpotassco/src/theory_data.cpp:
     src/potassco/theory_data.rs
@@ -148,7 +150,7 @@ clasp/solve_algorithms.h:
     src/clasp/solve_algorithms.rs
 clasp/clause.h:
     src/clasp/clause.rs
-tests/literal_test.cpp:
+tests/literal_test.cpp: partially ported, literal-only sections are covered; Antecedent cases still depend on solver_types.h
     tests/ported/clasp/literal_test.rs
 src/statistics.cpp:
     src/clasp/statistics.rs
