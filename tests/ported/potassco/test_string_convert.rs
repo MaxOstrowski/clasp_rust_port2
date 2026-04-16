@@ -173,6 +173,13 @@ fn vectors_can_be_parsed_and_nested() {
 }
 
 #[test]
+fn variadic_to_string_macro_matches_upstream_sequence_helper() {
+    assert_eq!(rust_clasp::potassco_to_string!(1, 2, 3), "1,2,3");
+    assert_eq!(rust_clasp::potassco_to_string!(1, "Hallo"), "1,Hallo");
+    assert_eq!(rust_clasp::potassco_to_string!(vec![1, 2, 3]), "1,2,3");
+}
+
+#[test]
 fn extract_and_case_insensitive_helpers_match_upstream() {
     let mut input = "1,off";
     let mut left = false;

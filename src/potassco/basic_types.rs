@@ -3,9 +3,11 @@
 use core::cmp::Ordering;
 use core::fmt;
 use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
+use std::panic::panic_any;
 
 use crate::potassco::bits::BitIndex;
 use crate::potassco::enums::EnumTag;
+use crate::potassco::error::Error;
 
 pub type Id = u32;
 pub const ID_MAX: Id = Id::MAX;
@@ -17,7 +19,7 @@ pub const ATOM_MAX: Atom = (1u32 << 31) - 1;
 pub type Lit = i32;
 pub type Weight = i32;
 
-#[derive(Copy, Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WeightLit {
     pub lit: Lit,
     pub weight: Weight,
@@ -460,6 +462,10 @@ pub fn weight<T: WeightOf>(value: T) -> Weight {
     value.weight()
 }
 
+fn unsupported_operation(what: &str) -> ! {
+    panic_any(Error::DomainError(format!("{what} not supported")))
+}
+
 pub trait AbstractProgram {
     fn init_program(&mut self, _incremental: bool) {}
     fn begin_step(&mut self) {}
@@ -475,23 +481,23 @@ pub trait AbstractProgram {
     fn output_atom(&mut self, atom: Atom, name: &str);
 
     fn output_term(&mut self, _term_id: Id, _name: &str) {
-        panic!("output term not supported");
+        unsupported_operation("output term");
     }
 
     fn output(&mut self, _term_id: Id, _condition: LitSpan<'_>) {
-        panic!("output term not supported");
+        unsupported_operation("output term");
     }
 
     fn project(&mut self, _atoms: AtomSpan<'_>) {
-        panic!("projection not supported");
+        unsupported_operation("projection");
     }
 
     fn external(&mut self, _atom: Atom, _value: TruthValue) {
-        panic!("externals not supported");
+        unsupported_operation("externals");
     }
 
     fn assume(&mut self, _lits: LitSpan<'_>) {
-        panic!("assumptions not supported");
+        unsupported_operation("assumptions");
     }
 
     fn heuristic(
@@ -502,31 +508,31 @@ pub trait AbstractProgram {
         _priority: u32,
         _condition: LitSpan<'_>,
     ) {
-        panic!("heuristic directive not supported");
+        unsupported_operation("heuristic directive");
     }
 
     fn acyc_edge(&mut self, _source: i32, _target: i32, _condition: LitSpan<'_>) {
-        panic!("edge directive not supported");
+        unsupported_operation("edge directive");
     }
 
     fn theory_term_number(&mut self, _term_id: Id, _number: i32) {
-        panic!("theory data not supported");
+        unsupported_operation("theory data");
     }
 
     fn theory_term_symbol(&mut self, _term_id: Id, _name: &str) {
-        panic!("theory data not supported");
+        unsupported_operation("theory data");
     }
 
     fn theory_term_compound(&mut self, _term_id: Id, _functor_id: i32, _args: IdSpan<'_>) {
-        panic!("theory data not supported");
+        unsupported_operation("theory data");
     }
 
     fn theory_element(&mut self, _element_id: Id, _terms: IdSpan<'_>, _cond: LitSpan<'_>) {
-        panic!("theory data not supported");
+        unsupported_operation("theory data");
     }
 
     fn theory_atom(&mut self, _atom_or_zero: Id, _term_id: Id, _elements: IdSpan<'_>) {
-        panic!("theory data not supported");
+        unsupported_operation("theory data");
     }
 
     fn theory_atom_guarded(
@@ -537,7 +543,7 @@ pub trait AbstractProgram {
         _op: Id,
         _rhs: Id,
     ) {
-        panic!("theory data not supported");
+        unsupported_operation("theory data");
     }
 
     fn end_step(&mut self) {}

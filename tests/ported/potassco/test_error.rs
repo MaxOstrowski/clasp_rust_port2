@@ -157,6 +157,18 @@ fn fail_throw_formats_preconditions_and_runtime_errors() {
         Error::InvalidArgument(format!("{} Precondition 'expression' failed.", location))
     );
 
+    let without_expression = ExpressionInfo {
+        expression: "",
+        ..expression
+    };
+    let precondition_without_expression = catch_error(|| {
+        rust_clasp::potassco::error::fail_throw(Errc::PRECONDITION_FAIL, without_expression, None)
+    });
+    assert_eq!(
+        precondition_without_expression,
+        Error::InvalidArgument(format!("{} Precondition failed.", location))
+    );
+
     let precondition_with_message = catch_error(|| {
         rust_clasp::potassco::error::fail_throw(
             Errc::PRECONDITION_FAIL,

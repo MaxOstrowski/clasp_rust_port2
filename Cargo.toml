@@ -12,3 +12,4 @@ path = "src/lib.rs"
 resolver = "2"
 
 [dependencies]
+sprintf = "0.4.3"

@@ -4,4 +4,5 @@ pub mod cli_test;
 pub mod constraint_test;
 pub mod literal_test;
 pub mod pod_vector;
+pub mod solver_strategies_test;
 pub mod util;

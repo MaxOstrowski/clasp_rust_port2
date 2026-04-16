@@ -1,9 +1,17 @@
+pub mod aspif;
+pub mod aspif_text;
 pub mod basic_types;
 pub mod bits;
+pub mod clingo;
 pub mod enums;
 pub mod error;
 pub mod format;
 pub mod graph;
+pub mod match_basic_types;
 pub mod platform;
 pub mod program_opts;
+pub mod reify;
+pub mod rule_utils;
+pub mod smodels;
+pub mod theory_data;
 pub mod utils;

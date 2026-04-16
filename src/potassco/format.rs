@@ -2,6 +2,8 @@
 
 use core::fmt::{self, Write};
 
+use sprintf::{Printf, PrintfError, vsprintf};
+
 use crate::potassco::enums::{EnumTag, enum_name};
 use crate::potassco::utils::DynamicBuffer;
 
@@ -540,6 +542,24 @@ impl BasicCharBuffer {
         CharBuffer::append(self, value)
     }
 
+    pub fn try_append_f(
+        &mut self,
+        format: &str,
+        args: &[&dyn Printf],
+    ) -> Result<&mut Self, PrintfError> {
+        let rendered = vsprintf(format, args)?;
+        Ok(self.append(&rendered))
+    }
+
+    pub fn append_f(&mut self, format: &str, args: &[&dyn Printf]) -> &mut Self {
+        let _ = self.try_append_f(format, args);
+        self
+    }
+
+    pub fn v_append_f(&mut self, format: &str, args: &[&dyn Printf]) -> &mut Self {
+        self.append_f(format, args)
+    }
+
     pub fn view(&self) -> &str {
         self.buffer.view()
     }
@@ -605,4 +625,20 @@ pub fn to_string<T: ToCharsValue>(value: &T) -> String {
     let mut out = String::new();
     value.write_to(&mut out);
     out
+}
+
+#[macro_export]
+macro_rules! potassco_to_string {
+    ($value:expr $(,)?) => {{
+        $crate::potassco::format::to_string(&$value)
+    }};
+    ($first:expr, $($rest:expr),+ $(,)?) => {{
+        let mut out = String::new();
+        $crate::potassco::format::to_chars(&mut out, &$first);
+        $(
+            out.push(',');
+            $crate::potassco::format::to_chars(&mut out, &$rest);
+        )+
+        out
+    }};
 }

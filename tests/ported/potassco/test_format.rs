@@ -2,6 +2,13 @@ use rust_clasp::potassco::format::{
     BasicCharBuffer, Color, Emphasis, TextStyle, TextStyleSpec, float_field, int_field, keyed,
     quoted, str_field, styled, to_string, uint_field,
 };
+use sprintf::Printf;
+
+#[test]
+fn tuple_and_vector_to_string_match_upstream_sequence_cases() {
+    assert_eq!(to_string(&(10, false)), "10,false");
+    assert_eq!(to_string(&vec![1, 2, 3]), "1,2,3");
+}
 
 #[test]
 fn field_rendering_matches_expected_padding_and_precision() {
@@ -22,10 +29,15 @@ fn field_rendering_matches_expected_padding_and_precision() {
 #[test]
 fn quoted_keyed_and_styled_wrappers_preserve_text_order() {
     assert_eq!(to_string(&quoted("Hallo", "\"")), "\"Hallo\"");
+    assert_eq!(to_string(&quoted("Hallo", "'")), "'Hallo'");
     assert_eq!(to_string(&quoted(42, "'")), "'42'");
     assert_eq!(
         to_string(&keyed("Hello", float_field(0.12345, 0, Some(3), None))),
         "Hello: 0.123"
+    );
+    assert_eq!(
+        to_string(&keyed("Foo", quoted("Bar", "\""))),
+        "Foo: \"Bar\""
     );
     assert_eq!(to_string(&keyed("", 23)), "23");
 
@@ -116,4 +128,57 @@ fn basic_char_buffer_supports_open_append_and_close() {
     buffer.open(TextStyle::default(), Some(';'));
     buffer.append("World");
     assert_eq!(buffer.close(), "World;");
+
+    buffer.clear();
+    buffer
+        .open(red, Some(' '))
+        .append("Hello")
+        .open(TextStyle::default(), Some('!'))
+        .append("World");
+    assert_eq!(buffer.close(), "\u{1b}[0;31mHello\u{1b}[0m World!");
+}
+
+#[test]
+fn basic_char_buffer_append_sep_and_repeat_skip_empty_values() {
+    let mut buffer = BasicCharBuffer::default();
+
+    let spaced = [Some(1), None, Some(2)];
+    buffer.append_sep("<>", &spaced);
+    assert_eq!(buffer.view(), "1<>2");
+
+    buffer.clear();
+    let all_empty: [Option<i32>; 2] = [None, None];
+    buffer.append_sep("<>", &all_empty);
+    assert!(buffer.view().is_empty());
+
+    buffer.clear();
+    buffer.append("(");
+    buffer.append_repeat(4, 'x');
+    buffer.append(")");
+    assert_eq!(buffer.view(), "(xxxx)");
+}
+
+#[test]
+fn basic_char_buffer_append_f_matches_upstream_cases() {
+    let mut buffer = BasicCharBuffer::default();
+    buffer.append_f("Hello", &[]);
+    assert_eq!(buffer.view(), "Hello");
+
+    buffer.clear();
+    let string_args: [&dyn Printf; 1] = [&"World"];
+    buffer.append_f("Hello %s", &string_args);
+    assert_eq!(buffer.view(), "Hello World");
+
+    buffer.clear();
+    let mixed_args: [&dyn Printf; 2] = [&22u32, &3.1f64];
+    buffer.append_f("Hello %08u|%gs", &mixed_args);
+    assert_eq!(buffer.view(), "Hello 00000022|3.1s");
+
+    buffer.clear();
+    let empty_string_args: [&dyn Printf; 1] = [&""];
+    buffer.append_f("Hello %130sfoo", &empty_string_args);
+    let mut expected = String::from("Hello ");
+    expected.push_str(&" ".repeat(130));
+    expected.push_str("foo");
+    assert_eq!(buffer.view(), expected);
 }
