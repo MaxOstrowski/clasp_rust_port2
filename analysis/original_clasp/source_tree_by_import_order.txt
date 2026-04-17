@@ -270,29 +270,29 @@ src/logic_program_types.cpp: partially ported, PrgNode/PrgEdge bit-packed semant
 src/minimize_constraint.cpp: partially ported, SharedMinimizeData mode/bound state, sparse level-weight arithmetic, negative-lower initialization, and optimum/lower-bound bookkeeping are ported; MinimizeBuilder, DefaultMinimize, UncoreMinimize, and solver/shared-context attachment remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/weight_constraint.h, src/shared_context.cpp, and the remaining src/minimize_constraint.cpp logic
     src/clasp/minimize_constraint.rs
     tests/ported/clasp/minimize_test.rs
-src/program_builder.cpp:
+src/program_builder.cpp: blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h; rust stub only because parser/shared-context/solver/clause/weight-constraint prerequisites are still unresolved
     src/clasp/program_builder.rs
-src/solve_algorithms.cpp:
+src/solve_algorithms.cpp: blocked by clasp/solve_algorithms.h, clasp/solver.h, clasp/shared_context.h, clasp/enumerator.h, src/solver.cpp, src/shared_context.cpp, src/enumerator.cpp; rust stub only because BasicSolve/SolveAlgorithm still needs solver search/restart/reduce plus SharedContext/Enumerator attach-update-commit flows
     src/clasp/solve_algorithms.rs
-src/solver.cpp:
+src/solver.cpp: blocked by clasp/solver.h, clasp/shared_context.h, clasp/solver_types.h, clasp/clause.h, clasp/statistics.h; rust stub only because substantive Solver runtime, watch, and propagation logic is still unported
     src/clasp/solver.rs
 src/solver_types.cpp: partially ported, CoreStats/JumpStats/ExtendedStats/SolverStats accumulation, derived ratios, nested statistic lookup, and multi-shot flush forwarding are ported; ClauseHead, SmallClauseAlloc, ClauseRep, and solver-integrated clause/watch runtime remain blocked by clasp/solver.h, clasp/clause.h, clasp/statistics.h, and the remaining src/solver_types.cpp logic
     src/clasp/solver_types.rs
     tests/clasp_solver_types.rs
-src/weight_constraint.cpp:
+src/weight_constraint.cpp: blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h; rust stub only because unresolved solver watch/undo/heuristic and shared-context freeze/share prerequisites still block the runtime
     src/clasp/weight_constraint.rs
 tests/clause_creator_test.cpp: partially ported, ClauseCreator prepare/simplify duplicate-removal, tautology, watch-order, and lit-false regression coverage are ported; create/end integration, heuristic notifications, SharedContext accounting, and SharedLiterals integration remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, and the remaining src/clause.cpp clause-construction logic
     tests/ported/clasp/clause_creator_test.rs
 tests/clause_test.cpp: partially ported, SharedLiterals shared-refcount and shared-simplify semantics are ported; clause runtime propagation, strengthening, contraction, cloning, and solver/watch integration remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, and the remaining src/clause.cpp clause-runtime logic
     tests/ported/clasp/clause_test.rs
-tests/minimize_test.cpp:
+tests/minimize_test.cpp: partially ported, only a small SharedMinimizeData-focused subset is translated in Rust while most solver-integrated Model-guided/Core-guided minimize behavior is still missing
     tests/ported/clasp/minimize_test.rs
-tests/weight_constraint_test.cpp:
+tests/weight_constraint_test.cpp: blocked by clasp/weight_constraint.h, src/weight_constraint.cpp, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, clasp/solver_types.h; translated test target is still a stub because weight-constraint runtime prerequisites remain unresolved
     tests/ported/clasp/weight_constraint_test.rs
 clasp/clasp_facade.h: partially ported, SolveResult base/ext flag queries and SolveMode bitmask semantics are ported; ClaspConfig, ClaspFacade, SolveHandle, Summary, and runtime/statistics integration remain blocked by clasp/enumerator.h, clasp/logic_program.h, clasp/parser.h, clasp/program_builder.h, clasp/shared_context.h, clasp/solver_types.h, clasp/solver.h, clasp/dependency_graph.h, clasp/lookahead.h, clasp/minimize_constraint.h, clasp/model_enumerators.h, and src/clasp_facade.cpp
     src/clasp/clasp_facade.rs
     tests/ported/clasp/facade_types_test.rs
-src/parallel_solve.cpp:
+src/parallel_solve.cpp: blocked by clasp/shared_context.h, clasp/solve_algorithms.h, clasp/solver_types.h, clasp/solver.h, clasp/clause.h, clasp/enumerator.h; rust stub only because parallel solve still needs unported solver/shared-context/solve-algorithm runtime and parallel integration flows
     src/clasp/mt/parallel_solve.rs
 tests/solver_test.cpp: partially ported, indexed_priority_queue heap ordering/update coverage is ported; solver/core propagation, constraint, statistics, and MT behavior remain blocked by clasp/solver.h, clasp/clause.h, clasp/statistics.h, clasp/weight_constraint.h, clasp/mt/parallel_solve.h, and src/solver.cpp
     tests/ported/clasp/solver_test.rs
@@ -302,23 +302,23 @@ clasp/unfounded_check.h: partially ported, ReasonStrategy/UfsType/WatchType enum
 src/dependency_graph.cpp: partially ported, ExtDepGraph incremental invalidation, storage, finalize, and frozen/update behavior are ported; SolveTestEvent, PrgDepGraph, and AcyclicityCheck remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/logic_program.h, clasp/clause.h, clasp/solve_algorithms.h, src/logic_program.cpp, and src/shared_context.cpp
     src/clasp/dependency_graph.rs
     tests/clasp_dependency_graph.rs
-src/logic_program.cpp:
+src/logic_program.cpp: blocked by clasp/logic_program.h, clasp/logic_program_types.h, clasp/program_builder.h, clasp/shared_context.h, clasp/solver.h, clasp/parser.h, clasp/clause.h, clasp/minimize_constraint.h, clasp/statistics.h; rust stub only because the logic-program runtime is still tightly coupled to blocked parser/program-builder/solver/shared-context units
     src/clasp/logic_program.rs
-src/parser.cpp:
+src/parser.cpp: blocked by clasp/parser.h, clasp/program_builder.h, clasp/logic_program.h, clasp/shared_context.h, clasp/solver.h; rust stub only because parser behavior still depends on blocked parser/program-builder/logic-program/shared-context/solver units
     src/clasp/parser.rs
-src/shared_context.cpp:
+src/shared_context.cpp: blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/statistics.h, clasp/solver_types.h, src/solver.cpp; rust stub only because shared-context implementation still depends on unresolved solver/clause/statistics integration
     src/clasp/shared_context.rs
-tests/dependency_graph_test.cpp:
+tests/dependency_graph_test.cpp: blocked by clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h, src/logic_program.cpp, clasp/shared_context.h, src/shared_context.cpp, clasp/solver.h, src/solver.cpp; rust stub only because dependency-graph and acyclicity behavior still needs unresolved logic-program/shared-context/solver integration
     tests/ported/clasp/dependency_graph_test.rs
-tests/parser_test.cpp:
+tests/parser_test.cpp: blocked by clasp/parser.h, src/parser.cpp, clasp/logic_program.h, src/logic_program.cpp, clasp/shared_context.h, src/shared_context.cpp, clasp/program_builder.h, src/program_builder.cpp, clasp/solver.h, src/solver.cpp, clasp/minimize_constraint.h, src/minimize_constraint.cpp; rust test counterpart is still a placeholder and the parser stack is not ported enough yet
     tests/ported/clasp/parser_test.rs
-tests/rule_test.cpp:
+tests/rule_test.cpp: blocked by clasp/logic_program.h, clasp/solver.h, tests/lpcompare.h, src/logic_program.cpp, src/parser.cpp, src/shared_context.cpp, src/solver.cpp; rust coverage is still a stub because lpcompare logic-program helpers and solver/runtime dependencies remain unresolved
     tests/ported/clasp/rule_test.rs
-src/cb_enumerator.cpp:
+src/cb_enumerator.cpp: partially ported, constructor/type-selection, enum-option mapping, exhaustive reporting, split/unsat semantics, and query-optimization fallback are ported; CBFinder, QueryFinder, shared constraint exchange, and solver/model integration remain blocked by clasp/enumerator.h, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, and the remaining src/cb_enumerator.cpp logic
     src/clasp/cb_enumerator.rs
-src/model_enumerators.cpp:
+src/model_enumerators.cpp: partially ported, solver-independent behavior from doInit/setStrategy is ported and tested, including auto strategy selection, projection-flag normalization, and trivial/warning logic; finder implementations and solver/context/clause-integrated paths remain missing
     src/clasp/model_enumerators.rs
-src/clingo.cpp:
+src/clingo.cpp: partially ported, ClingoAssignment adapter semantics are ported; ClingoPropagator, ClingoPropagatorInit, and ClingoHeuristic remain blocked by unresolved solver/shared-context/constraint integration from the remaining src/clingo.cpp logic
     src/clasp/clingo.rs
 src/heuristics.cpp: partially ported, VSIDS dynamic-decay conflict-step behavior and score normalization are ported alongside the existing solver-independent Berkmin/VMTF/VSIDS/domain score/config scaffolding; solver-attached Berkmin/VMTF/VSIDS/domain engines, MOMS scoring against live solver watches, linked-list/heap updates over solver state, and domain-action propagation remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/clause.h, clasp/logic_program.h, and the remaining src/heuristics.cpp logic
     src/clasp/heuristics.rs
@@ -348,15 +348,15 @@ tests/facade_test.cpp: partially ported, ClingoAssignment basic/problem-var/deci
 src/clasp_facade.cpp: partially ported, SolveResult base/ext flag queries and SolveMode bitmask semantics are ported; solve strategies, async handle flow, summary/statistics accumulation, interrupt handling, and facade lifecycle remain blocked by clasp/clasp_facade.h, clasp/clingo.h, clasp/dependency_graph.h, clasp/lookahead.h, clasp/minimize_constraint.h, clasp/parser.h, clasp/unfounded_check.h, clasp/shared_context.h, clasp/solver.h, clasp/model_enumerators.h, and src/shared_context.cpp
     src/clasp/clasp_facade.rs
     tests/ported/clasp/facade_types_test.rs
-src/unfounded_check.cpp:
+src/unfounded_check.cpp: blocked by clasp/solver.h, src/solver.cpp, clasp/shared_context.h, src/shared_context.cpp, clasp/clause.h, src/clause.cpp, clasp/dependency_graph.h, src/dependency_graph.cpp; only helper enums/data are ported while DefaultUnfoundedCheck runtime still needs solver/shared-context/clause integration
     src/clasp/unfounded_check.rs
-tests/dlp_builder_test.cpp:
+tests/dlp_builder_test.cpp: blocked by tests/lpcompare.h, clasp/logic_program.h, clasp/solver.h, clasp/unfounded_check.h, src/unfounded_check.cpp; rust coverage is still a stub because LP parsing/emission helpers plus solver-integrated disjunction and unfounded-check behavior are not implemented yet
     tests/ported/clasp/dlp_builder_test.rs
 tests/enumerator_test.cpp: partially ported, solver-independent Model helper, modelType(), and projected-output consequence-counting coverage are ported; solver/logic-program/model-enumerator integration coverage remains blocked by clasp/solver.h, clasp/shared_context.h, clasp/logic_program.h, clasp/model_enumerators.h, and the remaining enumerator runtime
     tests/ported/clasp/enumerator_test.rs
-tests/program_builder_test.cpp:
+tests/program_builder_test.cpp: blocked by clasp/program_builder.h, src/program_builder.cpp, clasp/logic_program.h, src/logic_program.cpp, clasp/parser.h, src/parser.cpp, clasp/solver.h, src/solver.cpp, src/shared_context.cpp; rust coverage is still a placeholder and the required program-builder/logic-program/parser/solver stack remains blocked
     tests/ported/clasp/program_builder_test.rs
-tests/unfounded_check_test.cpp:
+tests/unfounded_check_test.cpp: blocked by clasp/unfounded_check.h, src/unfounded_check.cpp, clasp/solver.h, clasp/shared_context.h, clasp/logic_program.h, src/shared_context.cpp; rust coverage is still a stub because DefaultUnfoundedCheck runtime and its solver/shared-context/logic-program dependencies are not ported yet
     tests/ported/clasp/unfounded_check_test.rs
 src/clasp_options.cpp: partially ported, string conversion helpers and ClaspCliConfig root/solver key navigation introspection are ported; option application, value serialization/mutation, defaults/finalization, and program-options integration remain missing
     src/clasp/cli/clasp_options.rs
@@ -367,7 +367,7 @@ src/clasp_output.cpp: partially ported, signal-name lookup and alarm-vs-interrup
     src/clasp/cli/clasp_output.rs
 tests/cli_test.cpp: partially ported, broader CLI app/output/runtime coverage is missing
     tests/ported/clasp/cli_test.rs
-app/main.cpp:
+app/main.cpp: blocked by clasp/cli/clasp_app.h, src/clasp_app.cpp; original file is just a thin ClaspApp launcher, but the Rust CLI entrypoint and clasp_app runtime are still placeholders
     src/app/main.rs
 src/clasp_app.cpp: partially ported, application runtime and option handling are missing
     src/clasp/cli/clasp_app.rs
