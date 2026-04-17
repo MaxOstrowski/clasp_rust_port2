@@ -75,7 +75,7 @@ libpotassco/potassco/utils.h: ported
     src/potassco/utils.rs
 libpotassco/potassco/program_opts/program_options.h: ported
     src/potassco/program_opts/program_options.rs
-clasp/asp_preprocessor.h: blocked by clasp/logic_program.h, clasp/shared_context.h; rust stub only
+clasp/asp_preprocessor.h: blocked by clasp/logic_program.h, clasp/logic_program_types.h, clasp/shared_context.h, src/logic_program.cpp, src/logic_program_types.cpp; rust stub only
     src/clasp/asp_preprocessor.rs
 libpotassco/potassco/program_opts/typed_value.h: ported
     src/potassco/program_opts/typed_value.rs
@@ -84,7 +84,7 @@ clasp/constraint.h: ported
     tests/clasp_constraint.rs
     tests/ported/clasp/constraint_test.rs
     tests/ported/clasp/literal_test.rs
-clasp/program_builder.h: blocked by clasp/parser.h, clasp/shared_context.h; rust stub only
+clasp/program_builder.h: blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h; parser/program_builder cycle remains, rust stub only
     src/clasp/program_builder.rs
 libpotassco/potassco/clingo.h: ported
     src/potassco/clingo.rs
@@ -114,17 +114,17 @@ libpotassco/tests/test_options.cpp: ported
 clasp/solver_strategies.h: ported
     src/clasp/solver_strategies.rs
     tests/ported/clasp/solver_strategies_test.rs
-clasp/solver_types.h: blocked by clasp/statistics.h, clasp/solver.h; rust stub only
+clasp/solver_types.h: blocked by clasp/statistics.h, clasp/solver.h; solver_types/statistics/solver cycle remains unresolved in Rust (StatisticObject + ClauseHead/watch APIs), rust stub only
     src/clasp/solver_types.rs
-clasp/weight_constraint.h: blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h; rust stub only
+clasp/weight_constraint.h: blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h; upstream unit still needs unresolved solver watch/undo/heuristic APIs plus shared-context freeze/share support, rust stub only
     src/clasp/weight_constraint.rs
-clasp/statistics.h: blocked by clasp/solver_types.h; rust stub only
+clasp/statistics.h: blocked by clasp/solver_types.h, clasp/shared_context.h; visitor API still needs concrete SolverStats/ProblemStats types for an honest Rust port, rust stub only
     src/clasp/statistics.rs
 libpotassco/tests/test_error.cpp: ported
     tests/ported/potassco/test_error.rs
 libpotassco/src/theory_data.cpp: ported
     src/potassco/theory_data.rs
-clasp/parser.h: blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/dependency_graph.h, clasp/logic_program.h; rust stub only
+clasp/parser.h: blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h; all Rust prerequisites remain stubs or blocked, rust stub only
     src/clasp/parser.rs
 libpotassco/potassco/aspif.h: ported
     src/potassco/aspif.rs
@@ -141,12 +141,14 @@ libpotassco/potassco/smodels.h: ported
 libpotassco/src/match_basic_types.cpp: ported
     src/potassco/match_basic_types.rs
     tests/ported/potassco/test_match_basic_types.rs
-clasp/logic_program_types.h: blocked by src/logic_program_types.cpp, clasp/logic_program.h, clasp/solver.h, clasp/weight_constraint.h, clasp/clause.h; rust stub only
+clasp/logic_program_types.h: blocked by clasp/logic_program.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, src/logic_program_types.cpp; needs real LogicProgram node storage/accessors plus ClauseCreator and WeightConstraint-backed constraint emission, rust stub only
     src/clasp/logic_program_types.rs
 libpotassco/src/rule_utils.cpp: ported
     src/potassco/rule_utils.rs
-libpotassco/potassco/application.h: blocked by libpotassco/src/application.cpp
+libpotassco/potassco/application.h: ported
     src/potassco/application.rs
+    tests/ported/potassco/test_application.rs
+    tests/ported_potassco_application.rs
 libpotassco/src/clingo.cpp: ported
     src/potassco/clingo.rs
     tests/ported/potassco/test_clingo.rs
@@ -162,17 +164,17 @@ libpotassco/tests/test_string_convert.cpp: ported
     tests/ported/potassco/test_string_convert.rs
     tests/ported/potassco/test_format.rs
     tests/ported/potassco/test_enum.rs
-clasp/minimize_constraint.h: blocked by clasp/solver.h, clasp/weight_constraint.h
+clasp/minimize_constraint.h: blocked by clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/shared_context.h; upstream minimize unit still needs real solver propagation/backtrack/watch/root APIs, SharedContext-backed builder/freeze support, and WeightConstraint/Clause-based unsat-core support, rust stub only
     src/clasp/minimize_constraint.rs
-clasp/shared_context.h: blocked by clasp/clause.h, clasp/statistics.h, clasp/solver.h
+clasp/shared_context.h: blocked by clasp/clause.h, clasp/statistics.h, clasp/solver.h; shared context still needs solver attach/detach/cloneDB/endInit/assignment-reason APIs, clause destroy/cloneAttach hooks, and concrete ProblemStats/SolverStats/StatisticObject support for an honest Rust port, rust stub only
     src/clasp/shared_context.rs
-clasp/solve_algorithms.h: blocked by clasp/shared_context.h, clasp/enumerator.h, clasp/solver.h
+clasp/solve_algorithms.h: blocked by clasp/shared_context.h, clasp/enumerator.h, clasp/solver.h; original BasicSolve/SolveAlgorithm need solver search/restart/reduce/assumption APIs, enumerator start/update/commit flows, and SharedContext master/attach/detach/report/endInit hooks that are still missing in Rust, rust stub only
     src/clasp/solve_algorithms.rs
-clasp/clause.h: blocked by clasp/solver_types.h, clasp/solver.h
+clasp/clause.h: blocked by clasp/solver_types.h, clasp/solver.h; clause port still needs real ClauseRep/shared-clause storage plus solver watch, propagation, heuristic, sat-prepro, and shared-context APIs, rust stub only
     src/clasp/clause.rs
 tests/literal_test.cpp: ported
     tests/ported/clasp/literal_test.rs
-src/statistics.cpp: blocked by clasp/statistics.h
+src/statistics.cpp: blocked by clasp/statistics.h; upstream source only implements StatsVisitor defaults plus ClaspStatistics methods over the still-unported StatisticObject/ClaspStatistics object model, so the current Rust file remains a stub
     src/clasp/statistics.rs
 libpotassco/potassco/reify.h: ported
     src/potassco/reify.rs
@@ -207,20 +209,24 @@ libpotassco/tests/test_smodels.cpp: ported
     tests/ported/potassco/test_convert.rs
     tests/ported_potassco_smodels.rs
     tests/ported_potassco_convert.rs
-clasp/logic_program.h: blocked by clasp/logic_program_types.h, clasp/program_builder.h, clasp/statistics.h; rust stub only
+clasp/logic_program.h: blocked by clasp/logic_program_types.h, clasp/program_builder.h, clasp/statistics.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/minimize_constraint.h, clasp/dependency_graph.h, clasp/parser.h, src/logic_program.cpp; header API is implemented jointly with those still-unported logic-program and solver integration units, rust stub only
     src/clasp/logic_program.rs
-libpotassco/src/application.cpp:
+libpotassco/src/application.cpp: ported
     src/potassco/application.rs
-libpotassco/tests/test_application.cpp:
     tests/ported/potassco/test_application.rs
-clasp/enumerator.h:
+    tests/ported_potassco_application.rs
+libpotassco/tests/test_application.cpp: ported
+    tests/ported/potassco/test_application.rs
+    tests/ported_potassco_application.rs
+clasp/enumerator.h: blocked by clasp/solver.h, clasp/shared_context.h, clasp/minimize_constraint.h, clasp/clause.h; original enumerator needs concrete solver root/conflict/model APIs, shared-context master/minimize/output wiring, SharedMinimizeData flows, and ClauseCreator/shared nogood integration, rust stub only
     src/clasp/enumerator.rs
-clasp/solver.h:
+clasp/solver.h: blocked by clasp/shared_context.h, clasp/solver_types.h, clasp/clause.h, clasp/statistics.h, src/solver.cpp; original solver API still depends on unported SharedContext state/distribution objects, real watch/undo/antecedent storage from solver_types/clause integration, and concrete SolverStats/SolveEvent behavior, rust stub only
     src/clasp/solver.rs
-clasp/mt/parallel_solve.h:
+clasp/mt/parallel_solve.h: blocked by clasp/shared_context.h, clasp/solve_algorithms.h, clasp/solver_types.h, clasp/solver.h, clasp/clause.h, clasp/enumerator.h, src/parallel_solve.cpp; original parallel solve still needs BasicSolve/SolveAlgorithm, Distributor/ClauseCreator flags/SolverSet, concrete SharedContext/Solver attach-detach-distributor-report flows, and enumerator parallel callbacks from the still-unported implementation, rust stub only
     src/clasp/mt/parallel_solve.rs
-libpotassco/app/lpconvert.cpp:
+libpotassco/app/lpconvert.cpp: ported
     src/potassco/app/lpconvert.rs
+    tests/potassco_lpconvert.rs
 libpotassco/src/reify.cpp: ported
     src/potassco/reify.rs
     tests/ported/potassco/test_reify.rs
@@ -230,7 +236,7 @@ libpotassco/tests/test_reify.cpp: ported
     tests/ported_potassco_reify.rs
 clasp/dependency_graph.h:
     src/clasp/dependency_graph.rs
-src/asp_preprocessor.cpp:
+src/asp_preprocessor.cpp: blocked by clasp/logic_program.h, clasp/logic_program_types.h, clasp/shared_context.h, src/logic_program.cpp; rust stub only
     src/clasp/asp_preprocessor.rs
 tests/lpcompare.h:
     tests/ported/clasp/lpcompare.rs

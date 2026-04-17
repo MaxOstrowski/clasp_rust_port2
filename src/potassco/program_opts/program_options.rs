@@ -650,6 +650,49 @@ impl<'a> OptionContext<'a> {
         }
     }
 
+    pub fn format_description<F>(&self, formatter: &F) -> String
+    where
+        F: OptionFormatter + ?Sized,
+    {
+        let desc_level = self.desc_level;
+        let mut output = String::new();
+        formatter.format_context(&mut output, self);
+        if self.groups.is_empty() {
+            return output;
+        }
+        let mut max_width = 23;
+        for group in &self.groups {
+            max_width = max_width.max(
+                group
+                    .options()
+                    .iter()
+                    .map(|option| formatter.column_width(option))
+                    .max()
+                    .unwrap_or(0),
+            );
+        }
+        for group in self.groups.iter().skip(1) {
+            if group.desc_level() <= desc_level {
+                formatter.format_group(&mut output, group);
+                for option in group.options() {
+                    if option.desc_level() <= desc_level {
+                        formatter.format_option(&mut output, option, max_width);
+                    }
+                }
+            }
+        }
+        let group = &self.groups[0];
+        if group.desc_level() <= desc_level {
+            formatter.format_group(&mut output, group);
+            for option in group.options() {
+                if option.desc_level() <= desc_level {
+                    formatter.format_option(&mut output, option, max_width);
+                }
+            }
+        }
+        output
+    }
+
     pub fn defaults(&self, prefix_size: usize) -> String {
         let mut defaults = String::new();
         if self.groups.is_empty() {
@@ -1315,14 +1358,14 @@ where
 
 pub type OptionPrinter<'a> = OptionOutputImpl<'a, DefaultFormat>;
 
-pub type PosOption = dyn FnMut(&str, &mut String) -> bool;
+pub type PosOption<'a> = dyn FnMut(&str, &mut String) -> bool + 'a;
 
 pub const COMMAND_LINE_ALLOW_FLAG_VALUE: u32 = 1;
 
 pub fn parse_command_array<'a, C>(
     ctx: &mut C,
     args: &[&str],
-    pos: std::option::Option<&mut PosOption>,
+    pos: std::option::Option<&mut PosOption<'_>>,
     flags: u32,
 ) -> Result<(), Error>
 where
@@ -1348,7 +1391,7 @@ where
 pub fn parse_command_string<'a, C>(
     ctx: &mut C,
     args: &str,
-    pos: std::option::Option<&mut PosOption>,
+    pos: std::option::Option<&mut PosOption<'_>>,
     flags: u32,
 ) -> Result<(), Error>
 where
@@ -1410,7 +1453,7 @@ where
 fn parse_command_tokens<'a, C, N>(
     ctx: &mut C,
     mut next: N,
-    mut pos: std::option::Option<&mut PosOption>,
+    mut pos: std::option::Option<&mut PosOption<'_>>,
     flags: u32,
 ) -> Result<(), Error>
 where
@@ -1525,7 +1568,7 @@ where
 
 fn handle_positional_opt<'a, C>(
     parser: &mut OptionParser<'_, 'a, C>,
-    mut pos: std::option::Option<&mut PosOption>,
+    mut pos: std::option::Option<&mut PosOption<'_>>,
     token: &str,
 ) -> Result<(), Error>
 where
