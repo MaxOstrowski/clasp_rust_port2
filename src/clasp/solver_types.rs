@@ -8,6 +8,9 @@
 use core::ptr::NonNull;
 
 use crate::clasp::constraint::ConstraintType;
+pub use crate::clasp::statistics::{
+    StatisticArray, StatisticMap, StatisticObject, StatisticType, StatisticValue,
+};
 use crate::clasp::util::misc_types::ratio;
 
 const CORE_STAT_KEYS: [&str; 6] = [
@@ -54,67 +57,6 @@ const EXTENDED_STAT_KEYS: [&str; 23] = [
     "lemmas_other",
     "jumps",
 ];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StatisticType {
-    Value,
-    Map,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum StatisticObject<'a> {
-    Value(f64),
-    JumpStats(&'a JumpStats),
-    ExtendedStats(&'a ExtendedStats),
-}
-
-impl<'a> StatisticObject<'a> {
-    pub const fn type_(&self) -> StatisticType {
-        match self {
-            Self::Value(_) => StatisticType::Value,
-            Self::JumpStats(_) | Self::ExtendedStats(_) => StatisticType::Map,
-        }
-    }
-
-    pub const fn value(self) -> f64 {
-        match self {
-            Self::Value(value) => value,
-            Self::JumpStats(_) | Self::ExtendedStats(_) => {
-                panic!("StatisticObject::value called on non-value object")
-            }
-        }
-    }
-
-    pub const fn size(self) -> u32 {
-        match self {
-            Self::Value(_) => 0,
-            Self::JumpStats(_) => JUMP_STAT_KEYS.len() as u32,
-            Self::ExtendedStats(_) => EXTENDED_STAT_KEYS.len() as u32,
-        }
-    }
-
-    pub fn key(self, index: u32) -> &'static str {
-        match self {
-            Self::Value(_) => panic!("StatisticObject::key called on value object"),
-            Self::JumpStats(_) => JUMP_STAT_KEYS
-                .get(index as usize)
-                .copied()
-                .expect("jump statistic key index out of bounds"),
-            Self::ExtendedStats(_) => EXTENDED_STAT_KEYS
-                .get(index as usize)
-                .copied()
-                .expect("extended statistic key index out of bounds"),
-        }
-    }
-
-    pub fn at(self, key: &str) -> Self {
-        match self {
-            Self::Value(_) => panic!("StatisticObject::at called on value object"),
-            Self::JumpStats(stats) => stats.at(key),
-            Self::ExtendedStats(stats) => stats.at(key),
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CoreStats {
@@ -169,7 +111,21 @@ impl CoreStats {
             "restarts_blocked" => self.bl_restarts as f64,
             _ => panic!("unknown CoreStats key: {key}"),
         };
-        StatisticObject::Value(value)
+        StatisticObject::from_f64(value)
+    }
+}
+
+impl StatisticMap for CoreStats {
+    fn size(&self) -> u32 {
+        CoreStats::size()
+    }
+
+    fn key(&self, index: u32) -> &'static str {
+        CoreStats::key(index)
+    }
+
+    fn at<'a>(&'a self, key: &str) -> StatisticObject<'a> {
+        CoreStats::at(self, key)
     }
 }
 
@@ -251,7 +207,21 @@ impl JumpStats {
             "max_bounded" => self.max_bound as f64,
             _ => panic!("unknown JumpStats key: {key}"),
         };
-        StatisticObject::Value(value)
+        StatisticObject::from_f64(value)
+    }
+}
+
+impl StatisticMap for JumpStats {
+    fn size(&self) -> u32 {
+        JumpStats::size()
+    }
+
+    fn key(&self, index: u32) -> &'static str {
+        JumpStats::key(index)
+    }
+
+    fn at<'a>(&'a self, key: &str) -> StatisticObject<'a> {
+        JumpStats::at(self, key)
     }
 }
 
@@ -411,31 +381,45 @@ impl ExtendedStats {
 
     pub fn at(&self, key: &str) -> StatisticObject<'_> {
         match key {
-            "domain_choices" => StatisticObject::Value(self.dom_choices as f64),
-            "models" => StatisticObject::Value(self.models as f64),
-            "models_level" => StatisticObject::Value(self.model_lits as f64),
-            "hcc_tests" => StatisticObject::Value(self.hcc_tests as f64),
-            "hcc_partial" => StatisticObject::Value(self.hcc_partial as f64),
-            "lemmas_deleted" => StatisticObject::Value(self.deleted as f64),
-            "distributed" => StatisticObject::Value(self.distributed as f64),
-            "distributed_sum_lbd" => StatisticObject::Value(self.sum_dist_lbd as f64),
-            "integrated" => StatisticObject::Value(self.integrated as f64),
-            "lemmas" => StatisticObject::Value(Self::sum(self.learnts) as f64),
-            "lits_learnt" => StatisticObject::Value(Self::sum(self.lits) as f64),
-            "lemmas_binary" => StatisticObject::Value(self.binary as f64),
-            "lemmas_ternary" => StatisticObject::Value(self.ternary as f64),
-            "cpu_time" => StatisticObject::Value(self.cpu_time),
-            "integrated_imps" => StatisticObject::Value(self.int_imps as f64),
-            "integrated_jumps" => StatisticObject::Value(self.int_jumps as f64),
-            "guiding_paths_lits" => StatisticObject::Value(self.gp_lits as f64),
-            "guiding_paths" => StatisticObject::Value(self.gps as f64),
-            "splits" => StatisticObject::Value(self.splits as f64),
-            "lemmas_conflict" => StatisticObject::Value(self.learnts[0] as f64),
-            "lemmas_loop" => StatisticObject::Value(self.learnts[1] as f64),
-            "lemmas_other" => StatisticObject::Value(self.learnts[2] as f64),
-            "jumps" => StatisticObject::JumpStats(&self.jumps),
+            "domain_choices" => StatisticObject::from_f64(self.dom_choices as f64),
+            "models" => StatisticObject::from_f64(self.models as f64),
+            "models_level" => StatisticObject::from_f64(self.model_lits as f64),
+            "hcc_tests" => StatisticObject::from_f64(self.hcc_tests as f64),
+            "hcc_partial" => StatisticObject::from_f64(self.hcc_partial as f64),
+            "lemmas_deleted" => StatisticObject::from_f64(self.deleted as f64),
+            "distributed" => StatisticObject::from_f64(self.distributed as f64),
+            "distributed_sum_lbd" => StatisticObject::from_f64(self.sum_dist_lbd as f64),
+            "integrated" => StatisticObject::from_f64(self.integrated as f64),
+            "lemmas" => StatisticObject::from_f64(Self::sum(self.learnts) as f64),
+            "lits_learnt" => StatisticObject::from_f64(Self::sum(self.lits) as f64),
+            "lemmas_binary" => StatisticObject::from_f64(self.binary as f64),
+            "lemmas_ternary" => StatisticObject::from_f64(self.ternary as f64),
+            "cpu_time" => StatisticObject::from_f64(self.cpu_time),
+            "integrated_imps" => StatisticObject::from_f64(self.int_imps as f64),
+            "integrated_jumps" => StatisticObject::from_f64(self.int_jumps as f64),
+            "guiding_paths_lits" => StatisticObject::from_f64(self.gp_lits as f64),
+            "guiding_paths" => StatisticObject::from_f64(self.gps as f64),
+            "splits" => StatisticObject::from_f64(self.splits as f64),
+            "lemmas_conflict" => StatisticObject::from_f64(self.learnts[0] as f64),
+            "lemmas_loop" => StatisticObject::from_f64(self.learnts[1] as f64),
+            "lemmas_other" => StatisticObject::from_f64(self.learnts[2] as f64),
+            "jumps" => StatisticObject::map(&self.jumps),
             _ => panic!("unknown ExtendedStats key: {key}"),
         }
+    }
+}
+
+impl StatisticMap for ExtendedStats {
+    fn size(&self) -> u32 {
+        ExtendedStats::size()
+    }
+
+    fn key(&self, index: u32) -> &'static str {
+        ExtendedStats::key(index)
+    }
+
+    fn at<'a>(&'a self, key: &str) -> StatisticObject<'a> {
+        ExtendedStats::at(self, key)
     }
 }
 
@@ -526,11 +510,11 @@ impl SolverStats {
 
     pub fn at(&self, key: &str) -> StatisticObject<'_> {
         if key == "extra" {
-            StatisticObject::ExtendedStats(
-                self.extra
-                    .as_deref()
-                    .expect("requested extra stats but no extended statistics are enabled"),
-            )
+            let extra = self
+                .extra
+                .as_deref()
+                .expect("requested extra stats but no extended statistics are enabled");
+            StatisticObject::map(extra)
         } else {
             self.core.at(key)
         }
@@ -622,5 +606,19 @@ impl SolverStats {
 
     pub fn set_multi(&mut self, other: &mut SolverStats) {
         self.multi = Some(NonNull::from(other));
+    }
+}
+
+impl StatisticMap for SolverStats {
+    fn size(&self) -> u32 {
+        SolverStats::size(self)
+    }
+
+    fn key(&self, index: u32) -> &'static str {
+        SolverStats::key(self, index)
+    }
+
+    fn at<'a>(&'a self, key: &str) -> StatisticObject<'a> {
+        SolverStats::at(self, key)
     }
 }

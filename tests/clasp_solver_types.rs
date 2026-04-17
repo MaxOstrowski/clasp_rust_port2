@@ -1,6 +1,6 @@
 use rust_clasp::clasp::constraint::ConstraintType;
 use rust_clasp::clasp::solver_types::{
-    CoreStats, ExtendedStats, JumpStats, SolverStats, StatisticObject, StatisticType,
+    CoreStats, ExtendedStats, JumpStats, SolverStats, StatisticType,
 };
 
 #[test]
@@ -118,28 +118,25 @@ fn solver_stats_enable_accumulate_flush_and_swap() {
     source.add_deleted(8);
 
     let extra = source.at("extra");
-    match extra {
-        StatisticObject::ExtendedStats(extra) => {
-            assert_eq!(extra.distributed, 1);
-            assert_eq!(extra.sum_dist_lbd, 5);
-            assert_eq!(extra.hcc_partial, 1);
-            assert_eq!(extra.models, 1);
-            assert_eq!(extra.splits, 3);
-            assert_eq!(extra.dom_choices, 2);
-            assert_eq!(extra.int_imps, 1);
-            assert_eq!(extra.int_jumps, 5);
-            assert_eq!(extra.integrated, 3);
-            assert_eq!(extra.gps, 1);
-            assert_eq!(extra.gp_lits, 7);
-            assert_eq!(extra.deleted, 8);
-            assert_eq!(extra.learnts[0], 1);
-            assert_eq!(extra.binary, 1);
-            assert_eq!(extra.jumps.jumps, 1);
-        }
-        StatisticObject::Value(_) | StatisticObject::JumpStats(_) => {
-            panic!("expected extended stats")
-        }
-    }
+    assert_eq!(extra.type_(), StatisticType::Map);
+    assert_eq!(extra.at("distributed").value(), 1.0);
+    assert_eq!(extra.at("distributed_sum_lbd").value(), 5.0);
+    assert_eq!(extra.at("hcc_partial").value(), 1.0);
+    assert_eq!(extra.at("models").value(), 1.0);
+    assert_eq!(extra.at("splits").value(), 3.0);
+    assert_eq!(extra.at("domain_choices").value(), 2.0);
+    assert_eq!(extra.at("integrated_imps").value(), 1.0);
+    assert_eq!(extra.at("integrated_jumps").value(), 5.0);
+    assert_eq!(extra.at("integrated").value(), 3.0);
+    assert_eq!(extra.at("guiding_paths").value(), 1.0);
+    assert_eq!(extra.at("guiding_paths_lits").value(), 7.0);
+    assert_eq!(extra.at("lemmas_deleted").value(), 8.0);
+    assert_eq!(extra.at("lemmas_conflict").value(), 1.0);
+    assert_eq!(extra.at("lemmas_binary").value(), 1.0);
+
+    let jump_map = extra.at("jumps");
+    assert_eq!(jump_map.type_(), StatisticType::Map);
+    assert_eq!(jump_map.at("jumps").value(), 1.0);
 
     let mut sink = SolverStats::default();
     source.set_multi(&mut sink);

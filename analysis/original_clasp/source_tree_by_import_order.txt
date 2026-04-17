@@ -3,6 +3,7 @@
 # - Add `: ported` when the file is fully covered, or `: partially ported, ...` with a short note on what is still missing.
 # - Indented lines below an entry list the Rust files and tests that currently implement or validate that original file.
 # - If one original file is split across several Rust modules, list every Rust path on its own indented line under the same entry.
+# Check analysis/original_clasp/cycle_breaking_design.md for details on how to setup the interface of cyclic dependencies
 
 clasp/util/pod_vector.h: ported
     src/clasp/util/pod_vector.rs
@@ -84,7 +85,7 @@ clasp/constraint.h: ported
     tests/clasp_constraint.rs
     tests/ported/clasp/constraint_test.rs
     tests/ported/clasp/literal_test.rs
-clasp/program_builder.h: blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h; parser/program_builder cycle remains, rust stub only
+clasp/program_builder.h: partially ported, ProgramBuilder boundary trait plus LitVec/SumVec aliases are ported; concrete builder runtime remains blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h
     src/clasp/program_builder.rs
 libpotassco/potassco/clingo.h: ported
     src/potassco/clingo.rs
@@ -124,7 +125,7 @@ libpotassco/tests/test_error.cpp: ported
     tests/ported/potassco/test_error.rs
 libpotassco/src/theory_data.cpp: ported
     src/potassco/theory_data.rs
-clasp/parser.h: blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h; all Rust prerequisites remain stubs or blocked, rust stub only
+clasp/parser.h: partially ported, detect_problem_type, ParserOptions bitmask handling, ProgramParser API, and ASP parser infrastructure with incremental parse/more semantics are ported; SAT/PB reader stack and logic-program adapters remain blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h
     src/clasp/parser.rs
 libpotassco/potassco/aspif.h: ported
     src/potassco/aspif.rs
@@ -270,7 +271,7 @@ src/logic_program_types.cpp: partially ported, PrgNode/PrgEdge bit-packed semant
 src/minimize_constraint.cpp: partially ported, SharedMinimizeData mode/bound state, sparse level-weight arithmetic, negative-lower initialization, and optimum/lower-bound bookkeeping are ported; MinimizeBuilder, DefaultMinimize, UncoreMinimize, and solver/shared-context attachment remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/weight_constraint.h, src/shared_context.cpp, and the remaining src/minimize_constraint.cpp logic
     src/clasp/minimize_constraint.rs
     tests/ported/clasp/minimize_test.rs
-src/program_builder.cpp: blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h; rust stub only because parser/shared-context/solver/clause/weight-constraint prerequisites are still unresolved
+src/program_builder.cpp: partially ported, Bundle B API boundary and parser-facing shape are ported in Rust; concrete start/update/end program runtime and solver/context integration remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h, and the remaining src/program_builder.cpp logic
     src/clasp/program_builder.rs
 src/solve_algorithms.cpp: blocked by clasp/solve_algorithms.h, clasp/solver.h, clasp/shared_context.h, clasp/enumerator.h, src/solver.cpp, src/shared_context.cpp, src/enumerator.cpp; rust stub only because BasicSolve/SolveAlgorithm still needs solver search/restart/reduce plus SharedContext/Enumerator attach-update-commit flows
     src/clasp/solve_algorithms.rs
