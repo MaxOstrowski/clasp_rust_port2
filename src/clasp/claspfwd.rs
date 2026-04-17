@@ -18,7 +18,8 @@ opaque_type!(ProgramBuilder);
 opaque_type!(ProgramParser);
 opaque_type!(SatBuilder);
 opaque_type!(PBBuilder);
-opaque_type!(ExtDepGraph);
+
+pub use crate::clasp::dependency_graph::ExtDepGraph;
 
 pub use crate::clasp::constraint::{Constraint, ConstraintInfo, Solver};
 

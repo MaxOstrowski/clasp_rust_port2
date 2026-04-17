@@ -3,7 +3,7 @@
 use core::cmp::Ordering;
 use core::ptr::NonNull;
 
-use crate::clasp::literal::{LitVec, Literal};
+use crate::clasp::literal::{LitVec, Literal, ValT, value_free, value_true};
 use crate::potassco::bits::{
     BitIndex, Bitset, nth_bit, right_most_bit, store_clear_bit, store_clear_mask, store_set_mask,
     store_toggle_bit, test_any, test_bit,
@@ -51,6 +51,19 @@ pub struct CCMinRecursive;
 
 #[derive(Debug)]
 pub struct Solver {
+    id: u32,
+    num_vars: u32,
+    num_problem_vars: u32,
+    has_conflict: bool,
+    decision_level: u32,
+    root_level: u32,
+    values: Vec<ValT>,
+    levels: Vec<u32>,
+    seen_masks: Vec<u8>,
+    tag_literal: Literal,
+    decisions: Vec<Literal>,
+    trail: Vec<Literal>,
+    level_starts: Vec<u32>,
     minimized: Vec<Literal>,
     cc_minimize_result: bool,
 }
@@ -64,9 +77,192 @@ impl Default for Solver {
 impl Solver {
     pub fn new() -> Self {
         Self {
+            id: 0,
+            num_vars: 0,
+            num_problem_vars: 0,
+            has_conflict: false,
+            decision_level: 0,
+            root_level: 0,
+            values: vec![value_true],
+            levels: vec![0],
+            seen_masks: vec![0],
+            tag_literal: Literal::default(),
+            decisions: vec![Literal::default()],
+            trail: Vec::new(),
+            level_starts: vec![0],
             minimized: Vec::new(),
             cc_minimize_result: true,
         }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub fn set_id(&mut self, id: u32) {
+        self.id = id;
+    }
+
+    pub fn num_vars(&self) -> u32 {
+        self.num_vars
+    }
+
+    pub fn set_num_vars(&mut self, num_vars: u32) {
+        self.num_vars = num_vars;
+        self.ensure_assignment_capacity(num_vars);
+    }
+
+    pub fn num_problem_vars(&self) -> u32 {
+        self.num_problem_vars
+    }
+
+    pub fn set_num_problem_vars(&mut self, num_problem_vars: u32) {
+        self.num_problem_vars = num_problem_vars;
+        self.ensure_assignment_capacity(num_problem_vars);
+    }
+
+    pub fn valid_var(&self, var: u32) -> bool {
+        var != 0 && var <= self.num_vars
+    }
+
+    pub fn value(&self, var: u32) -> ValT {
+        self.values.get(var as usize).copied().unwrap_or(value_free)
+    }
+
+    pub fn set_value(&mut self, var: u32, value: ValT, level: u32) {
+        self.ensure_assignment_capacity(var);
+        self.values[var as usize] = value;
+        self.levels[var as usize] = level;
+    }
+
+    pub fn level(&self, var: u32) -> u32 {
+        self.levels.get(var as usize).copied().unwrap_or(u32::MAX)
+    }
+
+    pub fn seen_var(&self, var: u32) -> bool {
+        self.root_seen_mask(var) != 0
+            || self.seen_masks.get(var as usize).copied().unwrap_or(0) != 0
+    }
+
+    pub fn seen_literal(&self, literal: Literal) -> bool {
+        let bit = Self::seen_bit(literal);
+        (self.root_seen_mask(literal.var()) & bit) != 0
+            || (self
+                .seen_masks
+                .get(literal.var() as usize)
+                .copied()
+                .unwrap_or(0)
+                & bit)
+                != 0
+    }
+
+    pub fn mark_seen_var(&mut self, var: u32) {
+        self.ensure_assignment_capacity(var);
+        self.seen_masks[var as usize] = 0b11;
+    }
+
+    pub fn mark_seen_literal(&mut self, literal: Literal) {
+        self.ensure_assignment_capacity(literal.var());
+        self.seen_masks[literal.var() as usize] |= Self::seen_bit(literal);
+    }
+
+    pub fn clear_seen_var(&mut self, var: u32) {
+        self.ensure_assignment_capacity(var);
+        self.seen_masks[var as usize] = 0;
+    }
+
+    pub fn has_conflict(&self) -> bool {
+        self.has_conflict
+    }
+
+    pub fn set_has_conflict(&mut self, has_conflict: bool) {
+        self.has_conflict = has_conflict;
+    }
+
+    pub fn decision_level(&self) -> u32 {
+        self.decision_level
+    }
+
+    pub fn set_decision_level(&mut self, decision_level: u32) {
+        self.decision_level = decision_level;
+        if self.decisions.len() <= decision_level as usize {
+            self.decisions
+                .resize(decision_level as usize + 1, Literal::default());
+        }
+        if self.level_starts.len() <= decision_level as usize {
+            self.level_starts.resize(decision_level as usize + 1, 0);
+        }
+    }
+
+    pub fn root_level(&self) -> u32 {
+        self.root_level
+    }
+
+    pub fn set_root_level(&mut self, root_level: u32) {
+        self.root_level = root_level;
+    }
+
+    pub fn tag_literal(&self) -> Literal {
+        self.tag_literal
+    }
+
+    pub fn set_tag_literal(&mut self, literal: Literal) {
+        self.tag_literal = literal;
+    }
+
+    pub fn aux_var(&self, var: u32) -> bool {
+        var > self.num_problem_vars
+    }
+
+    pub fn acquire_problem_var(&mut self, var: u32) {
+        if var == 0 {
+            return;
+        }
+        if self.num_vars < var {
+            self.set_num_vars(var);
+        }
+        if self.num_problem_vars < var {
+            self.set_num_problem_vars(var);
+        }
+    }
+
+    pub fn decision(&self, level: u32) -> Literal {
+        self.decisions[level as usize]
+    }
+
+    pub fn set_decision(&mut self, level: u32, literal: Literal) {
+        if self.decisions.len() <= level as usize {
+            self.decisions
+                .resize(level as usize + 1, Literal::default());
+        }
+        self.decisions[level as usize] = literal;
+    }
+
+    pub fn num_assigned_vars(&self) -> u32 {
+        self.trail.len() as u32
+    }
+
+    pub fn push_trail_literal(&mut self, literal: Literal) {
+        self.trail.push(literal);
+    }
+
+    pub fn clear_trail(&mut self) {
+        self.trail.clear();
+    }
+
+    pub fn trail_lit(&self, index: u32) -> Literal {
+        self.trail[index as usize]
+    }
+
+    pub fn level_start(&self, level: u32) -> u32 {
+        self.level_starts[level as usize]
+    }
+
+    pub fn set_level_start(&mut self, level: u32, start: u32) {
+        if self.level_starts.len() <= level as usize {
+            self.level_starts.resize(level as usize + 1, 0);
+        }
+        self.level_starts[level as usize] = start;
     }
 
     pub fn cc_minimize(&mut self, lit: Literal, _rec: *mut CCMinRecursive) -> bool {
@@ -84,6 +280,33 @@ impl Solver {
 
     pub fn set_cc_minimize_result(&mut self, result: bool) {
         self.cc_minimize_result = result;
+    }
+
+    fn ensure_assignment_capacity(&mut self, var: u32) {
+        let len = var as usize + 1;
+        if self.values.len() < len {
+            self.values.resize(len, value_free);
+        }
+        if self.levels.len() < len {
+            self.levels.resize(len, u32::MAX);
+        }
+        if self.seen_masks.len() < len {
+            self.seen_masks.resize(len, 0);
+        }
+    }
+
+    fn seen_bit(literal: Literal) -> u8 {
+        if literal.sign() { 0b10 } else { 0b01 }
+    }
+
+    fn root_seen_mask(&self, var: u32) -> u8 {
+        if self.value(var) == value_free || self.level(var) != 0 {
+            0
+        } else if self.value(var) == crate::clasp::literal::value_true {
+            0b01
+        } else {
+            0b10
+        }
     }
 }
 

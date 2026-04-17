@@ -187,6 +187,10 @@ impl ScheduleStrategy {
         }
         self.idx = n;
     }
+
+    pub fn reset(&mut self) {
+        self.idx = 0;
+    }
 }
 
 #[repr(u32)]
@@ -1088,7 +1092,7 @@ impl UserConfiguration for BasicSatConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct SearchLimits<'a> {
     pub used: u64,
     pub restart_conflicts: u64,
@@ -1098,6 +1102,21 @@ pub struct SearchLimits<'a> {
     pub conflicts: u64,
     pub memory: u64,
     pub learnts: u32,
+}
+
+impl Default for SearchLimits<'_> {
+    fn default() -> Self {
+        Self {
+            used: 0,
+            restart_conflicts: u64::MAX,
+            dynamic: None,
+            block: None,
+            local: false,
+            conflicts: u64::MAX,
+            memory: u64::MAX,
+            learnts: u32::MAX,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

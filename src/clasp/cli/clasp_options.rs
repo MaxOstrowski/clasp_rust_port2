@@ -2,10 +2,12 @@
 //! `original_clasp/src/clasp_options.cpp`.
 
 use core::fmt;
+use std::sync::OnceLock;
 
-pub use crate::clasp::cli::clasp_cli_configs::ConfigKey;
+use crate::clasp::claspfwd::ProblemType;
+pub use crate::clasp::cli::clasp_cli_configs::{ConfigIter, ConfigKey};
 use crate::clasp::cli::clasp_cli_options::{
-    self as cli, CliEnum, HeuristicType, asp_logic_program, context_params,
+    self as cli, CliEnum, CliOptionGroup, HeuristicType, asp_logic_program, context_params,
     default_unfounded_check, distributor_policy, heu_params, opt_params, parse_exact,
     reduce_strategy, restart_params, restart_schedule, solve_options, solver_params,
     solver_strategies,
@@ -188,6 +190,23 @@ fn set_or_fill_15(value: u32) -> u32 {
 
 fn set_or_zero(value: u32, max_value: u32) -> u32 {
     if value <= max_value { value } else { 0 }
+}
+
+pub fn get_defaults(problem_type: ProblemType) -> &'static str {
+    match problem_type {
+        ProblemType::Asp => "--configuration=tweety",
+        ProblemType::Sat | ProblemType::Pb => "--configuration=trendy",
+    }
+}
+
+pub fn get_config(key: ConfigKey) -> ConfigIter {
+    crate::clasp::cli::clasp_cli_configs::get_config(key)
+}
+
+pub fn get_config_key(input: &str) -> i32 {
+    parse_config_key(input)
+        .map(|key| i32::from(key.as_u8()))
+        .unwrap_or(-1)
 }
 
 pub fn parse_config_key(input: &str) -> Result<ConfigKey, ParseError> {
@@ -609,6 +628,287 @@ pub fn parse_bool_flag(input: &str) -> Result<bool, ParseError> {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct OffType;
+
+pub type KeyType = u32;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeyInfo {
+    pub subkey_count: i32,
+    pub array_len: i32,
+    pub help: String,
+    pub value_count: i32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaspCliConfig {
+    solver_count: u32,
+}
+
+impl Default for ClaspCliConfig {
+    fn default() -> Self {
+        Self { solver_count: 2 }
+    }
+}
+
+impl ClaspCliConfig {
+    pub const KEY_INVALID: KeyType = u32::MAX;
+    pub const KEY_ROOT: KeyType = 0;
+    pub const KEY_TESTER: KeyType = 1;
+    pub const KEY_SOLVER: KeyType = 2;
+
+    #[must_use]
+    pub const fn with_solver_count(solver_count: u32) -> Self {
+        Self {
+            solver_count: if solver_count == 0 { 1 } else { solver_count },
+        }
+    }
+
+    #[must_use]
+    pub fn is_leaf_key(key: KeyType) -> bool {
+        registry()
+            .node(key)
+            .is_some_and(|node| matches!(node.kind, KeyKind::Leaf))
+    }
+
+    #[must_use]
+    pub fn get_key(&self, key: KeyType, name: &str) -> KeyType {
+        if key == Self::KEY_INVALID {
+            return Self::KEY_INVALID;
+        }
+        if name.is_empty() {
+            return key;
+        }
+        let mut current = key;
+        for segment in name.split('.') {
+            if segment.is_empty() {
+                return Self::KEY_INVALID;
+            }
+            if let Ok(index) = segment.parse::<u32>() {
+                current = self.get_arr_key(current, index);
+            } else {
+                current = registry()
+                    .child(current, segment)
+                    .unwrap_or(Self::KEY_INVALID);
+            }
+            if current == Self::KEY_INVALID {
+                return current;
+            }
+        }
+        current
+    }
+
+    #[must_use]
+    pub fn get_arr_key(&self, arr: KeyType, element: u32) -> KeyType {
+        match registry().node(arr) {
+            Some(node)
+                if matches!(node.kind, KeyKind::SolverArray) && element < self.solver_count =>
+            {
+                arr
+            }
+            _ => Self::KEY_INVALID,
+        }
+    }
+
+    #[must_use]
+    pub fn get_key_info(&self, key: KeyType) -> Option<KeyInfo> {
+        let node = registry().node(key)?;
+        let array_len = if matches!(node.kind, KeyKind::SolverArray) {
+            self.solver_count as i32
+        } else {
+            -1
+        };
+        let subkey_count = node.children.len() as i32;
+        let value_count = if matches!(node.kind, KeyKind::Leaf) {
+            1
+        } else {
+            -1
+        };
+        Some(KeyInfo {
+            subkey_count,
+            array_len,
+            help: node.help.to_owned(),
+            value_count,
+        })
+    }
+
+    #[must_use]
+    pub fn get_subkey(&self, key: KeyType, index: u32) -> &str {
+        registry()
+            .node(key)
+            .and_then(|node| node.children.get(index as usize))
+            .map(|child| child.name)
+            .unwrap_or("")
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ChildKey {
+    name: &'static str,
+    key: KeyType,
+}
+
+#[derive(Clone, Copy)]
+enum KeyKind {
+    Root,
+    Group,
+    SolverArray,
+    Leaf,
+}
+
+struct KeyNode {
+    kind: KeyKind,
+    help: &'static str,
+    children: Vec<ChildKey>,
+}
+
+struct KeyRegistry {
+    nodes: Vec<KeyNode>,
+}
+
+impl KeyRegistry {
+    fn node(&self, key: KeyType) -> Option<&KeyNode> {
+        self.nodes.get(key as usize)
+    }
+
+    fn child(&self, key: KeyType, name: &str) -> Option<KeyType> {
+        self.node(key)?.children.iter().find_map(|child| {
+            if child.name.eq_ignore_ascii_case(name) {
+                Some(child.key)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+fn registry() -> &'static KeyRegistry {
+    static REGISTRY: OnceLock<KeyRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(build_key_registry)
+}
+
+fn build_key_registry() -> KeyRegistry {
+    let mut nodes = vec![
+        KeyNode {
+            kind: KeyKind::Root,
+            help: "root CLI option scope",
+            children: Vec::new(),
+        },
+        KeyNode {
+            kind: KeyKind::Group,
+            help: "tester CLI option scope",
+            children: Vec::new(),
+        },
+        KeyNode {
+            kind: KeyKind::SolverArray,
+            help: "solver CLI options",
+            children: Vec::new(),
+        },
+        KeyNode {
+            kind: KeyKind::Group,
+            help: "asp CLI options",
+            children: Vec::new(),
+        },
+        KeyNode {
+            kind: KeyKind::Group,
+            help: "solve CLI options",
+            children: Vec::new(),
+        },
+        KeyNode {
+            kind: KeyKind::Leaf,
+            help: "configuration preset",
+            children: Vec::new(),
+        },
+        KeyNode {
+            kind: KeyKind::Leaf,
+            help: "tester configuration preset",
+            children: Vec::new(),
+        },
+    ];
+
+    const KEY_ASP: KeyType = 3;
+    const KEY_SOLVE: KeyType = 4;
+    const KEY_CONFIGURATION: KeyType = 5;
+    const KEY_TESTER_CONFIGURATION: KeyType = 6;
+
+    nodes[ClaspCliConfig::KEY_ROOT as usize].children = vec![
+        ChildKey {
+            name: "configuration",
+            key: KEY_CONFIGURATION,
+        },
+        ChildKey {
+            name: "tester",
+            key: ClaspCliConfig::KEY_TESTER,
+        },
+        ChildKey {
+            name: "solver",
+            key: ClaspCliConfig::KEY_SOLVER,
+        },
+        ChildKey {
+            name: "asp",
+            key: KEY_ASP,
+        },
+        ChildKey {
+            name: "solve",
+            key: KEY_SOLVE,
+        },
+    ];
+    nodes[ClaspCliConfig::KEY_TESTER as usize].children = vec![ChildKey {
+        name: "configuration",
+        key: KEY_TESTER_CONFIGURATION,
+    }];
+
+    for entry in cli::option_catalog() {
+        let name = entry.key;
+        let help = option_help(entry);
+        match entry.group {
+            CliOptionGroup::Context | CliOptionGroup::Global => {
+                let key = push_leaf(&mut nodes, help);
+                nodes[ClaspCliConfig::KEY_ROOT as usize]
+                    .children
+                    .push(ChildKey { name, key });
+            }
+            CliOptionGroup::Solver | CliOptionGroup::Search => {
+                let key = push_leaf(&mut nodes, help);
+                nodes[ClaspCliConfig::KEY_SOLVER as usize]
+                    .children
+                    .push(ChildKey { name, key });
+            }
+            CliOptionGroup::Asp => {
+                let key = push_leaf(&mut nodes, help);
+                nodes[KEY_ASP as usize]
+                    .children
+                    .push(ChildKey { name, key });
+            }
+            CliOptionGroup::Solve => {
+                let key = push_leaf(&mut nodes, help);
+                nodes[KEY_SOLVE as usize]
+                    .children
+                    .push(ChildKey { name, key });
+            }
+        }
+    }
+
+    KeyRegistry { nodes }
+}
+
+fn push_leaf(nodes: &mut Vec<KeyNode>, help: &'static str) -> KeyType {
+    let key = nodes.len() as KeyType;
+    nodes.push(KeyNode {
+        kind: KeyKind::Leaf,
+        help,
+        children: Vec::new(),
+    });
+    key
+}
+
+fn option_help(entry: &cli::CliOptionEntry) -> &'static str {
+    match entry.group {
+        CliOptionGroup::Context | CliOptionGroup::Global => entry.key,
+        CliOptionGroup::Solver | CliOptionGroup::Search => concat!("solver option: ", ""),
+        CliOptionGroup::Asp => concat!("asp option: ", ""),
+        CliOptionGroup::Solve => concat!("solve option: ", ""),
+    }
+}
 
 const _: fn() = || {
     let _ = (

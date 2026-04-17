@@ -1,7 +1,10 @@
+use rust_clasp::clasp::constraint::{ConstraintInfo, ConstraintType, Solver};
+use rust_clasp::clasp::literal::{LitVec, pos_lit};
 use rust_clasp::clasp::solver_strategies::{
-    BasicSatConfig, CCMinAntes, Configuration, HeuParams, HeuristicType, LbdMode, RestartKeep,
-    ScheduleStrategy, SearchStrategy, SignHeu, SolverParams, WatchInit,
+    BasicSatConfig, CCMinAntes, Configuration, ConflictEvent, HeuParams, HeuristicType, LbdMode,
+    RestartKeep, ScheduleStrategy, SearchLimits, SearchStrategy, SignHeu, SolverParams, WatchInit,
 };
+use rust_clasp::clasp::util::misc_types::{Subsystem, Verbosity};
 
 #[test]
 fn solver_params_defaults_match_upstream() {
@@ -62,6 +65,10 @@ fn schedule_overflow_and_clamping_match_upstream() {
     assert_eq!(sched.current(), 1u64 << 63);
     sched.advance_to(64);
     assert_eq!(sched.current(), u64::MAX);
+
+    sched.reset();
+    assert_eq!(sched.idx, 0);
+    assert_eq!(sched.current(), 1);
 }
 
 #[test]
@@ -123,4 +130,32 @@ fn restart_schedule_dynamic_encoding_roundtrips() {
     assert_eq!(schedule.keep_avg(), RestartKeep::Block);
     assert_eq!(schedule.slow_win(), 20);
     assert_eq!(schedule.adjust_lim(), 16_000);
+}
+
+#[test]
+fn search_limits_default_to_upstream_unbounded_values() {
+    let limits = SearchLimits::default();
+
+    assert_eq!(limits.used, 0);
+    assert_eq!(limits.restart_conflicts, u64::MAX);
+    assert!(limits.dynamic.is_none());
+    assert!(limits.block.is_none());
+    assert!(!limits.local);
+    assert_eq!(limits.conflicts, u64::MAX);
+    assert_eq!(limits.memory, u64::MAX);
+    assert_eq!(limits.learnts, u32::MAX);
+}
+
+#[test]
+fn conflict_event_exposes_upstream_event_identity_and_payload() {
+    let solver = Solver::new();
+    let learnt = LitVec::from_slice(&[pos_lit(1), pos_lit(2)]);
+    let info = ConstraintInfo::new(ConstraintType::Conflict);
+    let event = ConflictEvent::new(&solver, learnt.as_slice(), info);
+
+    assert_eq!(event.base.base.system, Subsystem::SubsystemSolve as u32);
+    assert_eq!(event.base.base.verb, Verbosity::VerbosityQuiet as u32);
+    assert_eq!(event.base.solver, &solver as *const Solver);
+    assert_eq!(event.learnt, learnt.as_slice());
+    assert_eq!(event.info.constraint_type(), ConstraintType::Conflict);
 }

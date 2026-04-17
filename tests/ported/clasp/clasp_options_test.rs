@@ -1,11 +1,28 @@
+use rust_clasp::clasp::claspfwd::ProblemType;
 use rust_clasp::clasp::cli::clasp_cli_options::{opt_params, restart_schedule};
 use rust_clasp::clasp::cli::clasp_options::{
-    ConfigKey, format_config_key, format_opt_params, format_restart_schedule,
-    format_sat_pre_params, parse_config_key, parse_opt_params, parse_restart_schedule,
-    parse_sat_pre_params, set_opt_legacy,
+    ClaspCliConfig, ConfigKey, format_config_key, format_opt_params, format_restart_schedule,
+    format_sat_pre_params, get_config, get_config_key, get_defaults, parse_config_key,
+    parse_opt_params, parse_restart_schedule, parse_sat_pre_params, set_opt_legacy,
 };
 use rust_clasp::clasp::solver_strategies::{OptParams, RestartKeep, RestartSchedule};
 use rust_clasp::clasp::util::misc_types::MovingAvgType;
+use std::collections::HashSet;
+
+fn collect_configs(
+    mut iter: rust_clasp::clasp::cli::clasp_options::ConfigIter,
+) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    while iter.valid() {
+        out.push((
+            iter.name().to_owned(),
+            iter.base().to_owned(),
+            iter.args().to_owned(),
+        ));
+        iter.next();
+    }
+    out
+}
 
 #[test]
 fn config_key_roundtrips_known_presets() {
@@ -27,6 +44,31 @@ fn config_key_roundtrips_known_presets() {
     }
     assert_eq!(parse_config_key("s6").unwrap(), ConfigKey::S6);
     assert_eq!(parse_config_key("nolearn").unwrap(), ConfigKey::Nolearn);
+}
+
+#[test]
+fn clasp_options_exposes_upstream_config_helpers() {
+    assert_eq!(get_defaults(ProblemType::Asp), "--configuration=tweety");
+    assert_eq!(get_defaults(ProblemType::Sat), "--configuration=trendy");
+    assert_eq!(get_defaults(ProblemType::Pb), "--configuration=trendy");
+
+    assert_eq!(get_config_key("auto"), 0);
+    assert_eq!(get_config_key("trendy"), 2);
+    assert_eq!(get_config_key("S13"), 15);
+    assert_eq!(get_config_key("missing"), -1);
+
+    let trendy = collect_configs(get_config(ConfigKey::Trendy));
+    assert_eq!(trendy, vec![(
+        "[trendy]".to_owned(),
+        String::new(),
+        "--sat-p=2,iter=20,occ=25,time=240 --trans-ext=dynamic --heuristic=Vsids --restarts=D,100,0.7 --deletion=basic,50 --del-init=3.0,500,19500 --del-grow=1.1,20.0,x,100,1.5 --del-cfl=+,10000,2000 --del-glue=2 --strengthen=recursive --update-lbd=less --otfs=2 --save-p=75 --counter-restarts=3,1023 --reverse-arcs=2 --contraction=250 --loops=common".to_owned(),
+    )]);
+
+    let many = collect_configs(get_config(ConfigKey::Many));
+    assert!(
+        many.iter()
+            .any(|(_, _, args)| args.contains("--opt-heu=sign --opt-strat=usc,disjoint"))
+    );
 }
 
 #[test]
@@ -147,4 +189,72 @@ fn restart_schedule_matches_upstream_serialization() {
     assert!(parse_restart_schedule("d,100,0").is_err());
     assert!(parse_restart_schedule("z,100").is_err());
     let _ = restart_schedule::Keep::KeepNever;
+}
+
+#[test]
+fn clasp_cli_config_navigates_root_and_solver_keys() {
+    let config = ClaspCliConfig::default();
+
+    let root_children: HashSet<_> = (0..128)
+        .map(|index| config.get_subkey(ClaspCliConfig::KEY_ROOT, index))
+        .filter(|name| !name.is_empty())
+        .collect();
+    assert!(root_children.contains("configuration"));
+    assert!(root_children.contains("tester"));
+    assert!(root_children.contains("solver"));
+    assert!(root_children.contains("asp"));
+    assert!(root_children.contains("solve"));
+    assert!(root_children.contains("share"));
+    assert!(root_children.contains("stats"));
+
+    let solver = config.get_key(ClaspCliConfig::KEY_ROOT, "solver");
+    assert_eq!(solver, ClaspCliConfig::KEY_SOLVER);
+
+    let lookahead = config.get_key(ClaspCliConfig::KEY_ROOT, "solver.lookahead");
+    assert_ne!(lookahead, ClaspCliConfig::KEY_INVALID);
+    assert!(ClaspCliConfig::is_leaf_key(lookahead));
+    assert_eq!(
+        lookahead,
+        config.get_key(ClaspCliConfig::KEY_SOLVER, "lookahead")
+    );
+
+    let loops = config.get_key(ClaspCliConfig::KEY_ROOT, "solver.1.loops");
+    assert_ne!(loops, ClaspCliConfig::KEY_INVALID);
+    assert_eq!(loops, config.get_key(ClaspCliConfig::KEY_SOLVER, "loops"));
+    assert_eq!(
+        config.get_key(ClaspCliConfig::KEY_ROOT, "solver.2.loops"),
+        ClaspCliConfig::KEY_INVALID
+    );
+
+    let solver_info = config.get_key_info(ClaspCliConfig::KEY_SOLVER).unwrap();
+    assert_eq!(solver_info.array_len, 2);
+    assert!(solver_info.subkey_count > 10);
+    assert_eq!(solver_info.value_count, -1);
+
+    let lookahead_info = config.get_key_info(lookahead).unwrap();
+    assert_eq!(lookahead_info.array_len, -1);
+    assert_eq!(lookahead_info.subkey_count, 0);
+    assert_eq!(lookahead_info.value_count, 1);
+}
+
+#[test]
+fn clasp_cli_config_rejects_unported_tester_subtrees() {
+    let config = ClaspCliConfig::default();
+
+    assert_eq!(
+        config.get_key(ClaspCliConfig::KEY_ROOT, "tester.configuration"),
+        config.get_key(ClaspCliConfig::KEY_TESTER, "configuration")
+    );
+    assert_eq!(
+        config.get_key(ClaspCliConfig::KEY_ROOT, "tester.asp.trans_ext"),
+        ClaspCliConfig::KEY_INVALID
+    );
+    assert_eq!(
+        config.get_key(ClaspCliConfig::KEY_ROOT, "tester.solve.enum_mode"),
+        ClaspCliConfig::KEY_INVALID
+    );
+    assert_eq!(
+        config.get_arr_key(ClaspCliConfig::KEY_ROOT, 0),
+        ClaspCliConfig::KEY_INVALID
+    );
 }
