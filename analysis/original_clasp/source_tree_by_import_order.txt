@@ -285,7 +285,7 @@ tests/clause_creator_test.cpp: partially ported, ClauseCreator prepare/simplify 
     tests/ported/clasp/clause_creator_test.rs
 tests/clause_test.cpp: partially ported, SharedLiterals shared-refcount and shared-simplify semantics are ported; clause runtime propagation, strengthening, contraction, cloning, and solver/watch integration remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, and the remaining src/clause.cpp clause-runtime logic
     tests/ported/clasp/clause_test.rs
-tests/minimize_test.cpp: partially ported, only a small SharedMinimizeData-focused subset is translated in Rust while most solver-integrated Model-guided/Core-guided minimize behavior is still missing
+tests/minimize_test.cpp: partially ported, SharedMinimizeData-only arithmetic/bounds subset is covered; nearly all Model-guided and all Core-guided solver-integrated minimize behaviors remain unported and are blocked by clasp/minimize_constraint.h+src/minimize_constraint.cpp plus clasp/solver.h+src/solver.cpp and clasp/shared_context.h+src/shared_context.cpp
     tests/ported/clasp/minimize_test.rs
 tests/weight_constraint_test.cpp: blocked by clasp/weight_constraint.h, src/weight_constraint.cpp, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, clasp/solver_types.h; translated test target is still a stub because weight-constraint runtime prerequisites remain unresolved
     tests/ported/clasp/weight_constraint_test.rs
@@ -316,7 +316,7 @@ tests/rule_test.cpp: blocked by clasp/logic_program.h, clasp/solver.h, tests/lpc
     tests/ported/clasp/rule_test.rs
 src/cb_enumerator.cpp: partially ported, constructor/type-selection, enum-option mapping, exhaustive reporting, split/unsat semantics, and query-optimization fallback are ported; CBFinder, QueryFinder, shared constraint exchange, and solver/model integration remain blocked by clasp/enumerator.h, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, and the remaining src/cb_enumerator.cpp logic
     src/clasp/cb_enumerator.rs
-src/model_enumerators.cpp: partially ported, solver-independent behavior from doInit/setStrategy is ported and tested, including auto strategy selection, projection-flag normalization, and trivial/warning logic; finder implementations and solver/context/clause-integrated paths remain missing
+src/model_enumerators.cpp: partially ported, solver-independent setStrategy/support predicates and auto-init selection are ported and tested (including projection flag normalization and projection option bitfield truncation parity); missing are projection discovery and domRec initialization from SharedContext plus all RecordFinder/BacktrackFinder runtime paths, which remain blocked by clasp/enumerator.h, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, and clasp/minimize_constraint.h
     src/clasp/model_enumerators.rs
 src/clingo.cpp: partially ported, ClingoAssignment adapter semantics are ported; ClingoPropagator, ClingoPropagatorInit, and ClingoHeuristic remain blocked by unresolved solver/shared-context/constraint integration from the remaining src/clingo.cpp logic
     src/clasp/clingo.rs
@@ -326,7 +326,7 @@ src/heuristics.cpp: partially ported, VSIDS dynamic-decay conflict-step behavior
 src/lookahead.cpp: partially ported, solver-independent ScoreLook countNant/scoreLits scoring helpers are ported; propagate/test/init/undo and solver-integrated failed-literal/heuristic behavior remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/constraint.h, and the remaining src/lookahead.cpp logic
     src/clasp/lookahead.rs
     tests/clasp_lookahead.rs
-src/solver_strategies.cpp: partially ported, schedule/restart/reduce option structs, basic configuration containers, SearchLimits defaults, and lightweight solve/conflict event wrappers are ported; solver-integrated heuristic factory/propagator wiring, SatPreprocessor hooks, SharedContext-dependent reduce sizing, and randomized solving remain missing
+src/solver_strategies.cpp: partially ported, schedule/restart math and parameter defaults are ported (including RestartBlock.avg default parity); still missing are SolverParams::addPropagator/createHeuristic and SolveParams::randomize plus SharedContext-dependent ReduceParams sizing and SatPreParams hooks, which are blocked by clasp/solver.h+src/solver.cpp, clasp/shared_context.h+src/shared_context.cpp, and the unported sat-preprocessor runtime
     src/clasp/solver_strategies.rs
 tests/decision_heuristic_test.cpp: partially ported, solver-independent lookback heuristic helper coverage for Berkmin/VMTF/VSIDS/domain-score normalization is ported; lookahead attachment behavior, concrete heuristic selection/update flows, and ASP domain-heuristic integration remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/logic_program.h, clasp/lookahead.h, and src/heuristics.cpp
     tests/ported/clasp/decision_heuristic_test.rs
@@ -336,10 +336,10 @@ src/satelite.cpp: partially ported, solver-independent subsumed() watch-retarget
     tests/ported/clasp/satelite_test.rs
 tests/satelite_test.cpp: partially ported, simple subsumption/strengthening semantics plus solver-independent SatElite occurrence, marking, and trivial-resolvent helper coverage are ported; preprocess, propagation, ClauseCreator integration, DIMACS/program-builder wiring, freezing, and model-expansion behavior remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/parser.h, clasp/program_builder.h, and src/shared_context.cpp
     tests/ported/clasp/satelite_test.rs
-clasp/cli/clasp_options.h: partially ported, ConfigIter, static config helpers, and ClaspCliConfig root/solver key navigation introspection are ported; value storage, mutation, validation, and broader tester/runtime configuration support remain missing
+clasp/cli/clasp_options.h: partially ported, config-key defaults/config-iterator helpers, complex option string conversions, and root/solver key navigation introspection are ported; missing are stateful ClaspCliConfig value storage/readback, mutation, validation, tester/runtime semantics, and full ProgramOptions integration, and full parity remains blocked by missing ClaspConfig/ClaspFacade runtime
     src/clasp/cli/clasp_options.rs
     tests/ported/clasp/clasp_options_test.rs
-clasp/cli/clasp_output.h: partially ported, OutputSink and ColorStyleSpec default-color/style parsing behavior are ported; Output, JsonOutput, and TextOutput remain missing
+clasp/cli/clasp_output.h: partially ported, OutputSink adapters and ColorStyleSpec parsing are ported; Output base API, JsonOutput, TextOutput, event/model/summary formatting, and statistics/reporting traversal remain missing and are blocked by missing facade/runtime event and statistics object model support
     src/clasp/cli/clasp_output.rs
     tests/ported/clasp/clasp_output_test.rs
 tests/facade_test.cpp: partially ported, ClingoAssignment basic/problem-var/decision-helper/precondition coverage plus SolveResult/SolveMode facade-type semantics are ported; Facade runtime, statistics, propagator, async, and MT coverage remain blocked by clasp/clasp_facade.h, src/clasp_facade.cpp, clasp/clingo.h, src/clingo.cpp, clasp/solver.h, clasp/shared_context.h, clasp/dependency_graph.h, clasp/heuristics.h, clasp/lookahead.h, and clasp/model_enumerators.h
@@ -358,16 +358,16 @@ tests/program_builder_test.cpp: blocked by clasp/program_builder.h, src/program_
     tests/ported/clasp/program_builder_test.rs
 tests/unfounded_check_test.cpp: blocked by clasp/unfounded_check.h, src/unfounded_check.cpp, clasp/solver.h, clasp/shared_context.h, clasp/logic_program.h, src/shared_context.cpp; rust coverage is still a stub because DefaultUnfoundedCheck runtime and its solver/shared-context/logic-program dependencies are not ported yet
     tests/ported/clasp/unfounded_check_test.rs
-src/clasp_options.cpp: partially ported, string conversion helpers and ClaspCliConfig root/solver key navigation introspection are ported; option application, value serialization/mutation, defaults/finalization, and program-options integration remain missing
+src/clasp_options.cpp: partially ported, conversion/parsing serializers and key navigation metadata are ported; missing are option application, mutable value storage, defaults/finalization, ParseContext-driven program-options integration, and solver/search validation integration, with end-to-end behavior blocked by missing ClaspApp/ClaspFacade runtime wiring
     src/clasp/cli/clasp_options.rs
     tests/ported/clasp/clasp_options_test.rs
-clasp/cli/clasp_app.h: partially ported, ClaspAppBase, ClaspAppOptions, WriteCnf, and LemmaLogger are missing
+clasp/cli/clasp_app.h: partially ported, only PreFormat mapping is present; ExitCode/output enums, ClaspAppOptions option schema/apply/validate, ClaspAppBase lifecycle/runtime API, ClaspApp wrapper, WriteCnf, and LemmaLogger are missing and are blocked by unported Output and ClaspFacade runtime types
     src/clasp/cli/clasp_app.rs
-src/clasp_output.cpp: partially ported, signal-name lookup and alarm-vs-interrupt status text are ported; Output, JsonOutput, TextOutput, event formatting, and statistics/reporting remain missing
+src/clasp_output.cpp: partially ported, signal-name lookup and alarm-vs-interrupt status text plus sink/style parsing helpers are ported; Output runtime state machine, solve-event formatting, JsonOutput and TextOutput implementations, and statistics/reporting traversal remain missing and are blocked by missing facade/solver/shared-context/statistics runtime
     src/clasp/cli/clasp_output.rs
-tests/cli_test.cpp: partially ported, broader CLI app/output/runtime coverage is missing
+tests/cli_test.cpp: partially ported, enum/catalog/path metadata and selected option parser helpers are ported; Cat* template parsing/formatting, full ClaspCliConfig mutation/query/init flows, argv/file/program-options integration, TextOutput/JsonOutput runtime formatting, and facade-driven CLI behavior remain missing and are blocked by missing clasp_app/clasp_output/clasp_options runtime and ClaspFacade solve integration
     tests/ported/clasp/cli_test.rs
 app/main.cpp: blocked by clasp/cli/clasp_app.h, src/clasp_app.cpp; original file is just a thin ClaspApp launcher, but the Rust CLI entrypoint and clasp_app runtime are still placeholders
     src/app/main.rs
-src/clasp_app.cpp: partially ported, application runtime and option handling are missing
+src/clasp_app.cpp: partially ported, only a tiny subset of preprocessing enum conversion is present in Rust; ClaspAppOptions option schema/apply/validate and ClaspAppBase setup/run/shutdown/event handling plus WriteCnf/LemmaLogger are missing, with runtime blocked by the unported ClaspFacade/Solver/Parser/ProgramBuilder/Output stack
     src/clasp/cli/clasp_app.rs

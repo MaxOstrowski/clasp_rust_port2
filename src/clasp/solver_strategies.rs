@@ -438,23 +438,12 @@ impl RestartSchedule {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RestartBlock {
     pub window: u32,
     pub fscale: u32,
     pub first: u32,
     pub avg: u32,
-}
-
-impl Default for RestartBlock {
-    fn default() -> Self {
-        Self {
-            window: 0,
-            fscale: 0,
-            first: 0,
-            avg: MovingAvgType::AvgEma as u32,
-        }
-    }
 }
 
 impl RestartBlock {

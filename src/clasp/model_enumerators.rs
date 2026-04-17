@@ -107,6 +107,10 @@ impl ModelEnumerator {
     }
 
     pub fn set_strategy(&mut self, strategy: Strategy, projection: u32, filter: char) {
+        // In the upstream C++ implementation, projection options are stored in a
+        // small bitfield. Preserve that behavior by truncating to the known option
+        // width before applying normalization.
+        let projection = projection & 0x1f;
         self.opts.algo = strategy;
         self.opts.proj = projection;
         self.filter = filter;

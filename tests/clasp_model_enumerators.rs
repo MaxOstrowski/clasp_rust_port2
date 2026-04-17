@@ -25,6 +25,17 @@ fn set_strategy_normalizes_projection_flags_like_upstream() {
 }
 
 #[test]
+fn set_strategy_truncates_unknown_projection_bits_like_upstream_bitfields() {
+    let mut enumerator = ModelEnumerator::new(Strategy::Auto);
+
+    enumerator.set_strategy(Strategy::Record, u32::MAX, '_');
+
+    // Only the 5 known projection option bits may remain set.
+    assert_eq!(enumerator.project_options() & !0x1f, 0);
+    assert_eq!(enumerator.project_options(), 0x1f);
+}
+
+#[test]
 fn from_enum_options_maps_bt_record_and_dom_record_modes() {
     let backtrack = ModelEnumerator::from_enum_options(
         EnumOptions {
