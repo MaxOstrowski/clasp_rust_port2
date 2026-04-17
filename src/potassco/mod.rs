@@ -3,6 +3,7 @@ pub mod aspif_text;
 pub mod basic_types;
 pub mod bits;
 pub mod clingo;
+pub mod convert;
 pub mod enums;
 pub mod error;
 pub mod format;

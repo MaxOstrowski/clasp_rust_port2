@@ -75,7 +75,7 @@ libpotassco/potassco/utils.h: ported
     src/potassco/utils.rs
 libpotassco/potassco/program_opts/program_options.h: ported
     src/potassco/program_opts/program_options.rs
-clasp/asp_preprocessor.h: blocked by clasp/logic_program.h, clasp/shared_context.h
+clasp/asp_preprocessor.h: blocked by clasp/logic_program.h, clasp/shared_context.h; rust stub only
     src/clasp/asp_preprocessor.rs
 libpotassco/potassco/program_opts/typed_value.h: ported
     src/potassco/program_opts/typed_value.rs
@@ -84,7 +84,7 @@ clasp/constraint.h: ported
     tests/clasp_constraint.rs
     tests/ported/clasp/constraint_test.rs
     tests/ported/clasp/literal_test.rs
-clasp/program_builder.h: blocked by clasp/parser.h, clasp/shared_context.h
+clasp/program_builder.h: blocked by clasp/parser.h, clasp/shared_context.h; rust stub only
     src/clasp/program_builder.rs
 libpotassco/potassco/clingo.h: ported
     src/potassco/clingo.rs
@@ -114,32 +114,34 @@ libpotassco/tests/test_options.cpp: ported
 clasp/solver_strategies.h: ported
     src/clasp/solver_strategies.rs
     tests/ported/clasp/solver_strategies_test.rs
-clasp/solver_types.h: blocked by clasp/statistics.h, clasp/solver.h
+clasp/solver_types.h: blocked by clasp/statistics.h, clasp/solver.h; rust stub only
     src/clasp/solver_types.rs
-clasp/weight_constraint.h: blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h
+clasp/weight_constraint.h: blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h; rust stub only
     src/clasp/weight_constraint.rs
-clasp/statistics.h: blocked by clasp/solver_types.h
+clasp/statistics.h: blocked by clasp/solver_types.h; rust stub only
     src/clasp/statistics.rs
 libpotassco/tests/test_error.cpp: ported
     tests/ported/potassco/test_error.rs
 libpotassco/src/theory_data.cpp: ported
     src/potassco/theory_data.rs
-clasp/parser.h: blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/dependency_graph.h, clasp/logic_program.h, libpotassco/src/match_basic_types.cpp
+clasp/parser.h: blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/dependency_graph.h, clasp/logic_program.h; rust stub only
     src/clasp/parser.rs
 libpotassco/potassco/aspif.h: ported
     src/potassco/aspif.rs
     tests/ported/potassco/test_aspif.rs
 libpotassco/potassco/aspif_text.h: ported
     src/potassco/aspif_text.rs
-libpotassco/potassco/convert.h: blocked by libpotassco/potassco/aspif.h, libpotassco/potassco/smodels.h
+libpotassco/potassco/convert.h: ported
     src/potassco/convert.rs
+    tests/ported/potassco/test_convert.rs
+    tests/ported_potassco_convert.rs
 libpotassco/potassco/smodels.h: ported
     src/potassco/smodels.rs
     tests/ported/potassco/test_smodels.rs
 libpotassco/src/match_basic_types.cpp: ported
     src/potassco/match_basic_types.rs
     tests/ported/potassco/test_match_basic_types.rs
-clasp/logic_program_types.h: blocked by src/logic_program_types.cpp, clasp/logic_program.h, clasp/solver.h, clasp/weight_constraint.h, clasp/clause.h
+clasp/logic_program_types.h: blocked by src/logic_program_types.cpp, clasp/logic_program.h, clasp/solver.h, clasp/weight_constraint.h, clasp/clause.h; rust stub only
     src/clasp/logic_program_types.rs
 libpotassco/src/rule_utils.cpp: ported
     src/potassco/rule_utils.rs
@@ -192,14 +194,20 @@ libpotassco/tests/test_aspif.cpp: ported
 libpotassco/tests/test_text.cpp: ported
     tests/ported/potassco/test_text.rs
     tests/ported_potassco_text.rs
-libpotassco/src/convert.cpp:
+libpotassco/src/convert.cpp: ported
     src/potassco/convert.rs
+    tests/ported/potassco/test_convert.rs
+    tests/ported_potassco_convert.rs
 libpotassco/src/smodels.cpp: ported
     src/potassco/smodels.rs
     tests/ported/potassco/test_smodels.rs
-libpotassco/tests/test_smodels.cpp: partially ported, convert-specific sections still pending libpotassco/potassco/convert.h and libpotassco/src/convert.cpp
+    tests/ported_potassco_smodels.rs
+libpotassco/tests/test_smodels.cpp: ported
     tests/ported/potassco/test_smodels.rs
-clasp/logic_program.h:
+    tests/ported/potassco/test_convert.rs
+    tests/ported_potassco_smodels.rs
+    tests/ported_potassco_convert.rs
+clasp/logic_program.h: blocked by clasp/logic_program_types.h, clasp/program_builder.h, clasp/statistics.h; rust stub only
     src/clasp/logic_program.rs
 libpotassco/src/application.cpp:
     src/potassco/application.rs
