@@ -115,8 +115,12 @@ libpotassco/tests/test_options.cpp: ported
 clasp/solver_strategies.h: ported
     src/clasp/solver_strategies.rs
     tests/ported/clasp/solver_strategies_test.rs
-clasp/solver_types.h: partially ported, CoreStats/JumpStats/ExtendedStats/SolverStats accumulation, derived ratios, and statistics-object lookup/export are ported; ClauseHead, SmallClauseAlloc, ClauseRep, and solver-integrated clause/watch runtime remain blocked by clasp/solver.h, clasp/clause.h, and the remaining src/solver_types.cpp logic
+clasp/solver_types.h: partially ported, CoreStats/JumpStats/ExtendedStats/SolverStats accumulation, derived ratios, statistics-object lookup/export, ClauseWatch/GenericWatch/WatchList release, ReasonStore32/ReasonStore64, ValueSet, Assignment, ImpliedLiteral/ImpliedList storage, and the split-runtime ClauseHead watch/score/simplify/destroy support are ported; SmallClauseAlloc and the remaining solver-integrated clause/implied reassignment behavior remain blocked by the remaining clasp/solver.h, clasp/clause.h, src/solver.cpp, and src/solver_types.cpp logic
     src/clasp/solver_types.rs
+    src/clasp/constraint.rs
+    src/clasp/clause.rs
+    tests/ported/clasp/solver_test.rs
+    tests/ported/clasp/clause_test.rs
 clasp/weight_constraint.h: blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h; upstream unit still needs unresolved solver watch/undo/heuristic APIs plus shared-context freeze/share support, rust stub only
     src/clasp/weight_constraint.rs
 clasp/statistics.h: partially ported, solver-agnostic StatisticObject, StatsVisitor defaults, and ClaspStatistics writable/external store over Potassco AbstractStatistics are ported; downstream facade/output/runtime traversal remains blocked by clasp/clasp_facade.h, clasp/cli/clasp_output.h, clasp/logic_program.h, and their unported users
@@ -128,7 +132,7 @@ libpotassco/src/theory_data.cpp: ported
 clasp/parser.h: partially ported, detect_problem_type, ParserOptions bitmask handling, ProgramParser API, and ASP parser infrastructure with incremental parse/more semantics are ported; SAT/PB reader stack and logic-program adapters remain blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h
     src/clasp/parser.rs
 libpotassco/potassco/aspif.h: ported
-    src/potassco/aspif.rs
+    clasp/clause.h: partially ported, ClauseRep, SharedLiterals storage/refcount/simplify, ClauseCreator prepare/status/ignore plus end/create/integrate paths, and the explicit Clause/ClauseHead watched-literal runtime with reason/simplify/strengthen/cloneAttach/destroy are ported; shared-clause distribution, allocator-specific small-clause storage, sat-prepro/sharing hooks, and the remaining clause/shared-context integration remain blocked
     tests/ported/potassco/test_aspif.rs
 libpotassco/potassco/aspif_text.h: ported
     src/potassco/aspif_text.rs
@@ -137,7 +141,7 @@ libpotassco/potassco/convert.h: ported
     tests/ported/potassco/test_convert.rs
     tests/ported_potassco_convert.rs
 libpotassco/potassco/smodels.h: ported
-    src/potassco/smodels.rs
+    clasp/solver.h: partially ported, the Bundle A solver kernel subset is ported: SharedContext backlink access, Assignment-backed value/level/reason/data/trail/queue helpers, generic/clause watch management, undo watches, force/assume/conflict handling, short-implication plus generic-watch and explicit ClauseHead watch propagation, root/backtrack/clearAssumptions bookkeeping, implicit short-clause add, explicit constraint/learnt attachment, and the minimal newConstraint heuristic hook; search/restart/reduce, post-propagator integration, full heuristic/search control, learnt reduction, and multi-solver/distribution APIs remain blocked
     tests/ported/potassco/test_smodels.rs
 libpotassco/src/match_basic_types.cpp: ported
     src/potassco/match_basic_types.rs
@@ -167,12 +171,18 @@ libpotassco/tests/test_string_convert.cpp: ported
     tests/ported/potassco/test_enum.rs
 clasp/minimize_constraint.h: blocked by clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/shared_context.h; upstream minimize unit still needs real solver propagation/backtrack/watch/root APIs, SharedContext-backed builder/freeze support, and WeightConstraint/Clause-based unsat-core support, rust stub only
     src/clasp/minimize_constraint.rs
-clasp/shared_context.h: partially ported, ProblemStats aggregation and its statistics-object interface are ported; shared-context runtime still needs solver attach/detach/cloneDB/endInit/assignment-reason APIs, clause destroy/cloneAttach hooks, and the remaining SharedContext/event/preprocessor implementation, rust stub otherwise
+clasp/shared_context.h: partially ported, ProblemStats, VarInfo, ShortImplicationsGraph storage/counting/propagation, and the Bundle A SharedContext kernel subset (master ownership, addVar/validVar/stats/startAddConstraints/endInit, implicit-short clause storage, and conservative freeze/share hooks) are ported; attach/detach/cloneDB, event/report/preprocessor, output/domain/minimize tables, and broader incremental/multi-solver runtime remain blocked
     src/clasp/shared_context.rs
+    src/clasp/constraint.rs
+    tests/ported/clasp/solver_test.rs
 clasp/solve_algorithms.h: blocked by clasp/shared_context.h, clasp/enumerator.h, clasp/solver.h; original BasicSolve/SolveAlgorithm need solver search/restart/reduce/assumption APIs, enumerator start/update/commit flows, and SharedContext master/attach/detach/report/endInit hooks that are still missing in Rust, rust stub only
     src/clasp/solve_algorithms.rs
-clasp/clause.h: blocked by clasp/solver_types.h, clasp/solver.h; clause port still needs real ClauseRep/shared-clause storage plus solver watch, propagation, heuristic, sat-prepro, and shared-context APIs, rust stub only
+clasp/clause.h: partially ported, ClauseRep, SharedLiterals storage/refcount/simplify, ClauseCreator prepare/status/ignore plus end/create/integrate paths, and the explicit Clause/ClauseHead watched-literal runtime with reason/simplify/strengthen/cloneAttach/destroy are ported; shared-clause distribution, allocator-specific small-clause storage, sat-prepro/sharing hooks, and the remaining clause/shared-context integration remain blocked
     src/clasp/clause.rs
+    src/clasp/constraint.rs
+    tests/clasp_clause.rs
+    tests/ported/clasp/clause_creator_test.rs
+    tests/ported/clasp/clause_test.rs
 tests/literal_test.cpp: ported
     tests/ported/clasp/literal_test.rs
 src/statistics.cpp: ported, StatsVisitor defaults and ClaspStatistics writable/external statistics store over the ported StatisticObject object model are implemented in Rust
@@ -221,8 +231,11 @@ libpotassco/tests/test_application.cpp: ported
     tests/ported_potassco_application.rs
 clasp/enumerator.h: partially ported, solver-independent Model storage/value-state helpers, projected-output consequence counting, and modelType() text mapping are ported; Enumerator, EnumerationConstraint, SharedQueue, SharedContext/Solver integration, minimization flows, and witness visitation remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/minimize_constraint.h, clasp/clause.h, and src/enumerator.cpp
     src/clasp/enumerator.rs
-clasp/solver.h: blocked by clasp/shared_context.h, clasp/solver_types.h, clasp/clause.h, clasp/statistics.h, src/solver.cpp; original solver API still depends on unported SharedContext state/distribution objects, real watch/undo/antecedent storage from solver_types/clause integration, and concrete SolverStats/SolveEvent behavior, rust stub only
-    src/clasp/solver.rs
+clasp/solver.h: partially ported, the Bundle A solver kernel subset is ported: SharedContext backlink access, Assignment-backed value/level/reason/data/trail/queue helpers, generic/clause watch management, undo watches, force/assume/conflict handling, short-implication plus generic-watch and explicit ClauseHead watch propagation, root/backtrack/clearAssumptions bookkeeping, implicit short-clause add, explicit constraint/learnt attachment, and the minimal newConstraint heuristic hook; search/restart/reduce, post-propagator integration, full heuristic/search control, learnt reduction, and multi-solver/distribution APIs remain blocked
+    src/clasp/constraint.rs
+    src/clasp/clause.rs
+    src/clasp/shared_context.rs
+    tests/ported/clasp/solver_test.rs
 clasp/mt/parallel_solve.h: blocked by clasp/shared_context.h, clasp/solve_algorithms.h, clasp/solver_types.h, clasp/solver.h, clasp/clause.h, clasp/enumerator.h, src/parallel_solve.cpp; original parallel solve still needs BasicSolve/SolveAlgorithm, Distributor/ClauseCreator flags/SolverSet, concrete SharedContext/Solver attach-detach-distributor-report flows, and enumerator parallel callbacks from the still-unported implementation, rust stub only
     src/clasp/mt/parallel_solve.rs
 libpotassco/app/lpconvert.cpp: ported
@@ -275,16 +288,26 @@ src/program_builder.cpp: partially ported, Bundle B API boundary and parser-faci
     src/clasp/program_builder.rs
 src/solve_algorithms.cpp: blocked by clasp/solve_algorithms.h, clasp/solver.h, clasp/shared_context.h, clasp/enumerator.h, src/solver.cpp, src/shared_context.cpp, src/enumerator.cpp; rust stub only because BasicSolve/SolveAlgorithm still needs solver search/restart/reduce plus SharedContext/Enumerator attach-update-commit flows
     src/clasp/solve_algorithms.rs
-src/solver.cpp: blocked by clasp/solver.h, clasp/shared_context.h, clasp/solver_types.h, clasp/clause.h, clasp/statistics.h; rust stub only because substantive Solver runtime, watch, and propagation logic is still unported
-    src/clasp/solver.rs
-src/solver_types.cpp: partially ported, CoreStats/JumpStats/ExtendedStats/SolverStats accumulation, derived ratios, nested statistic lookup, and multi-shot flush forwarding are ported; ClauseHead, SmallClauseAlloc, ClauseRep, and solver-integrated clause/watch runtime remain blocked by clasp/solver.h, clasp/clause.h, clasp/statistics.h, and the remaining src/solver_types.cpp logic
+src/clause.cpp: partially ported, SharedLiterals storage/refcount/simplify, ClauseCreator start/watch-order/prepare/status/ignore plus end/create/integrate, and the explicit Clause/ClauseHead watched-literal runtime with reason/simplify/strengthen/cloneAttach/destroy are ported; shared-clause distribution, allocator-specific small-clause storage, sat-prepro/sharing hooks, and the remaining src/clause.cpp logic remain blocked
+    src/clasp/clause.rs
+    src/clasp/constraint.rs
+    tests/clasp_clause.rs
+src/solver.cpp: partially ported, the Bundle A solver runtime subset is ported: assignment-backed force/assume/conflict state, short-implication and generic-watch propagation, explicit ClauseHead watch propagation, watch/undo-watch bookkeeping, backtrack/clearAssumptions subset, implicit short-clause integration through SharedContext::addImp, explicit constraint/learnt attachment, and the minimal newConstraint heuristic hook; search, learnt reduction, restart logic, full heuristic/search control, and the remaining solver lifecycle remain blocked
+    src/clasp/constraint.rs
+    src/clasp/clause.rs
+    tests/ported/clasp/solver_test.rs
+src/solver_types.cpp: partially ported, CoreStats/JumpStats/ExtendedStats/SolverStats accumulation, derived ratios, nested statistic lookup, multi-shot flush forwarding, the header-defined ClauseWatch/GenericWatch/reason-store/value-set/assignment runtime helpers, and the split-runtime ClauseHead watch/score/simplify/destroy behavior are ported; SmallClauseAlloc and the remaining solver-integrated clause/implied reassignment behavior remain blocked by clasp/solver.h, clasp/clause.h, clasp/statistics.h, src/solver.cpp, and the remaining src/solver_types.cpp logic
     src/clasp/solver_types.rs
+    src/clasp/constraint.rs
+    src/clasp/clause.rs
     tests/clasp_solver_types.rs
+    tests/ported/clasp/solver_test.rs
+    tests/ported/clasp/clause_test.rs
 src/weight_constraint.cpp: blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h; rust stub only because unresolved solver watch/undo/heuristic and shared-context freeze/share prerequisites still block the runtime
     src/clasp/weight_constraint.rs
-tests/clause_creator_test.cpp: partially ported, ClauseCreator prepare/simplify duplicate-removal, tautology, watch-order, and lit-false regression coverage are ported; create/end integration, heuristic notifications, SharedContext accounting, and SharedLiterals integration remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, and the remaining src/clause.cpp clause-construction logic
+tests/clause_creator_test.cpp: partially ported, ClauseCreator prepare/simplify duplicate-removal, tautology, watch-order, lit-false regression, end/create handling for empty/unit/sat/conflict cases, explicit/learnt clause creation, minimal heuristic notifications, SharedContext accounting, and SharedLiterals integrate unit/conflict paths are ported; broader shared-clause/distributor cases and the remaining src/clause.cpp construction corner cases remain blocked
     tests/ported/clasp/clause_creator_test.rs
-tests/clause_test.cpp: partially ported, SharedLiterals shared-refcount and shared-simplify semantics are ported; clause runtime propagation, strengthening, contraction, cloning, and solver/watch integration remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, and the remaining src/clause.cpp clause-runtime logic
+tests/clause_test.cpp: partially ported, SharedLiterals shared-refcount/simplify semantics plus explicit clause propagation/reason, learnt-activity bump on reason extraction, simplify, strengthen, cloneAttach, and owned non-added clause creation are ported; contraction, shared-clause distribution, and the remaining src/clause.cpp runtime cases remain blocked
     tests/ported/clasp/clause_test.rs
 tests/minimize_test.cpp: partially ported, SharedMinimizeData-only arithmetic/bounds subset is covered; nearly all Model-guided and all Core-guided solver-integrated minimize behaviors remain unported and are blocked by clasp/minimize_constraint.h+src/minimize_constraint.cpp plus clasp/solver.h+src/solver.cpp and clasp/shared_context.h+src/shared_context.cpp
     tests/ported/clasp/minimize_test.rs
@@ -295,7 +318,7 @@ clasp/clasp_facade.h: partially ported, SolveResult base/ext flag queries and So
     tests/ported/clasp/facade_types_test.rs
 src/parallel_solve.cpp: blocked by clasp/shared_context.h, clasp/solve_algorithms.h, clasp/solver_types.h, clasp/solver.h, clasp/clause.h, clasp/enumerator.h; rust stub only because parallel solve still needs unported solver/shared-context/solve-algorithm runtime and parallel integration flows
     src/clasp/mt/parallel_solve.rs
-tests/solver_test.cpp: partially ported, indexed_priority_queue heap ordering/update coverage is ported; solver/core propagation, constraint, statistics, and MT behavior remain blocked by clasp/solver.h, clasp/clause.h, clasp/statistics.h, clasp/weight_constraint.h, clasp/mt/parallel_solve.h, and src/solver.cpp
+tests/solver_test.cpp: partially ported, indexed_priority_queue, watch-list, reason-store, value-set, and assignment helper coverage are ported together with the Bundle A solver/shared-context kernel tests for defaults, watch management, implicit short clauses, reason/conflict tracking, and undo/backtrack behavior; clause runtime, solver statistics/events, weight constraints, and MT coverage remain blocked by clasp/clause.h, clasp/statistics.h, clasp/weight_constraint.h, clasp/mt/parallel_solve.h, and the remaining src/solver.cpp logic
     tests/ported/clasp/solver_test.rs
 clasp/unfounded_check.h: partially ported, ReasonStrategy/UfsType/WatchType enums plus BodyData, AtomData, and ExtData workspace-tracking helpers are ported; DefaultUnfoundedCheck runtime, MinimalityCheck, and solver/dependency-graph integration remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/dependency_graph.h, src/unfounded_check.cpp, and src/shared_context.cpp
     src/clasp/unfounded_check.rs
@@ -307,8 +330,10 @@ src/logic_program.cpp: blocked by clasp/logic_program.h, clasp/logic_program_typ
     src/clasp/logic_program.rs
 src/parser.cpp: blocked by clasp/parser.h, clasp/program_builder.h, clasp/logic_program.h, clasp/shared_context.h, clasp/solver.h; rust stub only because parser behavior still depends on blocked parser/program-builder/logic-program/shared-context/solver units
     src/clasp/parser.rs
-src/shared_context.cpp: partially ported, ProblemStats aggregation/diff/accu/statistics lookup are ported; the remaining shared-context implementation is still blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/solver_types.h, and src/solver.cpp
+src/shared_context.cpp: partially ported, ProblemStats aggregation plus the Bundle A shared-context runtime path are ported: ShortImplicationsGraph add/count/propagate behavior and SharedContext::startAddConstraints/addImp/numConstraints/endInit with master-solver ownership and basic variable metadata; attach/detach, unfreeze/eliminate/simplify, event/report/preprocess, and multi-solver sharing/distribution remain blocked by the remaining solver/clause/runtime pieces
     src/clasp/shared_context.rs
+    src/clasp/constraint.rs
+    tests/ported/clasp/solver_test.rs
 tests/dependency_graph_test.cpp: blocked by clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h, src/logic_program.cpp, clasp/shared_context.h, src/shared_context.cpp, clasp/solver.h, src/solver.cpp; rust stub only because dependency-graph and acyclicity behavior still needs unresolved logic-program/shared-context/solver integration
     tests/ported/clasp/dependency_graph_test.rs
 tests/parser_test.cpp: blocked by clasp/parser.h, src/parser.cpp, clasp/logic_program.h, src/logic_program.cpp, clasp/shared_context.h, src/shared_context.cpp, clasp/program_builder.h, src/program_builder.cpp, clasp/solver.h, src/solver.cpp, clasp/minimize_constraint.h, src/minimize_constraint.cpp; rust test counterpart is still a placeholder and the parser stack is not ported enough yet

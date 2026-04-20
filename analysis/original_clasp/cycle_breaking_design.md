@@ -28,6 +28,37 @@ As of Bundle A refactor, `clasp::solver_types` re-exports `StatisticObject`/`Sta
 - **Why**: The repository currently contains a minimal `Solver` in `clasp::constraint` used by already-ported code/tests. Replacing it with the full upstream solver is a large change that is best done after the cycle-breaking seams are in place.
 - **Implication**: Bundle A work is split into (1) cycle-breaking refactors and (2) later replacement of the placeholder solver with the full solver kernel.
 
+### Decision A4: Bundle A is ported as a split runtime, not as one monolithic file-for-file translation
+
+- **Why**: The upstream Bundle A files are a single SCC in practice, but they are too large to port honestly into single Rust files without recreating the same cycle pressure. The upstream units also mix several different responsibilities: statistics, assignment/reason packing, watch storage, clause runtime, solver search state, and shared runtime services.
+- **Design**: Keep the public Rust module names aligned with upstream concepts (`clasp::solver_types`, `clasp::clause`, `clasp::solver`, `clasp::shared_context`), but split the implementation into smaller support modules under `src/clasp/` as needed.
+- **Planned split**:
+	- `clasp::solver_types`: statistics aggregates, reason/data stores, `ValueSet`, `Assignment`, watch types, `ImpliedLiteral`, `ImpliedList`, and `ClauseHead` support types.
+	- `clasp::clause`: `SharedLiterals`, `ClauseCreator`, explicit clause runtime (`Clause`), and loop-formula/shared-clause adapters when needed.
+	- `clasp::solver`: assignment/watch kernel, propagation queue, trail/backtrack/root-level handling, clause/constraint attachment, conflict storage, and solver-owned runtime state.
+	- `clasp::shared_context`: `VarInfo`, short implication graph, problem/shared statistics plumbing, solver ownership/attachment, and the subset of context runtime directly required by Bundle A.
+- **Constraint**: `clasp::constraint` remains the home of generic `Constraint`, `PostPropagator`, `Antecedent`, and score/info types, but `Solver` is treated as a re-exported runtime type once the real solver kernel lands.
+
+### Decision A5: Preserve downstream compatibility with temporary re-exports while the kernel moves
+
+- **Why**: Many already-ported modules and tests currently import `Solver` and related types from `clasp::constraint` or `claspfwd`. A hard cutover would turn Bundle A into a repo-wide rename instead of a faithful kernel port.
+- **Design**: Keep downstream call sites stable by re-exporting the real solver runtime through existing paths during the transition.
+- **Compatibility rules**:
+	- `clasp::constraint::Solver` re-exports `clasp::solver::Solver` after the runtime lands.
+	- `claspfwd` continues to re-export `Constraint`, `ConstraintInfo`, and `Solver` without changing its public shape.
+	- New helper modules stay internal unless an upstream-visible type requires direct exposure.
+
+### Decision A6: Bundle A implementation order follows the low-level runtime seam
+
+- **Why**: Porting clause and solver behavior directly without first porting assignment/reason/watch storage would either duplicate logic or force placeholder APIs that diverge from upstream.
+- **Implementation order**:
+	1. Port `solver_types` low-level runtime pieces: `ReasonStore32/64`, `ValueSet`, `Assignment`, watch types, `ImpliedLiteral`, and `ImpliedList`.
+	2. Add the minimal `shared_context` runtime pieces required by the solver kernel: `VarInfo`, solver ownership hooks, and short implication storage.
+	3. Replace the placeholder solver with a real `clasp::solver` kernel and keep compatibility re-exports for existing modules.
+	4. Finish `ClauseCreator` creation/integration paths and the explicit clause runtime on top of the new solver kernel.
+	5. Port the upstream Bundle A tests that exercise these runtime paths and update the tracker entries for the original Bundle A files.
+- **Status**: The Bundle A runtime slice defined by steps 1-5 is now landed. Original Bundle A source-tree entries remain marked `partially ported` where the upstream files still contain non-Bundle-A responsibilities that are intentionally deferred to later bundles.
+
 ## Bundle B: Program stack (parser / program_builder / logic_program / dependency_graph)
 
 ### Decision B1: `detect_problem_type` and `ProgramParser` are parser-framework only

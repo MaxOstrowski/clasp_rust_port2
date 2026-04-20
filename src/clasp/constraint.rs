@@ -1,13 +1,18 @@
 //! Rust port of `original_clasp/clasp/constraint.h` and `original_clasp/src/constraint.cpp`.
 
 use core::cmp::Ordering;
+use core::ffi::c_void;
 use core::ptr::NonNull;
 
 use crate::clasp::literal::{LitVec, Literal, ValT, value_free, value_true};
+use crate::clasp::shared_context::SharedContext;
+use crate::clasp::solver_strategies::{SolverStrategies, WatchInit};
+use crate::clasp::solver_types::{Assignment, ClauseWatch, GenericWatch, SolverStats, WatchList};
 use crate::potassco::bits::{
     BitIndex, Bitset, nth_bit, right_most_bit, store_clear_bit, store_clear_mask, store_set_mask,
     store_toggle_bit, test_any, test_bit,
 };
+use crate::potassco::enums::EnumTag;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -43,29 +48,186 @@ impl BitIndex for ConstraintType {
 
 pub type TypeSet = Bitset<u32, ConstraintType>;
 
-#[derive(Debug, Default)]
-pub struct ClauseHead;
+#[derive(Debug)]
+pub struct ClauseHead {
+    pub(crate) info: ConstraintInfo,
+    pub(crate) head: [Literal; 3],
+    pub(crate) constraint: *mut Constraint,
+    pub(crate) owner: *mut c_void,
+}
+
+impl Default for ClauseHead {
+    fn default() -> Self {
+        Self::new(ConstraintInfo::default())
+    }
+}
+
+impl ClauseHead {
+    pub fn new(info: ConstraintInfo) -> Self {
+        Self {
+            info,
+            head: [Literal::default(), Literal::default(), Literal::default()],
+            constraint: core::ptr::null_mut(),
+            owner: core::ptr::null_mut(),
+        }
+    }
+
+    pub fn propagate(&mut self, solver: &mut Solver, literal: Literal) -> PropResult {
+        crate::clasp::clause::clause_head_propagate(self, solver, literal)
+    }
+
+    pub fn attach(&mut self, solver: &mut Solver) {
+        if self.head[0] == self.head[1] {
+            return;
+        }
+        solver.add_clause_watch(!self.head[0], self as *mut Self);
+        solver.add_clause_watch(!self.head[1], self as *mut Self);
+    }
+
+    pub fn detach(&mut self, solver: &mut Solver) {
+        solver.remove_clause_watch(!self.head[0], self as *mut Self);
+        solver.remove_clause_watch(!self.head[1], self as *mut Self);
+    }
+
+    pub fn locked(&self, solver: &Solver) -> bool {
+        crate::clasp::clause::clause_head_locked(self, solver)
+    }
+
+    pub fn satisfied(&self, solver: &Solver) -> bool {
+        crate::clasp::clause::clause_head_satisfied(self, solver)
+    }
+
+    pub fn reset_score(&mut self, score: ConstraintScore) {
+        self.info.set_score(score);
+    }
+
+    pub fn tagged(&self) -> bool {
+        self.info.tagged()
+    }
+
+    pub fn aux(&self) -> bool {
+        self.info.aux()
+    }
+
+    pub fn learnt(&self) -> bool {
+        self.info.learnt()
+    }
+
+    pub fn lbd(&self) -> u32 {
+        self.info.lbd()
+    }
+
+    pub fn constraint_type(&self) -> ConstraintType {
+        self.info.constraint_type()
+    }
+
+    pub fn activity(&self) -> ConstraintScore {
+        self.info.score()
+    }
+
+    pub fn decrease_activity(&mut self) {
+        let mut score = self.info.score();
+        score.reduce();
+        self.info.set_score(score);
+    }
+
+    pub fn reset_activity(&mut self) {
+        let mut score = self.info.score();
+        score.reset(0, self.info.lbd());
+        self.info.set_score(score);
+    }
+
+    pub fn size(&self) -> u32 {
+        crate::clasp::clause::clause_head_size(self)
+    }
+
+    pub fn to_lits(&self) -> Vec<Literal> {
+        crate::clasp::clause::clause_head_to_lits(self)
+    }
+
+    pub fn simplify(&mut self, solver: &mut Solver, reinit: bool) -> bool {
+        crate::clasp::clause::clause_head_simplify(self, solver, reinit)
+    }
+
+    pub fn destroy(&mut self, solver: Option<&mut Solver>, detach: bool) {
+        crate::clasp::clause::clause_head_destroy(self, solver, detach)
+    }
+
+    pub fn clone_attach(&self, other: &mut Solver) -> *mut ClauseHead {
+        crate::clasp::clause::clause_head_clone_attach(self, other)
+    }
+
+    pub fn strengthen(
+        &mut self,
+        solver: &mut Solver,
+        literal: Literal,
+        allow_to_short: bool,
+    ) -> ClauseStrengthenResult {
+        crate::clasp::clause::clause_head_strengthen(self, solver, literal, allow_to_short)
+    }
+
+    pub fn constraint_ptr(&self) -> *mut Constraint {
+        self.constraint
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ClauseStrengthenResult {
+    pub lit_removed: bool,
+    pub remove_clause: bool,
+}
 
 #[derive(Debug, Default)]
 pub struct CCMinRecursive;
 
-#[derive(Debug)]
+pub trait DecisionHeuristic {
+    fn new_constraint(&mut self, _solver: &Solver, _lits: &[Literal], _ty: ConstraintType) {}
+}
+
+#[derive(Debug, Default)]
+pub struct SelectFirst;
+
+impl DecisionHeuristic for SelectFirst {}
+
 pub struct Solver {
+    shared: Option<NonNull<SharedContext>>,
     id: u32,
     num_vars: u32,
     num_problem_vars: u32,
     has_conflict: bool,
+    conflict_literal: Literal,
+    conflict_reason: Antecedent,
+    conflict_data: u32,
     decision_level: u32,
     root_level: u32,
-    values: Vec<ValT>,
-    levels: Vec<u32>,
-    seen_masks: Vec<u8>,
+    backtrack_level: u32,
     tag_literal: Literal,
     decisions: Vec<Literal>,
-    trail: Vec<Literal>,
     level_starts: Vec<u32>,
+    root_levels: Vec<u32>,
+    assignment: Assignment,
+    watches: Vec<WatchList>,
+    undo_watches: Vec<Vec<*mut Constraint>>,
+    constraints: Vec<*mut Constraint>,
+    learnts: Vec<*mut Constraint>,
+    heuristic: Box<dyn DecisionHeuristic>,
+    strategies: SolverStrategies,
+    stats: SolverStats,
     minimized: Vec<Literal>,
     cc_minimize_result: bool,
+}
+
+impl core::fmt::Debug for Solver {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Solver")
+            .field("id", &self.id)
+            .field("num_vars", &self.num_vars)
+            .field("num_problem_vars", &self.num_problem_vars)
+            .field("has_conflict", &self.has_conflict)
+            .field("decision_level", &self.decision_level)
+            .field("root_level", &self.root_level)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for Solver {
@@ -76,23 +238,49 @@ impl Default for Solver {
 
 impl Solver {
     pub fn new() -> Self {
+        let mut assignment = Assignment::default();
+        let sentinel = assignment.add_var();
+        assignment.set_raw_assignment(sentinel, value_true, 0);
+        assignment.set_seen_var(sentinel);
         Self {
+            shared: None,
             id: 0,
             num_vars: 0,
             num_problem_vars: 0,
             has_conflict: false,
+            conflict_literal: Literal::default(),
+            conflict_reason: Antecedent::new(),
+            conflict_data: u32::MAX,
             decision_level: 0,
             root_level: 0,
-            values: vec![value_true],
-            levels: vec![0],
-            seen_masks: vec![0],
+            backtrack_level: 0,
             tag_literal: Literal::default(),
             decisions: vec![Literal::default()],
-            trail: Vec::new(),
             level_starts: vec![0],
+            root_levels: vec![0],
+            assignment,
+            watches: vec![WatchList::default(), WatchList::default()],
+            undo_watches: vec![Vec::new()],
+            constraints: Vec::new(),
+            learnts: Vec::new(),
+            heuristic: Box::<SelectFirst>::default(),
+            strategies: SolverStrategies::default(),
+            stats: SolverStats::default(),
             minimized: Vec::new(),
             cc_minimize_result: true,
         }
+    }
+
+    pub(crate) fn set_shared_context(&mut self, shared: *mut SharedContext) {
+        self.shared = NonNull::new(shared);
+    }
+
+    pub fn shared_context(&self) -> Option<&SharedContext> {
+        self.shared.map(|ptr| unsafe { ptr.as_ref() })
+    }
+
+    fn shared_context_mut(&mut self) -> Option<&mut SharedContext> {
+        self.shared.map(|mut ptr| unsafe { ptr.as_mut() })
     }
 
     pub fn id(&self) -> u32 {
@@ -109,7 +297,8 @@ impl Solver {
 
     pub fn set_num_vars(&mut self, num_vars: u32) {
         self.num_vars = num_vars;
-        self.ensure_assignment_capacity(num_vars);
+        self.assignment.ensure_var(num_vars);
+        self.reserve_watch_capacity(((num_vars + 1) << 1) as usize);
     }
 
     pub fn num_problem_vars(&self) -> u32 {
@@ -118,57 +307,62 @@ impl Solver {
 
     pub fn set_num_problem_vars(&mut self, num_problem_vars: u32) {
         self.num_problem_vars = num_problem_vars;
-        self.ensure_assignment_capacity(num_problem_vars);
+        self.assignment.ensure_var(num_problem_vars);
     }
 
     pub fn valid_var(&self, var: u32) -> bool {
-        var != 0 && var <= self.num_vars
+        var != 0 && var <= self.num_vars.max(self.num_problem_vars)
     }
 
     pub fn value(&self, var: u32) -> ValT {
-        self.values.get(var as usize).copied().unwrap_or(value_free)
+        if self.valid_var(var) || var == 0 {
+            self.assignment.value(var)
+        } else {
+            value_free
+        }
     }
 
     pub fn set_value(&mut self, var: u32, value: ValT, level: u32) {
-        self.ensure_assignment_capacity(var);
-        self.values[var as usize] = value;
-        self.levels[var as usize] = level;
+        self.assignment.ensure_var(var);
+        if value == value_free {
+            self.assignment.clear(var);
+            self.assignment.set_reason(var, Antecedent::new());
+            self.assignment.set_data(var, u32::MAX);
+        } else {
+            self.assignment.set_raw_assignment(var, value, level);
+        }
     }
 
     pub fn level(&self, var: u32) -> u32 {
-        self.levels.get(var as usize).copied().unwrap_or(u32::MAX)
+        if self.valid_var(var) || var == 0 {
+            self.assignment.level(var)
+        } else {
+            u32::MAX
+        }
     }
 
     pub fn seen_var(&self, var: u32) -> bool {
-        self.root_seen_mask(var) != 0
-            || self.seen_masks.get(var as usize).copied().unwrap_or(0) != 0
+        (self.valid_var(var) || var == 0) && self.assignment.seen_var(var)
     }
 
     pub fn seen_literal(&self, literal: Literal) -> bool {
-        let bit = Self::seen_bit(literal);
-        (self.root_seen_mask(literal.var()) & bit) != 0
-            || (self
-                .seen_masks
-                .get(literal.var() as usize)
-                .copied()
-                .unwrap_or(0)
-                & bit)
-                != 0
+        (self.valid_var(literal.var()) || literal.var() == 0)
+            && self.assignment.seen_literal(literal)
     }
 
     pub fn mark_seen_var(&mut self, var: u32) {
-        self.ensure_assignment_capacity(var);
-        self.seen_masks[var as usize] = 0b11;
+        self.assignment.ensure_var(var);
+        self.assignment.set_seen_var(var);
     }
 
     pub fn mark_seen_literal(&mut self, literal: Literal) {
-        self.ensure_assignment_capacity(literal.var());
-        self.seen_masks[literal.var() as usize] |= Self::seen_bit(literal);
+        self.assignment.ensure_var(literal.var());
+        self.assignment.set_seen_literal(literal);
     }
 
     pub fn clear_seen_var(&mut self, var: u32) {
-        self.ensure_assignment_capacity(var);
-        self.seen_masks[var as usize] = 0;
+        self.assignment.ensure_var(var);
+        self.assignment.clear_seen(var);
     }
 
     pub fn has_conflict(&self) -> bool {
@@ -177,6 +371,27 @@ impl Solver {
 
     pub fn set_has_conflict(&mut self, has_conflict: bool) {
         self.has_conflict = has_conflict;
+        if !has_conflict {
+            self.conflict_literal = Literal::default();
+            self.conflict_reason = Antecedent::new();
+            self.conflict_data = u32::MAX;
+        }
+    }
+
+    pub fn conflict_literal(&self) -> Literal {
+        self.conflict_literal
+    }
+
+    pub fn conflict_reason(&self) -> Antecedent {
+        self.conflict_reason
+    }
+
+    pub fn conflict_data(&self) -> u32 {
+        self.conflict_data
+    }
+
+    pub fn clear_conflict(&mut self) {
+        self.set_has_conflict(false);
     }
 
     pub fn decision_level(&self) -> u32 {
@@ -192,6 +407,13 @@ impl Solver {
         if self.level_starts.len() <= decision_level as usize {
             self.level_starts.resize(decision_level as usize + 1, 0);
         }
+        if self.root_levels.len() <= decision_level as usize {
+            self.root_levels.resize(decision_level as usize + 1, 0);
+        }
+        if self.undo_watches.len() <= decision_level as usize {
+            self.undo_watches
+                .resize_with(decision_level as usize + 1, Vec::new);
+        }
     }
 
     pub fn root_level(&self) -> u32 {
@@ -200,6 +422,23 @@ impl Solver {
 
     pub fn set_root_level(&mut self, root_level: u32) {
         self.root_level = root_level;
+    }
+
+    pub fn push_root_level(&mut self) {
+        self.root_levels.push(self.root_level);
+        self.root_level = self.decision_level;
+    }
+
+    pub fn pop_root_level(&mut self) {
+        self.root_level = self.root_levels.pop().unwrap_or(0);
+    }
+
+    pub fn backtrack_level(&self) -> u32 {
+        self.backtrack_level
+    }
+
+    pub fn set_backtrack_level(&mut self, backtrack_level: u32) {
+        self.backtrack_level = backtrack_level.min(self.decision_level);
     }
 
     pub fn tag_literal(&self) -> Literal {
@@ -239,19 +478,19 @@ impl Solver {
     }
 
     pub fn num_assigned_vars(&self) -> u32 {
-        self.trail.len() as u32
+        self.assignment.assigned()
     }
 
     pub fn push_trail_literal(&mut self, literal: Literal) {
-        self.trail.push(literal);
+        self.assignment.push_trail_literal(literal);
     }
 
     pub fn clear_trail(&mut self) {
-        self.trail.clear();
+        self.assignment.clear_trail();
     }
 
     pub fn trail_lit(&self, index: u32) -> Literal {
-        self.trail[index as usize]
+        self.assignment.trail[index as usize]
     }
 
     pub fn level_start(&self, level: u32) -> u32 {
@@ -263,6 +502,362 @@ impl Solver {
             self.level_starts.resize(level as usize + 1, 0);
         }
         self.level_starts[level as usize] = start;
+    }
+
+    pub fn queue_size(&self) -> u32 {
+        self.assignment.q_size()
+    }
+
+    pub fn q_empty(&self) -> bool {
+        self.assignment.q_empty()
+    }
+
+    pub fn stats(&self) -> &SolverStats {
+        &self.stats
+    }
+
+    pub fn stats_mut(&mut self) -> &mut SolverStats {
+        &mut self.stats
+    }
+
+    pub fn strategies(&self) -> &SolverStrategies {
+        &self.strategies
+    }
+
+    pub fn strategies_mut(&mut self) -> &mut SolverStrategies {
+        &mut self.strategies
+    }
+
+    pub fn watch_init_mode(&self) -> WatchInit {
+        WatchInit::from_underlying(self.strategies.init_watches as u8)
+            .unwrap_or(WatchInit::WatchRand)
+    }
+
+    pub fn heuristic(&self) -> &dyn DecisionHeuristic {
+        &*self.heuristic
+    }
+
+    pub fn heuristic_mut(&mut self) -> &mut dyn DecisionHeuristic {
+        &mut *self.heuristic
+    }
+
+    pub fn set_heuristic<H>(&mut self, heuristic: H)
+    where
+        H: DecisionHeuristic + 'static,
+    {
+        self.heuristic = Box::new(heuristic);
+    }
+
+    pub fn reason(&self, var: u32) -> &Antecedent {
+        self.assignment.reason(var)
+    }
+
+    pub fn reason_data(&self, var: u32) -> u32 {
+        self.assignment.data(var)
+    }
+
+    pub fn set_reason(&mut self, var: u32, antecedent: Antecedent) {
+        self.assignment.ensure_var(var);
+        self.assignment.set_reason(var, antecedent);
+    }
+
+    pub fn set_reason_data(&mut self, var: u32, data: u32) {
+        self.assignment.ensure_var(var);
+        self.assignment.set_data(var, data);
+    }
+
+    pub fn reserve_watch_capacity(&mut self, size: usize) {
+        if self.watches.len() < size {
+            self.watches.resize_with(size, WatchList::default);
+        }
+    }
+
+    pub fn add_watch(&mut self, literal: Literal, constraint: *mut Constraint, data: u32) {
+        self.reserve_watch_capacity(literal.id() as usize + 1);
+        self.watches[literal.id() as usize].push_right(GenericWatch::new(constraint, data));
+    }
+
+    pub fn remove_watch(&mut self, literal: Literal, constraint: *mut Constraint) -> bool {
+        let Some(list) = self.watches.get_mut(literal.id() as usize) else {
+            return false;
+        };
+        for index in 0..list.right_size() {
+            if list.right(index).con == constraint {
+                if list.right_size() == 1 {
+                    list.pop_right();
+                } else {
+                    list.erase_right_unordered(index);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn has_watch(&self, literal: Literal, constraint: *mut Constraint) -> bool {
+        self.watches.get(literal.id() as usize).is_some_and(|list| {
+            (0..list.right_size()).any(|index| list.right(index).con == constraint)
+        })
+    }
+
+    pub fn num_watches(&self, literal: Literal) -> u32 {
+        self.watches
+            .get(literal.id() as usize)
+            .map(|list| list.right_size() as u32)
+            .unwrap_or(0)
+    }
+
+    pub fn get_watch(&self, literal: Literal, index: usize) -> Option<GenericWatch> {
+        self.watches
+            .get(literal.id() as usize)
+            .and_then(|list| (index < list.right_size()).then(|| *list.right(index)))
+    }
+
+    pub fn add_clause_watch(&mut self, literal: Literal, head: *mut ClauseHead) {
+        self.reserve_watch_capacity(literal.id() as usize + 1);
+        self.watches[literal.id() as usize].push_left(ClauseWatch::new(head));
+    }
+
+    pub fn remove_clause_watch(&mut self, literal: Literal, head: *mut ClauseHead) -> bool {
+        let Some(list) = self.watches.get_mut(literal.id() as usize) else {
+            return false;
+        };
+        for index in 0..list.left_size() {
+            if list.left(index).head == head {
+                if list.left_size() == 1 {
+                    list.pop_left();
+                } else {
+                    list.erase_left_unordered(index);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn has_clause_watch(&self, literal: Literal, head: *mut ClauseHead) -> bool {
+        self.watches
+            .get(literal.id() as usize)
+            .is_some_and(|list| (0..list.left_size()).any(|index| list.left(index).head == head))
+    }
+
+    pub fn num_clause_watches(&self, literal: Literal) -> u32 {
+        self.watches
+            .get(literal.id() as usize)
+            .map(|list| list.left_size() as u32)
+            .unwrap_or(0)
+    }
+
+    pub fn get_clause_watch(&self, literal: Literal, index: usize) -> Option<ClauseWatch> {
+        self.watches
+            .get(literal.id() as usize)
+            .and_then(|list| (index < list.left_size()).then(|| *list.left(index)))
+    }
+
+    pub fn add_undo_watch(&mut self, level: u32, constraint: *mut Constraint) {
+        if self.undo_watches.len() <= level as usize {
+            self.undo_watches.resize_with(level as usize + 1, Vec::new);
+        }
+        self.undo_watches[level as usize].push(constraint);
+    }
+
+    pub fn remove_undo_watch(&mut self, level: u32, constraint: *mut Constraint) -> bool {
+        let Some(list) = self.undo_watches.get_mut(level as usize) else {
+            return false;
+        };
+        if let Some(index) = list.iter().position(|&candidate| candidate == constraint) {
+            list.swap_remove(index);
+            return true;
+        }
+        false
+    }
+
+    pub fn force(&mut self, literal: Literal, antecedent: Antecedent) -> bool {
+        self.force_with_data(literal, antecedent, u32::MAX)
+    }
+
+    pub fn force_with_data(&mut self, literal: Literal, antecedent: Antecedent, data: u32) -> bool {
+        if self.has_conflict && self.is_true(literal) {
+            return true;
+        }
+        self.assignment.ensure_var(literal.var());
+        let assigned = if data == u32::MAX {
+            self.assignment
+                .assign(literal, self.decision_level, antecedent)
+        } else {
+            self.assignment
+                .assign_with_data(literal, self.decision_level, antecedent, data)
+        };
+        if assigned {
+            true
+        } else {
+            self.set_conflict(literal, antecedent, data);
+            false
+        }
+    }
+
+    pub fn assume(&mut self, literal: Literal) -> bool {
+        if self.is_false(literal) {
+            self.set_conflict(literal, Antecedent::new(), u32::MAX);
+            return false;
+        }
+        if self.is_true(literal) {
+            return true;
+        }
+        let next_level = self.decision_level + 1;
+        self.set_decision_level(next_level);
+        self.set_level_start(next_level, self.num_assigned_vars());
+        self.set_decision(next_level, literal);
+        self.force(literal, Antecedent::new())
+    }
+
+    pub fn is_true(&self, literal: Literal) -> bool {
+        self.value(literal.var()) == crate::clasp::literal::true_value(literal)
+    }
+
+    pub fn is_false(&self, literal: Literal) -> bool {
+        self.value(literal.var()) == crate::clasp::literal::false_value(literal)
+    }
+
+    pub fn propagate(&mut self) -> bool {
+        while !self.assignment.q_empty() && !self.has_conflict {
+            let literal = self.assignment.q_pop();
+            if let Some(shared) = self.shared {
+                let ok = unsafe { shared.as_ref().implication_graph().propagate(self, literal) };
+                if !ok {
+                    return false;
+                }
+            }
+            if !self.propagate_watches(literal) {
+                return false;
+            }
+        }
+        !self.has_conflict
+    }
+
+    pub fn undo_until(&mut self, level: u32) {
+        while self.decision_level > level {
+            let current = self.decision_level;
+            if current < self.undo_watches.len() as u32 {
+                let mut undo = core::mem::take(&mut self.undo_watches[current as usize]);
+                for constraint in undo.drain(..) {
+                    if let Some(constraint) = unsafe { constraint.as_mut() } {
+                        constraint.undo_level(self);
+                    }
+                }
+            }
+            let first = self.level_start(current) as usize;
+            if self.num_assigned_vars() as usize > first {
+                self.assignment.undo_trail(first, false);
+            }
+            self.decisions[current as usize] = Literal::default();
+            self.decision_level -= 1;
+        }
+        self.assignment.q_reset();
+        self.has_conflict = false;
+    }
+
+    pub fn backtrack(&mut self, level: u32) -> bool {
+        let target = level.max(self.root_level);
+        self.undo_until(target);
+        self.backtrack_level = self.backtrack_level.min(self.decision_level);
+        true
+    }
+
+    pub fn clear_assumptions(&mut self) -> bool {
+        self.backtrack(0);
+        self.root_level = 0;
+        self.backtrack_level = 0;
+        true
+    }
+
+    pub fn count_levels(&self, lits: &[Literal]) -> u32 {
+        let mut levels = Vec::new();
+        for &lit in lits {
+            let level = self.level(lit.var());
+            if level != u32::MAX && !levels.contains(&level) {
+                levels.push(level);
+            }
+        }
+        levels.len() as u32
+    }
+
+    pub fn add_constraint(&mut self, constraint: *mut Constraint) {
+        self.constraints.push(constraint);
+    }
+
+    pub fn add_learnt_constraint(
+        &mut self,
+        constraint: *mut Constraint,
+        size: u32,
+        kind: ConstraintType,
+    ) {
+        self.learnts.push(constraint);
+        self.stats.add_learnt(size, kind);
+    }
+
+    pub fn remove_constraint(&mut self, constraint: *mut Constraint) {
+        if let Some(index) = self.constraints.iter().position(|&ptr| ptr == constraint) {
+            self.constraints.swap_remove(index);
+        }
+        if let Some(index) = self.learnts.iter().position(|&ptr| ptr == constraint) {
+            self.learnts.swap_remove(index);
+        }
+    }
+
+    pub fn add(&mut self, clause: &crate::clasp::clause::ClauseRep, is_new: bool) -> bool {
+        if clause.size > 1 {
+            if !self.allow_implicit(clause) {
+                return false;
+            }
+            let added = if let Some(shared) = self.shared_context_mut() {
+                shared.add_imp(clause.literals(), clause.info.constraint_type())
+            } else {
+                -1
+            };
+            if added <= 0 {
+                return added == 0;
+            }
+            if is_new && clause.info.learnt() {
+                self.learnts.push(core::ptr::null_mut());
+            }
+            return true;
+        }
+        let unit = clause
+            .literals()
+            .first()
+            .copied()
+            .unwrap_or(crate::clasp::literal::lit_false);
+        self.force(
+            unit,
+            Antecedent::from_literal(crate::clasp::literal::lit_true),
+        )
+    }
+
+    pub fn allow_implicit(&self, clause: &crate::clasp::clause::ClauseRep) -> bool {
+        if !clause.is_imp() {
+            return clause.size <= 1;
+        }
+        let Some(shared) = self.shared_context() else {
+            return false;
+        };
+        if !shared.allow_implicit(clause.info.constraint_type()) || clause.info.aux() {
+            return false;
+        }
+        clause.prep
+            || clause
+                .literals()
+                .iter()
+                .take(clause.size.min(3) as usize)
+                .all(|literal| !self.aux_var(literal.var()))
+    }
+
+    pub fn num_constraints(&self) -> u32 {
+        self.constraints.len() as u32
+    }
+
+    pub fn num_learnt_constraints(&self) -> u32 {
+        self.learnts.len() as u32
     }
 
     pub fn cc_minimize(&mut self, lit: Literal, _rec: *mut CCMinRecursive) -> bool {
@@ -282,31 +877,89 @@ impl Solver {
         self.cc_minimize_result = result;
     }
 
-    fn ensure_assignment_capacity(&mut self, var: u32) {
-        let len = var as usize + 1;
-        if self.values.len() < len {
-            self.values.resize(len, value_free);
-        }
-        if self.levels.len() < len {
-            self.levels.resize(len, u32::MAX);
-        }
-        if self.seen_masks.len() < len {
-            self.seen_masks.resize(len, 0);
-        }
+    fn set_conflict(&mut self, literal: Literal, antecedent: Antecedent, data: u32) {
+        self.has_conflict = true;
+        self.conflict_literal = literal;
+        self.conflict_reason = antecedent;
+        self.conflict_data = data;
     }
 
-    fn seen_bit(literal: Literal) -> u8 {
-        if literal.sign() { 0b10 } else { 0b01 }
-    }
-
-    fn root_seen_mask(&self, var: u32) -> u8 {
-        if self.value(var) == value_free || self.level(var) != 0 {
-            0
-        } else if self.value(var) == crate::clasp::literal::value_true {
-            0b01
-        } else {
-            0b10
+    fn propagate_watches(&mut self, literal: Literal) -> bool {
+        let left_len = self
+            .watches
+            .get(literal.id() as usize)
+            .map(|list| list.left_size())
+            .unwrap_or(0);
+        let mut left_index = 0;
+        while left_index < left_len.min(self.num_clause_watches(literal) as usize) {
+            let watch = match self.get_clause_watch(literal, left_index) {
+                Some(watch) => watch,
+                None => break,
+            };
+            let result = unsafe {
+                watch
+                    .head
+                    .as_mut()
+                    .expect("clause watch requires a non-null head pointer")
+                    .propagate(self, literal)
+            };
+            let current_len = self.num_clause_watches(literal) as usize;
+            if left_index >= current_len {
+                break;
+            }
+            if result.keep_watch {
+                left_index += 1;
+            } else if let Some(list) = self.watches.get_mut(literal.id() as usize) {
+                if left_index < list.left_size() {
+                    if list.left_size() == 1 {
+                        list.pop_left();
+                    } else {
+                        list.erase_left_unordered(left_index);
+                    }
+                }
+            }
+            if !result.ok {
+                return false;
+            }
         }
+
+        let list_len = self
+            .watches
+            .get(literal.id() as usize)
+            .map(|list| list.right_size())
+            .unwrap_or(0);
+        let mut index = 0;
+        while index < list_len.min(self.num_watches(literal) as usize) {
+            let mut watch = match self.get_watch(literal, index) {
+                Some(watch) => watch,
+                None => break,
+            };
+            let result = watch.propagate(self, literal);
+            let current_len = self.num_watches(literal) as usize;
+            if index >= current_len {
+                break;
+            }
+            if result.keep_watch {
+                if let Some(list) = self.watches.get_mut(literal.id() as usize) {
+                    if index < list.right_size() {
+                        *list.right_mut(index) = watch;
+                    }
+                }
+                index += 1;
+            } else if let Some(list) = self.watches.get_mut(literal.id() as usize) {
+                if index < list.right_size() {
+                    if list.right_size() == 1 {
+                        list.pop_right();
+                    } else {
+                        list.erase_right_unordered(index);
+                    }
+                }
+            }
+            if !result.ok {
+                return false;
+            }
+        }
+        true
     }
 }
 

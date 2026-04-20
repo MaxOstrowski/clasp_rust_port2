@@ -1,17 +1,22 @@
 //! Partial Rust port of `original_clasp/clasp/clause.h` and `original_clasp/src/clause.cpp`.
 //!
-//! This module currently covers `SharedLiterals` plus the solver-state-only
-//! `ClauseCreator` helper logic for watch ordering, preparation, status
-//! classification, and clause-ignore decisions. Clause runtime objects and
-//! solver integration remain unported.
+//! This module now covers the Bundle A explicit clause runtime together with
+//! `ClauseCreator`'s creation and integration paths on top of the current
+//! solver/shared-context kernel. Shared clauses, clause contraction, and the
+//! original small-clause allocator remain simplified.
 
-use core::ptr::NonNull;
+use core::ffi::c_void;
+use core::ptr::{self, NonNull};
 
-use crate::clasp::constraint::{ConstraintInfo, ConstraintType, Solver};
+use crate::clasp::constraint::{
+    Antecedent, ClauseHead, ClauseStrengthenResult, Constraint, ConstraintDyn, ConstraintInfo,
+    ConstraintScore, ConstraintType, PropResult, Solver,
+};
 use crate::clasp::literal::{
     LitVec, LitView, Literal, lit_false, lit_true, true_value, value_free, var_max,
 };
 use crate::clasp::pod_vector::{shrink_vec_to, size32};
+use crate::clasp::solver_strategies::WatchInit;
 use crate::clasp::util::misc_types::RefCount;
 
 pub type ClauseInfo = ConstraintInfo;
@@ -62,6 +67,40 @@ impl ClauseStatus {
             10 => Self::Empty,
             _ => panic!("invalid ClauseStatus bits"),
         }
+    }
+
+    pub const fn ok(self) -> bool {
+        (self.bits() & ClauseStatus::Unsat.bits()) == 0
+    }
+
+    pub const fn unit(self) -> bool {
+        (self.bits() & ClauseStatus::Unit.bits()) != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ClauseCreationResult {
+    pub local: *mut ClauseHead,
+    pub status: ClauseStatus,
+}
+
+impl Default for ClauseCreationResult {
+    fn default() -> Self {
+        Self::new(ptr::null_mut(), ClauseStatus::Open)
+    }
+}
+
+impl ClauseCreationResult {
+    pub const fn new(local: *mut ClauseHead, status: ClauseStatus) -> Self {
+        Self { local, status }
+    }
+
+    pub const fn ok(self) -> bool {
+        self.status.ok()
+    }
+
+    pub const fn unit(self) -> bool {
+        self.status.unit()
     }
 }
 
@@ -167,6 +206,10 @@ impl ClauseRep {
         &self.lits.as_slice()[..self.size as usize]
     }
 
+    pub fn literals_mut(&mut self) -> &mut [Literal] {
+        &mut self.lits.as_mut_slice()[..self.size as usize]
+    }
+
     pub fn is_imp(&self) -> bool {
         self.size > 1 && self.size < 4
     }
@@ -180,6 +223,389 @@ impl ClauseRep {
             prep,
             lits: owned,
         }
+    }
+}
+
+#[derive(Debug)]
+struct ExplicitClauseState {
+    head: ClauseHead,
+    literals: LitVec,
+}
+
+impl ExplicitClauseState {
+    fn new(rep: &ClauseRep) -> Self {
+        let mut literals = LitVec::new();
+        literals.assign_from_slice(rep.literals());
+        let mut state = Self {
+            head: ClauseHead::new(rep.info),
+            literals,
+        };
+        state.sync_head();
+        state
+    }
+
+    fn sync_head(&mut self) {
+        self.head.head = [lit_false; 3];
+        for (dst, src) in self
+            .head
+            .head
+            .iter_mut()
+            .zip(self.literals.as_slice().iter().copied())
+        {
+            *dst = src;
+        }
+    }
+
+    fn bump_activity_if_learnt(&mut self) {
+        if self.head.info.learnt() {
+            let mut score = self.head.info.score();
+            score.bump_activity();
+            self.head.info.set_score(score);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ExplicitClause {
+    state: *mut ExplicitClauseState,
+}
+
+impl ExplicitClause {
+    fn new(state: *mut ExplicitClauseState) -> Self {
+        Self { state }
+    }
+
+    fn state_mut(&mut self) -> &mut ExplicitClauseState {
+        unsafe { &mut *self.state }
+    }
+
+    fn state_ref(&self) -> &ExplicitClauseState {
+        unsafe { &*self.state }
+    }
+}
+
+impl ConstraintDyn for ExplicitClause {
+    fn propagate(&mut self, solver: &mut Solver, literal: Literal, _data: &mut u32) -> PropResult {
+        clause_head_propagate(&mut self.state_mut().head, solver, literal)
+    }
+
+    fn reason(&mut self, _solver: &mut Solver, literal: Literal, lits: &mut LitVec) {
+        let state = self.state_mut();
+        state.bump_activity_if_learnt();
+        for &clause_lit in state.literals.as_slice() {
+            if clause_lit != literal {
+                lits.push_back(!clause_lit);
+            }
+        }
+    }
+
+    fn clone_attach(&self, _other: &mut Solver) -> Option<Box<Constraint>> {
+        None
+    }
+
+    fn simplify(&mut self, solver: &mut Solver, reinit: bool) -> bool {
+        clause_head_simplify(&mut self.state_mut().head, solver, reinit)
+    }
+
+    fn clause(&mut self) -> Option<NonNull<ClauseHead>> {
+        NonNull::new(&mut self.state_mut().head)
+    }
+
+    fn constraint_type(&self) -> ConstraintType {
+        self.state_ref().head.info.constraint_type()
+    }
+
+    fn locked(&self, solver: &Solver) -> bool {
+        clause_head_locked(&self.state_ref().head, solver)
+    }
+
+    fn activity(&self) -> ConstraintScore {
+        self.state_ref().head.info.score()
+    }
+
+    fn decrease_activity(&mut self) {
+        self.state_mut().head.decrease_activity();
+    }
+
+    fn reset_activity(&mut self) {
+        self.state_mut().head.reset_activity();
+    }
+
+    fn is_open(
+        &mut self,
+        solver: &Solver,
+        types: &crate::clasp::constraint::TypeSet,
+        free: &mut LitVec,
+    ) -> u32 {
+        let state = self.state_ref();
+        let ty = state.head.info.constraint_type();
+        if !types.contains(ty) || clause_head_satisfied(&state.head, solver) {
+            return 0;
+        }
+        for &lit in state.literals.as_slice() {
+            if solver.value(lit.var()) == value_free {
+                free.push_back(lit);
+            }
+        }
+        ty.as_u32()
+    }
+}
+
+fn explicit_state_from_head(head: &ClauseHead) -> &ExplicitClauseState {
+    unsafe { &*(head.owner as *const ExplicitClauseState) }
+}
+
+fn explicit_state_from_head_mut(head: &mut ClauseHead) -> &mut ExplicitClauseState {
+    unsafe { &mut *(head.owner as *mut ExplicitClauseState) }
+}
+
+fn build_explicit_clause(rep: &ClauseRep) -> (*mut ClauseHead, *mut Constraint) {
+    let mut state = Box::new(ExplicitClauseState::new(rep));
+    let state_ptr: *mut ExplicitClauseState = &mut *state;
+    state.head.owner = state_ptr.cast::<c_void>();
+    let constraint = Box::new(Constraint::new(ExplicitClause::new(state_ptr)));
+    let constraint_ptr = Box::into_raw(constraint);
+    state.head.constraint = constraint_ptr;
+    let head_ptr: *mut ClauseHead = &mut state.head;
+    let _ = Box::into_raw(state);
+    (head_ptr, constraint_ptr)
+}
+
+fn select_least_watched_pair(solver: &Solver, rep: &ClauseRep) -> (usize, usize) {
+    let lits = rep.literals();
+    let mut first = 0usize;
+    let mut second = 1usize;
+    let mut first_count = solver.num_clause_watches(!lits[first]);
+    let mut second_count = solver.num_clause_watches(!lits[second]);
+    if first_count > second_count {
+        core::mem::swap(&mut first, &mut second);
+        core::mem::swap(&mut first_count, &mut second_count);
+    }
+    for (index, literal) in lits.iter().enumerate().skip(2) {
+        let count = solver.num_clause_watches(!*literal);
+        if count < first_count {
+            second = first;
+            second_count = first_count;
+            first = index;
+            first_count = count;
+        } else if count < second_count {
+            second = index;
+            second_count = count;
+        }
+    }
+    (first, second)
+}
+
+fn reorder_for_watch_mode(solver: &Solver, rep: &ClauseRep, flags: CreateFlag) -> ClauseRep {
+    let mut reordered = rep.clone();
+    if reordered.size <= 2 {
+        return reordered;
+    }
+    let mode = if has_flag(flags, CLAUSE_WATCH_FIRST) {
+        WatchInit::WatchFirst
+    } else if has_flag(flags, CLAUSE_WATCH_LEAST) {
+        WatchInit::WatchLeast
+    } else if has_flag(flags, CLAUSE_WATCH_RAND) {
+        WatchInit::WatchRand
+    } else {
+        solver.watch_init_mode()
+    };
+    let (first, second) = match mode {
+        WatchInit::WatchFirst | WatchInit::WatchRand => (0usize, 1usize),
+        WatchInit::WatchLeast => select_least_watched_pair(solver, &reordered),
+    };
+    reordered.literals_mut().swap(0, first);
+    if second == 0 {
+        reordered.literals_mut().swap(1, first);
+    } else {
+        reordered.literals_mut().swap(1, second);
+    }
+    reordered
+}
+
+fn assert_clause_literal(
+    solver: &mut Solver,
+    clause: &ClauseRep,
+    local: *mut ClauseHead,
+) -> ClauseStatus {
+    let implied_level = clause
+        .literals()
+        .get(1)
+        .map(|lit| solver.level(lit.var()))
+        .unwrap_or(0)
+        .min(solver.decision_level());
+    if solver.decision_level() > implied_level.max(solver.root_level()) {
+        solver.backtrack(implied_level.max(solver.root_level()));
+    }
+    let antecedent = if !local.is_null() {
+        let head = unsafe { &*local };
+        Antecedent::from_constraint_ptr(head.constraint_ptr())
+    } else {
+        match clause.size {
+            0 | 1 => Antecedent::from_literal(lit_true),
+            2 => Antecedent::from_literal(!clause.literals()[1]),
+            _ => Antecedent::from_literals(!clause.literals()[1], !clause.literals()[2]),
+        }
+    };
+    if solver.force(clause.literals()[0], antecedent) {
+        ClauseStatus::Unit
+    } else {
+        ClauseStatus::Unsat
+    }
+}
+
+pub(crate) fn clause_head_propagate(
+    head: &mut ClauseHead,
+    solver: &mut Solver,
+    literal: Literal,
+) -> PropResult {
+    let pos = if !head.head[0] == literal {
+        0usize
+    } else if !head.head[1] == literal {
+        1usize
+    } else {
+        return PropResult::default();
+    };
+    let other = head.head[1 - pos];
+    if solver.is_true(other) || clause_head_satisfied(head, solver) {
+        return PropResult::default();
+    }
+    if update_watch(head, solver, pos) {
+        return PropResult::new(true, false);
+    }
+    let antecedent = Antecedent::from_constraint_ptr(head.constraint_ptr());
+    PropResult::new(solver.force(other, antecedent), true)
+}
+
+fn update_watch(head: &mut ClauseHead, solver: &mut Solver, pos: usize) -> bool {
+    let head_ptr = head as *mut ClauseHead;
+    let state = explicit_state_from_head_mut(head);
+    for index in 2..state.literals.len() {
+        let candidate = state.literals[index];
+        if !solver.is_false(candidate) {
+            state.literals.as_mut_slice().swap(pos, index);
+            state.sync_head();
+            solver.add_clause_watch(!state.head.head[pos], head_ptr);
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn clause_head_locked(head: &ClauseHead, solver: &Solver) -> bool {
+    let state = explicit_state_from_head(head);
+    state.literals.as_slice().iter().copied().any(|lit| {
+        solver.is_true(lit)
+            && *solver.reason(lit.var()) == head.constraint_ptr() as *const Constraint
+    })
+}
+
+pub(crate) fn clause_head_satisfied(head: &ClauseHead, solver: &Solver) -> bool {
+    explicit_state_from_head(head)
+        .literals
+        .as_slice()
+        .iter()
+        .copied()
+        .any(|lit| solver.is_true(lit))
+}
+
+pub(crate) fn clause_head_size(head: &ClauseHead) -> u32 {
+    size32(explicit_state_from_head(head).literals.as_slice())
+}
+
+pub(crate) fn clause_head_to_lits(head: &ClauseHead) -> Vec<Literal> {
+    explicit_state_from_head(head).literals.as_slice().to_vec()
+}
+
+pub(crate) fn clause_head_simplify(
+    head: &mut ClauseHead,
+    solver: &mut Solver,
+    _reinit: bool,
+) -> bool {
+    if clause_head_satisfied(head, solver) {
+        return true;
+    }
+    head.detach(solver);
+    let state = explicit_state_from_head_mut(head);
+    let retained: Vec<Literal> = state
+        .literals
+        .as_slice()
+        .iter()
+        .copied()
+        .filter(|lit| !solver.is_false(*lit))
+        .collect();
+    if retained.len() < 2 {
+        return true;
+    }
+    state.literals.clear();
+    state.literals.assign_from_slice(&retained);
+    state.sync_head();
+    head.attach(solver);
+    false
+}
+
+pub(crate) fn clause_head_destroy(
+    head: &mut ClauseHead,
+    solver: Option<&mut Solver>,
+    detach: bool,
+) {
+    if let Some(solver) = solver {
+        if detach {
+            head.detach(solver);
+        }
+        solver.remove_constraint(head.constraint_ptr());
+    }
+    let state_ptr = head.owner as *mut ExplicitClauseState;
+    let constraint_ptr = head.constraint_ptr();
+    unsafe {
+        if !constraint_ptr.is_null() {
+            drop(Box::from_raw(constraint_ptr));
+        }
+        if !state_ptr.is_null() {
+            drop(Box::from_raw(state_ptr));
+        }
+    }
+}
+
+pub(crate) fn clause_head_clone_attach(head: &ClauseHead, other: &mut Solver) -> *mut ClauseHead {
+    let state = explicit_state_from_head(head);
+    let rep = ClauseRep::prepared(state.literals.as_slice(), head.info);
+    let (head_ptr, _constraint_ptr) = build_explicit_clause(&rep);
+    unsafe { (*head_ptr).attach(other) };
+    head_ptr
+}
+
+pub(crate) fn clause_head_strengthen(
+    head: &mut ClauseHead,
+    solver: &mut Solver,
+    literal: Literal,
+    _allow_to_short: bool,
+) -> ClauseStrengthenResult {
+    if clause_head_locked(head, solver) {
+        return ClauseStrengthenResult::default();
+    }
+    head.detach(solver);
+    let state = explicit_state_from_head_mut(head);
+    let Some(index) = state
+        .literals
+        .as_slice()
+        .iter()
+        .position(|&lit| lit == literal)
+    else {
+        head.attach(solver);
+        return ClauseStrengthenResult::default();
+    };
+    state.literals.erase(index);
+    let remove_clause = state.literals.len() <= 1;
+    if !remove_clause {
+        state.sync_head();
+        head.attach(solver);
+    } else if let Some(&unit) = state.literals.as_slice().first() {
+        let _ = solver.force(unit, Antecedent::from_literal(lit_true));
+    }
+    ClauseStrengthenResult {
+        lit_removed: true,
+        remove_clause,
     }
 }
 
@@ -348,6 +774,119 @@ impl ClauseCreator {
                         && solver.level(clause.literals()[0].var()) <= solver.root_level())))
     }
 
+    pub fn end_with_defaults(&mut self) -> ClauseCreationResult {
+        self.end(CLAUSE_NOT_SAT | CLAUSE_NOT_CONFLICT)
+    }
+
+    pub fn end(&mut self, flags: CreateFlag) -> ClauseCreationResult {
+        assert!(self.solver.is_some());
+        let flags = flags | self.flags;
+        let info = self.extra;
+        let solver_ptr = self
+            .solver
+            .expect("ClauseCreator requires a solver")
+            .as_ptr();
+        let prepared =
+            unsafe { Self::prepare_vec(&mut *solver_ptr, &mut self.literals, flags, info) };
+        unsafe { Self::create_prepared(&mut *solver_ptr, &prepared, flags) }
+    }
+
+    pub fn create(
+        solver: &mut Solver,
+        lits: &mut LitVec,
+        flags: CreateFlag,
+        info: ClauseInfo,
+    ) -> ClauseCreationResult {
+        let prepared = Self::prepare_vec(solver, lits, flags, info);
+        Self::create_prepared(solver, &prepared, flags)
+    }
+
+    pub fn create_from_rep(
+        solver: &mut Solver,
+        rep: &ClauseRep,
+        flags: CreateFlag,
+    ) -> ClauseCreationResult {
+        let prepared = if !rep.prep && !has_flag(flags, CLAUSE_NO_PREPARE) {
+            let mut lits = LitVec::new();
+            lits.assign_from_slice(rep.literals());
+            Self::prepare_vec(solver, &mut lits, flags, rep.info)
+        } else {
+            ClauseRep::prepared(rep.literals(), rep.info)
+        };
+        Self::create_prepared(solver, &prepared, flags)
+    }
+
+    pub fn integrate(
+        solver: &mut Solver,
+        clause: &SharedLiterals,
+        flags: CreateFlag,
+    ) -> ClauseCreationResult {
+        Self::integrate_typed(solver, clause, flags, clause.constraint_type())
+    }
+
+    pub fn integrate_typed(
+        solver: &mut Solver,
+        clause: &SharedLiterals,
+        mut flags: CreateFlag,
+        ty: ConstraintType,
+    ) -> ClauseCreationResult {
+        assert!(!solver.has_conflict());
+        let mut temp = [lit_false; 3];
+        let prepared = Self::prepare_span(
+            solver,
+            clause.literals(),
+            ClauseInfo::new(ty),
+            CLAUSE_FLAG_NONE,
+            &mut temp,
+        );
+        let status = Self::status_prepared(solver, &prepared);
+        let implicit_limit =
+            if has_flag(flags, CLAUSE_EXPLICIT) || !solver.allow_implicit(&prepared) {
+                1
+            } else {
+                3
+            };
+        if Self::ignore_clause(solver, &prepared, status, flags) {
+            return ClauseCreationResult::new(ptr::null_mut(), status);
+        }
+        if !has_flag(flags, CLAUSE_NO_HEURISTIC) {
+            let lits = clause.literals().to_vec();
+            let solver_ptr: *const Solver = solver;
+            solver
+                .heuristic_mut()
+                .new_constraint(unsafe { &*solver_ptr }, &lits, ty);
+        }
+        let mut result = ClauseCreationResult::new(ptr::null_mut(), status);
+        if prepared.size > implicit_limit {
+            result.local = Self::new_unshared(solver, clause, &temp[..2], prepared.info);
+        } else if !has_flag(flags, CLAUSE_NO_ADD) {
+            let _ = solver.add(&prepared, true);
+            if prepared.info.learnt() {
+                solver
+                    .stats_mut()
+                    .add_learnt(prepared.size, prepared.info.constraint_type());
+            }
+            flags |= CLAUSE_NO_ADD;
+        }
+        if !has_flag(flags, CLAUSE_NO_ADD) && !result.local.is_null() {
+            let head = unsafe { &*result.local };
+            solver.add_learnt_constraint(
+                head.constraint_ptr(),
+                prepared.size,
+                prepared.info.constraint_type(),
+            );
+            if has_flag(flags, CLAUSE_INT_LBD) && status.unit() {
+                let lbd = solver.count_levels(clause.literals());
+                unsafe { &mut *result.local }
+                    .reset_score(ConstraintScore::new(prepared.info.activity(), lbd));
+            }
+        }
+        if status.unit() || status == ClauseStatus::Unsat || status == ClauseStatus::Asserting {
+            result.status = assert_clause_literal(solver, &prepared, result.local);
+        }
+        result
+    }
+
     fn prepare_span(
         solver: &mut Solver,
         input: LitView<'_>,
@@ -456,6 +995,99 @@ impl ClauseCreator {
             status |= ClauseStatus::Unit.bits();
         }
         ClauseStatus::from_bits(status)
+    }
+
+    fn create_prepared(
+        solver: &mut Solver,
+        clause: &ClauseRep,
+        flags: CreateFlag,
+    ) -> ClauseCreationResult {
+        assert!(solver.decision_level() == 0 || clause.info.learnt());
+        let mut status = Self::status_clause(solver, clause);
+        if Self::ignore_clause(solver, clause, status, flags) {
+            return ClauseCreationResult::new(ptr::null_mut(), status);
+        }
+        if clause.size <= 1 {
+            let _ = solver.add(clause, true);
+            status = if solver.has_conflict() {
+                ClauseStatus::Unsat
+            } else {
+                ClauseStatus::Unit
+            };
+            return ClauseCreationResult::new(ptr::null_mut(), status);
+        }
+        if !has_flag(flags, CLAUSE_NO_HEURISTIC) {
+            let lits = clause.literals().to_vec();
+            let ty = clause.info.constraint_type();
+            let solver_ptr: *const Solver = solver;
+            solver
+                .heuristic_mut()
+                .new_constraint(unsafe { &*solver_ptr }, &lits, ty);
+        }
+        let mut result = ClauseCreationResult::new(ptr::null_mut(), status);
+        if clause.size > 3 || has_flag(flags, CLAUSE_EXPLICIT) || !solver.allow_implicit(clause) {
+            result.local = if clause.info.learnt() {
+                Self::new_learnt_clause(solver, clause, flags)
+            } else {
+                Self::new_problem_clause(solver, clause, flags)
+            };
+        } else if !has_flag(flags, CLAUSE_NO_ADD) {
+            let _ = solver.add(clause, true);
+        }
+        if status.unit() || status == ClauseStatus::Unsat || status == ClauseStatus::Asserting {
+            result.status = assert_clause_literal(solver, clause, result.local);
+        }
+        result
+    }
+
+    fn new_problem_clause(
+        solver: &mut Solver,
+        clause: &ClauseRep,
+        flags: CreateFlag,
+    ) -> *mut ClauseHead {
+        let ordered = reorder_for_watch_mode(solver, clause, flags);
+        let (head_ptr, constraint_ptr) = build_explicit_clause(&ordered);
+        unsafe { (*head_ptr).attach(solver) };
+        if !has_flag(flags, CLAUSE_NO_ADD) {
+            solver.add_constraint(constraint_ptr);
+        }
+        head_ptr
+    }
+
+    fn new_learnt_clause(
+        solver: &mut Solver,
+        clause: &ClauseRep,
+        flags: CreateFlag,
+    ) -> *mut ClauseHead {
+        let (head_ptr, constraint_ptr) = build_explicit_clause(clause);
+        unsafe { (*head_ptr).attach(solver) };
+        if !has_flag(flags, CLAUSE_NO_ADD) {
+            solver.add_learnt_constraint(
+                constraint_ptr,
+                clause.size,
+                clause.info.constraint_type(),
+            );
+        }
+        head_ptr
+    }
+
+    fn new_unshared(
+        solver: &mut Solver,
+        clause: &SharedLiterals,
+        watched: &[Literal],
+        info: ClauseInfo,
+    ) -> *mut ClauseHead {
+        let mut temp = LitVec::new();
+        temp.assign_from_slice(watched);
+        for &lit in clause.literals() {
+            if Self::watch_order(solver, lit) > 0 && !temp.as_slice().contains(&lit) {
+                temp.push_back(lit);
+            }
+        }
+        let rep = ClauseRep::prepared(temp.as_slice(), info);
+        let (head_ptr, _constraint_ptr) = build_explicit_clause(&rep);
+        unsafe { (*head_ptr).attach(solver) };
+        head_ptr
     }
 
     fn solver_mut(&mut self) -> &mut Solver {

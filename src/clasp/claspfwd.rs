@@ -9,7 +9,6 @@ macro_rules! opaque_type {
     };
 }
 
-opaque_type!(SharedContext);
 opaque_type!(MinimizeBuilder);
 opaque_type!(SharedMinimizeData);
 opaque_type!(Configuration);
@@ -20,6 +19,7 @@ opaque_type!(SatBuilder);
 opaque_type!(PBBuilder);
 
 pub use crate::clasp::dependency_graph::ExtDepGraph;
+pub use crate::clasp::shared_context::SharedContext;
 
 pub use crate::clasp::constraint::{Constraint, ConstraintInfo, Solver};
 
