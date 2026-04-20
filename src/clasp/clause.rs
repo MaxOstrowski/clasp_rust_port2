@@ -9,11 +9,11 @@ use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
 use crate::clasp::constraint::{
-    Antecedent, ClauseHead, ClauseStrengthenResult, Constraint, ConstraintDyn, ConstraintInfo,
-    ConstraintScore, ConstraintType, PropResult, Solver,
+    Antecedent, ClauseHead, ClauseOwnerKind, ClauseStrengthenResult, Constraint, ConstraintDyn,
+    ConstraintInfo, ConstraintScore, ConstraintType, PropResult, Solver,
 };
 use crate::clasp::literal::{
-    LitVec, LitView, Literal, lit_false, lit_true, true_value, value_free, var_max,
+    LitVec, LitView, Literal, is_sentinel, lit_false, lit_true, true_value, value_free, var_max,
 };
 use crate::clasp::pod_vector::{shrink_vec_to, size32};
 use crate::clasp::solver_strategies::WatchInit;
@@ -363,12 +363,179 @@ fn build_explicit_clause(rep: &ClauseRep) -> (*mut ClauseHead, *mut Constraint) 
     let mut state = Box::new(ExplicitClauseState::new(rep));
     let state_ptr: *mut ExplicitClauseState = &mut *state;
     state.head.owner = state_ptr.cast::<c_void>();
+    state.head.owner_kind = ClauseOwnerKind::Explicit;
     let constraint = Box::new(Constraint::new(ExplicitClause::new(state_ptr)));
     let constraint_ptr = Box::into_raw(constraint);
     state.head.constraint = constraint_ptr;
     let head_ptr: *mut ClauseHead = &mut state.head;
     let _ = Box::into_raw(state);
     (head_ptr, constraint_ptr)
+}
+
+#[derive(Debug)]
+struct SharedClauseState {
+    head: ClauseHead,
+    shared: *mut SharedLiterals,
+}
+
+impl SharedClauseState {
+    fn new(shared: *mut SharedLiterals, info: ClauseInfo, watched: LitView<'_>) -> Self {
+        let mut head = ClauseHead::new(info);
+        head.owner_kind = ClauseOwnerKind::Shared;
+        head.head = [lit_false; 3];
+        for (dst, src) in head.head.iter_mut().zip(watched.iter().copied()) {
+            *dst = src;
+        }
+        Self { head, shared }
+    }
+
+    fn bump_activity_if_learnt(&mut self) {
+        if self.head.info.learnt() {
+            let mut score = self.head.info.score();
+            score.bump_activity();
+            self.head.info.set_score(score);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SharedClause {
+    state: *mut SharedClauseState,
+}
+
+impl SharedClause {
+    fn new(state: *mut SharedClauseState) -> Self {
+        Self { state }
+    }
+
+    fn state_mut(&mut self) -> &mut SharedClauseState {
+        unsafe { &mut *self.state }
+    }
+
+    fn state_ref(&self) -> &SharedClauseState {
+        unsafe { &*self.state }
+    }
+}
+
+impl ConstraintDyn for SharedClause {
+    fn propagate(&mut self, solver: &mut Solver, literal: Literal, _data: &mut u32) -> PropResult {
+        clause_head_propagate(&mut self.state_mut().head, solver, literal)
+    }
+
+    fn reason(&mut self, _solver: &mut Solver, literal: Literal, lits: &mut LitVec) {
+        let state = self.state_mut();
+        state.bump_activity_if_learnt();
+        for &clause_lit in unsafe { &*state.shared }.literals() {
+            if clause_lit != literal {
+                lits.push_back(!clause_lit);
+            }
+        }
+    }
+
+    fn clone_attach(&self, other: &mut Solver) -> Option<Box<Constraint>> {
+        let _ = other;
+        None
+    }
+
+    fn simplify(&mut self, solver: &mut Solver, reinit: bool) -> bool {
+        clause_head_simplify(&mut self.state_mut().head, solver, reinit)
+    }
+
+    fn clause(&mut self) -> Option<NonNull<ClauseHead>> {
+        NonNull::new(&mut self.state_mut().head)
+    }
+
+    fn constraint_type(&self) -> ConstraintType {
+        self.state_ref().head.info.constraint_type()
+    }
+
+    fn locked(&self, solver: &Solver) -> bool {
+        clause_head_locked(&self.state_ref().head, solver)
+    }
+
+    fn activity(&self) -> ConstraintScore {
+        self.state_ref().head.info.score()
+    }
+
+    fn decrease_activity(&mut self) {
+        self.state_mut().head.decrease_activity();
+    }
+
+    fn reset_activity(&mut self) {
+        self.state_mut().head.reset_activity();
+    }
+
+    fn is_open(
+        &mut self,
+        solver: &Solver,
+        types: &crate::clasp::constraint::TypeSet,
+        free: &mut LitVec,
+    ) -> u32 {
+        let state = self.state_ref();
+        let ty = state.head.info.constraint_type();
+        if !types.contains(ty) || clause_head_satisfied(&state.head, solver) {
+            return 0;
+        }
+        for &lit in unsafe { &*state.shared }.literals() {
+            if solver.value(lit.var()) == value_free {
+                free.push_back(lit);
+            }
+        }
+        ty.as_u32()
+    }
+}
+
+fn shared_state_from_head(head: &ClauseHead) -> &SharedClauseState {
+    unsafe { &*(head.owner as *const SharedClauseState) }
+}
+
+fn shared_state_from_head_mut(head: &mut ClauseHead) -> &mut SharedClauseState {
+    unsafe { &mut *(head.owner as *mut SharedClauseState) }
+}
+
+fn build_shared_clause_from_ptr(
+    shared: *mut SharedLiterals,
+    info: ClauseInfo,
+    watched: LitView<'_>,
+    add_ref: bool,
+) -> (*mut ClauseHead, *mut Constraint) {
+    if add_ref {
+        unsafe {
+            (*shared).share();
+        }
+    }
+    let mut state = Box::new(SharedClauseState::new(shared, info, watched));
+    let state_ptr: *mut SharedClauseState = &mut *state;
+    state.head.owner = state_ptr.cast::<c_void>();
+    let constraint = Box::new(Constraint::new(SharedClause::new(state_ptr)));
+    let constraint_ptr = Box::into_raw(constraint);
+    state.head.constraint = constraint_ptr;
+    let head_ptr: *mut ClauseHead = &mut state.head;
+    let _ = Box::into_raw(state);
+    (head_ptr, constraint_ptr)
+}
+
+fn clone_shared_literals(shared: &SharedLiterals) -> *mut SharedLiterals {
+    Box::into_raw(Box::new(SharedLiterals::new_shareable(
+        shared.literals(),
+        shared.constraint_type(),
+        1,
+    )))
+}
+
+pub fn new_shared_clause(
+    solver: &mut Solver,
+    lits: LitView<'_>,
+    info: ClauseInfo,
+) -> *mut ClauseHead {
+    let shared = Box::into_raw(Box::new(SharedLiterals::new_shareable(
+        lits,
+        info.constraint_type(),
+        1,
+    )));
+    let (head_ptr, _constraint_ptr) = build_shared_clause_from_ptr(shared, info, lits, false);
+    unsafe { (*head_ptr).attach(solver) };
+    head_ptr
 }
 
 fn select_least_watched_pair(solver: &Solver, rep: &ClauseRep) -> (usize, usize) {
@@ -478,6 +645,14 @@ pub(crate) fn clause_head_propagate(
 }
 
 fn update_watch(head: &mut ClauseHead, solver: &mut Solver, pos: usize) -> bool {
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => update_explicit_watch(head, solver, pos),
+        ClauseOwnerKind::Shared => update_shared_watch(head, solver, pos),
+        ClauseOwnerKind::Unknown => false,
+    }
+}
+
+fn update_explicit_watch(head: &mut ClauseHead, solver: &mut Solver, pos: usize) -> bool {
     let head_ptr = head as *mut ClauseHead;
     let state = explicit_state_from_head_mut(head);
     for index in 2..state.literals.len() {
@@ -492,36 +667,97 @@ fn update_watch(head: &mut ClauseHead, solver: &mut Solver, pos: usize) -> bool 
     false
 }
 
+fn update_shared_watch(head: &mut ClauseHead, solver: &mut Solver, pos: usize) -> bool {
+    let state = shared_state_from_head(head);
+    let shared = unsafe { &*state.shared };
+    let other = head.head[1 ^ pos];
+    let mut candidates = shared
+        .literals()
+        .iter()
+        .copied()
+        .filter(|lit| !solver.is_false(*lit) && *lit != other);
+    let Some(new_watch) = candidates.next() else {
+        return false;
+    };
+    head.head[pos] = new_watch;
+    if let Some(cache) = candidates.next() {
+        head.head[2] = cache;
+    }
+    solver.add_clause_watch(!head.head[pos], head as *mut ClauseHead);
+    true
+}
+
 pub(crate) fn clause_head_locked(head: &ClauseHead, solver: &Solver) -> bool {
-    let state = explicit_state_from_head(head);
-    state.literals.as_slice().iter().copied().any(|lit| {
-        solver.is_true(lit)
-            && *solver.reason(lit.var()) == head.constraint_ptr() as *const Constraint
-    })
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => explicit_state_from_head(head)
+            .literals
+            .as_slice()
+            .iter()
+            .copied()
+            .any(|lit| {
+                solver.is_true(lit)
+                    && *solver.reason(lit.var()) == head.constraint_ptr() as *const Constraint
+            }),
+        ClauseOwnerKind::Shared => unsafe { &*shared_state_from_head(head).shared }
+            .literals()
+            .iter()
+            .copied()
+            .any(|lit| {
+                solver.is_true(lit)
+                    && *solver.reason(lit.var()) == head.constraint_ptr() as *const Constraint
+            }),
+        ClauseOwnerKind::Unknown => false,
+    }
 }
 
 pub(crate) fn clause_head_satisfied(head: &ClauseHead, solver: &Solver) -> bool {
-    explicit_state_from_head(head)
-        .literals
-        .as_slice()
-        .iter()
-        .copied()
-        .any(|lit| solver.is_true(lit))
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => explicit_state_from_head(head)
+            .literals
+            .as_slice()
+            .iter()
+            .copied()
+            .any(|lit| solver.is_true(lit)),
+        ClauseOwnerKind::Shared => unsafe { &*shared_state_from_head(head).shared }
+            .literals()
+            .iter()
+            .copied()
+            .any(|lit| solver.is_true(lit)),
+        ClauseOwnerKind::Unknown => false,
+    }
 }
 
 pub(crate) fn clause_head_size(head: &ClauseHead) -> u32 {
-    size32(explicit_state_from_head(head).literals.as_slice())
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => size32(explicit_state_from_head(head).literals.as_slice()),
+        ClauseOwnerKind::Shared => unsafe { &*shared_state_from_head(head).shared }.size(),
+        ClauseOwnerKind::Unknown => 0,
+    }
 }
 
 pub(crate) fn clause_head_to_lits(head: &ClauseHead) -> Vec<Literal> {
-    explicit_state_from_head(head).literals.as_slice().to_vec()
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => explicit_state_from_head(head).literals.as_slice().to_vec(),
+        ClauseOwnerKind::Shared => unsafe { &*shared_state_from_head(head).shared }
+            .literals()
+            .to_vec(),
+        ClauseOwnerKind::Unknown => Vec::new(),
+    }
 }
 
 pub(crate) fn clause_head_simplify(
     head: &mut ClauseHead,
     solver: &mut Solver,
-    _reinit: bool,
+    reinit: bool,
 ) -> bool {
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => simplify_explicit_clause(head, solver),
+        ClauseOwnerKind::Shared => simplify_shared_clause(head, solver, reinit),
+        ClauseOwnerKind::Unknown => false,
+    }
+}
+
+fn simplify_explicit_clause(head: &mut ClauseHead, solver: &mut Solver) -> bool {
     if clause_head_satisfied(head, solver) {
         return true;
     }
@@ -544,6 +780,29 @@ pub(crate) fn clause_head_simplify(
     false
 }
 
+fn simplify_shared_clause(head: &mut ClauseHead, solver: &mut Solver, _reinit: bool) -> bool {
+    if clause_head_satisfied(head, solver) {
+        head.detach(solver);
+        return true;
+    }
+    let state = shared_state_from_head_mut(head);
+    let shared = unsafe { &mut *state.shared };
+    let opt_size = shared.simplify(solver);
+    if opt_size == 0 {
+        head.detach(solver);
+        return true;
+    }
+    if solver.is_false(head.head[2]) {
+        for &literal in shared.literals() {
+            if !solver.is_false(literal) && !head.head[..2].contains(&literal) {
+                head.head[2] = literal;
+                break;
+            }
+        }
+    }
+    false
+}
+
 pub(crate) fn clause_head_destroy(
     head: &mut ClauseHead,
     solver: Option<&mut Solver>,
@@ -555,24 +814,51 @@ pub(crate) fn clause_head_destroy(
         }
         solver.remove_constraint(head.constraint_ptr());
     }
-    let state_ptr = head.owner as *mut ExplicitClauseState;
     let constraint_ptr = head.constraint_ptr();
     unsafe {
         if !constraint_ptr.is_null() {
             drop(Box::from_raw(constraint_ptr));
         }
-        if !state_ptr.is_null() {
-            drop(Box::from_raw(state_ptr));
+        match head.owner_kind {
+            ClauseOwnerKind::Explicit => {
+                let state_ptr = head.owner as *mut ExplicitClauseState;
+                if !state_ptr.is_null() {
+                    drop(Box::from_raw(state_ptr));
+                }
+            }
+            ClauseOwnerKind::Shared => {
+                let state_ptr = head.owner as *mut SharedClauseState;
+                if !state_ptr.is_null() {
+                    let shared_ptr = (*state_ptr).shared;
+                    if !shared_ptr.is_null() && (*shared_ptr).release(1) {
+                        drop(Box::from_raw(shared_ptr));
+                    }
+                    drop(Box::from_raw(state_ptr));
+                }
+            }
+            ClauseOwnerKind::Unknown => {}
         }
     }
 }
 
 pub(crate) fn clause_head_clone_attach(head: &ClauseHead, other: &mut Solver) -> *mut ClauseHead {
-    let state = explicit_state_from_head(head);
-    let rep = ClauseRep::prepared(state.literals.as_slice(), head.info);
-    let (head_ptr, _constraint_ptr) = build_explicit_clause(&rep);
-    unsafe { (*head_ptr).attach(other) };
-    head_ptr
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => {
+            let state = explicit_state_from_head(head);
+            let rep = ClauseRep::prepared(state.literals.as_slice(), head.info);
+            let (head_ptr, _constraint_ptr) = build_explicit_clause(&rep);
+            unsafe { (*head_ptr).attach(other) };
+            head_ptr
+        }
+        ClauseOwnerKind::Shared => {
+            let state = shared_state_from_head(head);
+            let (head_ptr, _constraint_ptr) =
+                build_shared_clause_from_ptr(state.shared, head.info, &head.head, true);
+            unsafe { (*head_ptr).attach(other) };
+            head_ptr
+        }
+        ClauseOwnerKind::Unknown => ptr::null_mut(),
+    }
 }
 
 pub(crate) fn clause_head_strengthen(
@@ -581,6 +867,12 @@ pub(crate) fn clause_head_strengthen(
     literal: Literal,
     _allow_to_short: bool,
 ) -> ClauseStrengthenResult {
+    if matches!(
+        head.owner_kind,
+        ClauseOwnerKind::Shared | ClauseOwnerKind::Unknown
+    ) {
+        return ClauseStrengthenResult::default();
+    }
     if clause_head_locked(head, solver) {
         return ClauseStrengthenResult::default();
     }
@@ -606,6 +898,485 @@ pub(crate) fn clause_head_strengthen(
     ClauseStrengthenResult {
         lit_removed: true,
         remove_clause,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LoopFormulaHandle {
+    pub constraint: *mut Constraint,
+    state: *mut LoopFormulaState,
+}
+
+impl LoopFormulaHandle {
+    pub fn size(&self) -> u32 {
+        unsafe { (*self.state).size() }
+    }
+}
+
+#[derive(Debug)]
+struct LoopFormulaState {
+    constraint: *mut Constraint,
+    activity: ConstraintScore,
+    end: u32,
+    size: u32,
+    strengthened: bool,
+    x_pos: u32,
+    other: u32,
+    literals: LitVec,
+}
+
+impl LoopFormulaState {
+    fn new(clause: &ClauseRep, atoms: LitView<'_>) -> Self {
+        let mut literals = LitVec::new();
+        literals.push_back(lit_true);
+        for &literal in clause.literals() {
+            literals.push_back(literal);
+        }
+        literals.push_back(lit_true);
+        for &atom in atoms {
+            literals.push_back(atom);
+        }
+        Self {
+            constraint: ptr::null_mut(),
+            activity: clause.info.score(),
+            end: clause.size + 1,
+            size: size32(literals.as_slice()),
+            strengthened: false,
+            x_pos: 1,
+            other: 1,
+            literals,
+        }
+    }
+
+    fn begin(&self) -> usize {
+        1
+    }
+
+    fn x_begin(&self) -> usize {
+        self.end as usize + 1
+    }
+
+    fn x_end(&self) -> usize {
+        self.size as usize
+    }
+
+    fn size(&self) -> u32 {
+        self.size - (2 + self.x_pos)
+    }
+
+    fn init(&mut self, solver: &mut Solver, clause: &ClauseRep, atoms: LitView<'_>, heu: bool) {
+        if self.end > 2 {
+            self.literals[2].flag();
+            solver.add_watch(!self.literals[2], self.constraint, (2 << 1) + 1);
+        }
+        let first_atom = self.literals[1];
+        for &atom in atoms {
+            self.activity.bump_activity();
+            solver.add_watch(!atom, self.constraint, (1 << 1) + 1);
+            if heu {
+                self.literals[1] = atom;
+                let solver_ptr: *const Solver = solver;
+                solver.heuristic_mut().new_constraint(
+                    unsafe { &*solver_ptr },
+                    &self.literals.as_slice()[1..1 + clause.size as usize],
+                    ConstraintType::Loop,
+                );
+            }
+        }
+        self.literals[1] = first_atom;
+        self.literals[1].flag();
+    }
+
+    fn detach(&mut self, solver: &mut Solver) {
+        for index in (self.begin() + self.x_pos as usize)..self.end as usize {
+            if is_sentinel(self.literals[index]) {
+                break;
+            }
+            if self.literals[index].flagged() {
+                solver.remove_watch(!self.literals[index], self.constraint);
+                self.literals[index].unflag();
+            }
+        }
+        for index in self.x_begin()..self.x_end() {
+            solver.remove_watch(!self.literals[index], self.constraint);
+        }
+    }
+
+    fn attach(&mut self, solver: &mut Solver) {
+        for index in (self.begin() + self.x_pos as usize)..self.end as usize {
+            if is_sentinel(self.literals[index]) {
+                break;
+            }
+            if self.literals[index].flagged() {
+                solver.add_watch(
+                    !self.literals[index],
+                    self.constraint,
+                    ((index as u32) << 1) + 1,
+                );
+            }
+        }
+        if self.x_pos != 0 {
+            for index in self.x_begin()..self.x_end() {
+                solver.add_watch(
+                    !self.literals[index],
+                    self.constraint,
+                    (self.x_pos << 1) + 1,
+                );
+            }
+        }
+    }
+
+    fn other_is_sat(&mut self, solver: &Solver) -> bool {
+        if self.other != self.x_pos {
+            return solver.is_true(self.literals[self.other as usize]);
+        }
+        if !solver.is_true(self.literals[self.other as usize]) {
+            return false;
+        }
+        for index in self.x_begin()..self.x_end() {
+            let lit = self.literals[index];
+            if !solver.is_true(lit) {
+                if self.literals[self.x_pos as usize].flagged() {
+                    self.literals[self.x_pos as usize] = lit;
+                    self.literals[self.x_pos as usize].flag();
+                } else {
+                    self.literals[self.x_pos as usize] = lit;
+                }
+                return false;
+            }
+        }
+        true
+    }
+}
+
+#[derive(Debug)]
+struct LoopFormulaConstraint {
+    state: *mut LoopFormulaState,
+}
+
+impl LoopFormulaConstraint {
+    fn new(state: *mut LoopFormulaState) -> Self {
+        Self { state }
+    }
+
+    fn state_mut(&mut self) -> &mut LoopFormulaState {
+        unsafe { &mut *self.state }
+    }
+
+    fn state_ref(&self) -> &LoopFormulaState {
+        unsafe { &*self.state }
+    }
+}
+
+impl ConstraintDyn for LoopFormulaConstraint {
+    fn propagate(
+        &mut self,
+        solver: &mut Solver,
+        mut literal: Literal,
+        data: &mut u32,
+    ) -> PropResult {
+        let state = self.state_mut();
+        if state.other_is_sat(solver) {
+            return PropResult::new(true, true);
+        }
+        let idx = (*data >> 1) as usize;
+        let head = idx == state.x_pos as usize;
+        if head {
+            literal = !literal;
+            if state.literals[idx] != literal && solver.is_false(state.literals[idx]) {
+                return PropResult::new(true, true);
+            }
+            if !state.literals[idx].flagged() {
+                state.literals[idx] = literal;
+                return PropResult::new(true, true);
+            }
+            state.literals[idx] = literal;
+            state.literals[idx].flag();
+        }
+        let mut bounds = 0;
+        let mut dir = (((*data) & 1) << 1) as i32 - 1;
+        let mut watch = idx as i32;
+        loop {
+            loop {
+                watch += dir;
+                let candidate = state.literals[watch as usize];
+                if !solver.is_false(candidate) {
+                    break;
+                }
+            }
+            let next = state.literals[watch as usize];
+            if !is_sentinel(next) {
+                let next_index = watch as usize;
+                if next.flagged() {
+                    state.other = next_index as u32;
+                    continue;
+                }
+                state.literals[idx].unflag();
+                state.literals[next_index].flag();
+                if next_index != state.x_pos as usize {
+                    solver.add_watch(
+                        !state.literals[next_index],
+                        state.constraint,
+                        ((next_index as u32) << 1) + u32::from(dir == 1),
+                    );
+                }
+                return PropResult::new(true, head);
+            }
+            bounds += 1;
+            if bounds == 1 {
+                watch = idx as i32;
+                dir *= -1;
+                *data ^= 1;
+                continue;
+            }
+            let antecedent = Antecedent::from_constraint_ptr(state.constraint);
+            let mut ok = solver.force(state.literals[state.other as usize], antecedent);
+            if state.other == state.x_pos && ok {
+                for index in state.x_begin()..state.x_end() {
+                    ok = solver.force(state.literals[index], antecedent);
+                    if !ok {
+                        break;
+                    }
+                }
+            }
+            return PropResult::new(ok, true);
+        }
+    }
+
+    fn reason(&mut self, _solver: &mut Solver, literal: Literal, lits: &mut LitVec) {
+        let state = self.state_mut();
+        let mut score = state.activity;
+        score.bump_activity();
+        state.activity = score;
+        let start = state.begin() + usize::from(state.other == state.x_pos);
+        for index in start..state.end as usize {
+            let current = state.literals[index];
+            if !is_sentinel(current) && current != literal {
+                lits.push_back(!current);
+            }
+        }
+    }
+
+    fn clone_attach(&self, _other: &mut Solver) -> Option<Box<Constraint>> {
+        None
+    }
+
+    fn simplify(&mut self, solver: &mut Solver, _reinit: bool) -> bool {
+        let state = self.state_mut();
+        if state.other_is_sat(solver)
+            || (state.other != state.x_pos && {
+                state.other = state.x_pos;
+                state.other_is_sat(solver)
+            })
+        {
+            state.detach(solver);
+            return true;
+        }
+
+        let old_total = state.x_end();
+        let mut it = state.begin();
+        while it < state.end as usize && solver.value(state.literals[it].var()) == value_free {
+            it += 1;
+        }
+        let mut write = it;
+        if it < state.end as usize && !is_sentinel(state.literals[it]) {
+            if state.literals[it] == state.literals[state.x_pos as usize] {
+                state.x_pos = 0;
+            }
+            while it < state.end as usize && !is_sentinel(state.literals[it]) {
+                let current = state.literals[it];
+                if solver.value(current.var()) == value_free {
+                    state.literals[write] = current;
+                    write += 1;
+                } else if solver.is_true(current) {
+                    state.detach(solver);
+                    return true;
+                } else {
+                    debug_assert!(!current.flagged(), "constraint not propagated");
+                }
+                it += 1;
+            }
+            state.literals[write] = lit_true;
+            state.end = write as u32;
+        }
+
+        let mut read_atoms = it.saturating_add(1);
+        let mut write_atoms = write.saturating_add(1);
+        while read_atoms < old_total {
+            let current = state.literals[read_atoms];
+            if solver.value(current.var()) == value_free && state.x_pos != 0 {
+                state.literals[write_atoms] = current;
+                write_atoms += 1;
+            } else {
+                solver.remove_watch(!current, state.constraint);
+            }
+            read_atoms += 1;
+        }
+
+        let is_clause = write_atoms.saturating_sub(state.x_begin()) == 1;
+        if is_clause {
+            write_atoms -= 1;
+        }
+        let size_changed = write_atoms != old_total;
+        if size_changed {
+            state.strengthened = true;
+            if is_clause {
+                state.x_pos = 0;
+            }
+            shrink_vec_to(&mut state.literals, write_atoms);
+            state.size = write_atoms as u32;
+        }
+
+        state.other = state.x_pos + 1;
+        let active_end = state.end.saturating_sub(1) as usize;
+        let active = ClauseRep::create(
+            &state.literals.as_slice()[state.begin()..active_end],
+            ClauseInfo::new(ConstraintType::Loop),
+        );
+        if solver.allow_implicit(&active) {
+            state.detach(solver);
+            let loop_atoms = if state.x_pos != 0 {
+                state.literals.as_slice()[state.x_begin()..state.x_end()].to_vec()
+            } else {
+                vec![state.literals[state.begin()]]
+            };
+            for atom in loop_atoms {
+                debug_assert_eq!(solver.value(atom.var()), value_free);
+                let mut lits = state.literals.as_slice()[state.begin()..active_end].to_vec();
+                lits[0] = atom;
+                let rep = ClauseRep::prepared(&lits, ClauseInfo::new(ConstraintType::Loop));
+                let _ = ClauseCreator::create_from_rep(solver, &rep, CLAUSE_NO_ADD);
+            }
+            return true;
+        }
+        if size_changed {
+            state.detach(solver);
+            if state.x_pos != 0 {
+                state.literals[state.x_pos as usize].flag();
+            }
+            let body_watch = state.begin() + state.x_pos as usize + 1;
+            if body_watch < state.end as usize && !is_sentinel(state.literals[body_watch]) {
+                state.literals[body_watch].flag();
+            }
+            state.attach(solver);
+        }
+        false
+    }
+
+    fn destroy(&mut self, solver: Option<&mut Solver>, detach: bool) {
+        let state = self.state_mut();
+        if let Some(solver) = solver {
+            if detach {
+                state.detach(solver);
+            }
+            solver.remove_constraint(state.constraint);
+        }
+        unsafe {
+            drop(Box::from_raw(self.state));
+        }
+    }
+
+    fn minimize(
+        &mut self,
+        solver: &mut Solver,
+        literal: Literal,
+        rec: *mut crate::clasp::constraint::CCMinRecursive,
+    ) -> bool {
+        let state = self.state_mut();
+        let mut score = state.activity;
+        score.bump_activity();
+        state.activity = score;
+        let start = state.begin() + usize::from(state.other == state.x_pos);
+        for index in start..state.end as usize {
+            let current = state.literals[index];
+            if !is_sentinel(current) && current != literal && !solver.cc_minimize(!current, rec) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn constraint_type(&self) -> ConstraintType {
+        ConstraintType::Loop
+    }
+
+    fn locked(&self, solver: &Solver) -> bool {
+        let state = self.state_ref();
+        if state.other != state.x_pos || !solver.is_true(state.literals[state.other as usize]) {
+            return solver.is_true(state.literals[state.other as usize])
+                && *solver.reason(state.literals[state.other as usize].var())
+                    == state.constraint as *const Constraint;
+        }
+        (state.x_begin()..state.x_end()).any(|index| {
+            let literal = state.literals[index];
+            solver.is_true(literal)
+                && *solver.reason(literal.var()) == state.constraint as *const Constraint
+        })
+    }
+
+    fn activity(&self) -> ConstraintScore {
+        self.state_ref().activity
+    }
+
+    fn decrease_activity(&mut self) {
+        self.state_mut().activity.reduce();
+    }
+
+    fn reset_activity(&mut self) {
+        self.state_mut()
+            .activity
+            .reset(0, crate::clasp::constraint::lbd_max);
+    }
+
+    fn is_open(
+        &mut self,
+        solver: &Solver,
+        types: &crate::clasp::constraint::TypeSet,
+        free_lits: &mut LitVec,
+    ) -> u32 {
+        let state = self.state_mut();
+        if !types.contains(ConstraintType::Loop) || state.other_is_sat(solver) {
+            return 0;
+        }
+        for index in (state.begin() + state.x_pos as usize)..state.end as usize {
+            let literal = state.literals[index];
+            if is_sentinel(literal) {
+                break;
+            }
+            let value = solver.value(literal.var());
+            if value == value_free {
+                free_lits.push_back(literal);
+            } else if value == true_value(literal) {
+                state.other = index as u32;
+                return 0;
+            }
+        }
+        for index in state.x_begin()..state.x_end() {
+            let literal = state.literals[index];
+            if solver.value(literal.var()) == value_free {
+                free_lits.push_back(literal);
+            }
+        }
+        ConstraintType::Loop.as_u32()
+    }
+}
+
+pub fn new_loop_formula(
+    solver: &mut Solver,
+    clause: &ClauseRep,
+    atoms: LitView<'_>,
+    update_heuristic: bool,
+) -> LoopFormulaHandle {
+    let mut state = Box::new(LoopFormulaState::new(clause, atoms));
+    let state_ptr: *mut LoopFormulaState = &mut *state;
+    let constraint = Box::new(Constraint::new(LoopFormulaConstraint::new(state_ptr)));
+    let constraint_ptr = Box::into_raw(constraint);
+    state.constraint = constraint_ptr;
+    state.init(solver, clause, atoms, update_heuristic);
+    let _ = Box::into_raw(state);
+    LoopFormulaHandle {
+        constraint: constraint_ptr,
+        state: state_ptr,
     }
 }
 
@@ -1031,7 +1802,7 @@ impl ClauseCreator {
             } else {
                 Self::new_problem_clause(solver, clause, flags)
             };
-        } else if !has_flag(flags, CLAUSE_NO_ADD) {
+        } else {
             let _ = solver.add(clause, true);
         }
         if status.unit() || status == ClauseStatus::Unsat || status == ClauseStatus::Asserting {
@@ -1077,15 +1848,9 @@ impl ClauseCreator {
         watched: &[Literal],
         info: ClauseInfo,
     ) -> *mut ClauseHead {
-        let mut temp = LitVec::new();
-        temp.assign_from_slice(watched);
-        for &lit in clause.literals() {
-            if Self::watch_order(solver, lit) > 0 && !temp.as_slice().contains(&lit) {
-                temp.push_back(lit);
-            }
-        }
-        let rep = ClauseRep::prepared(temp.as_slice(), info);
-        let (head_ptr, _constraint_ptr) = build_explicit_clause(&rep);
+        let shared = clone_shared_literals(clause);
+        let (head_ptr, _constraint_ptr) =
+            build_shared_clause_from_ptr(shared, info, watched, false);
         unsafe { (*head_ptr).attach(solver) };
         head_ptr
     }

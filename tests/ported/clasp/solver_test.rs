@@ -1,15 +1,21 @@
 use std::cell::RefCell;
+use std::ptr::NonNull;
 use std::rc::Rc;
 
-use rust_clasp::clasp::clause::ClauseRep;
-use rust_clasp::clasp::constraint::{Antecedent, Constraint, ConstraintDyn, PropResult, Solver};
+use rust_clasp::clasp::clause::{ClauseCreator, ClauseRep};
+use rust_clasp::clasp::constraint::{
+    Antecedent, CCMinRecursive, Constraint, ConstraintDyn, PostPropagator, PostPropagatorDyn,
+    PropResult, Solver, priority_class_general,
+};
 use rust_clasp::clasp::literal::{
     LitVec, ValueVec, neg_lit, pos_lit, value_false, value_free, value_true,
 };
+use rust_clasp::clasp::pod_vector::contains;
 use rust_clasp::clasp::shared_context::SharedContext;
+use rust_clasp::clasp::solver_strategies::CCMinAntes;
 use rust_clasp::clasp::solver_types::{
-    Assignment, ClauseWatch, GenericWatch, ReasonStore64, ReasonStore64Value, ValueSet, WatchList,
-    release_vec,
+    Assignment, ClauseWatch, ExtendedStats, GenericWatch, ReasonStore64, ReasonStore64Value,
+    ValueSet, WatchList, release_vec,
 };
 use rust_clasp::clasp::util::indexed_priority_queue::IndexedPriorityQueue;
 use rust_clasp::clasp::{clause::ClauseInfo, constraint::ClauseHead, constraint::ConstraintType};
@@ -74,6 +80,43 @@ struct TrackingConstraint {
     keep_watch: bool,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct PostTrace {
+    inits: u32,
+    props: u32,
+    resets: u32,
+}
+
+struct TrackingPostProp {
+    trace: Rc<RefCell<PostTrace>>,
+    priority: u32,
+    fail: bool,
+}
+
+impl PostPropagatorDyn for TrackingPostProp {
+    fn priority(&self) -> u32 {
+        self.priority
+    }
+
+    fn propagate_fixpoint(
+        &mut self,
+        _s: &mut Solver,
+        _ctx: Option<NonNull<PostPropagator>>,
+    ) -> bool {
+        self.trace.borrow_mut().props += 1;
+        !self.fail
+    }
+
+    fn init(&mut self, _s: &mut Solver) -> bool {
+        self.trace.borrow_mut().inits += 1;
+        true
+    }
+
+    fn reset(&mut self) {
+        self.trace.borrow_mut().resets += 1;
+    }
+}
+
 impl ConstraintDyn for TrackingConstraint {
     fn propagate(
         &mut self,
@@ -108,6 +151,19 @@ impl ConstraintDyn for TrackingConstraint {
 
 fn right_watch_data(list: &WatchList) -> Vec<u32> {
     list.right_view().map(|watch| watch.data).collect()
+}
+
+fn add_tracking_post(
+    solver: &mut Solver,
+    trace: Rc<RefCell<PostTrace>>,
+    priority: u32,
+    fail: bool,
+) -> bool {
+    solver.add_post(Box::new(PostPropagator::new(TrackingPostProp {
+        trace,
+        priority,
+        fail,
+    })))
 }
 
 #[test]
@@ -526,6 +582,176 @@ fn solver_watch_management_and_backtrack_follow_upstream_kernel_rules() {
 }
 
 #[test]
+fn solver_post_propagators_follow_init_priority_and_incremental_attachment_rules() {
+    let mut ctx = SharedContext::default();
+    let _ = ctx.add_var();
+
+    let simple_trace = Rc::new(RefCell::new(PostTrace::default()));
+    let medium_trace = Rc::new(RefCell::new(PostTrace::default()));
+    let general_trace = Rc::new(RefCell::new(PostTrace::default()));
+    let late_trace = Rc::new(RefCell::new(PostTrace::default()));
+
+    let solver = ctx.start_add_constraints();
+    assert!(add_tracking_post(
+        solver,
+        Rc::clone(&general_trace),
+        priority_class_general,
+        false,
+    ));
+    assert!(add_tracking_post(
+        solver,
+        Rc::clone(&simple_trace),
+        10,
+        false
+    ));
+    assert!(add_tracking_post(
+        solver,
+        Rc::clone(&medium_trace),
+        20,
+        false
+    ));
+
+    let simple = solver.get_post(10).expect("missing priority 10 post");
+    let medium = solver.get_post(20).expect("missing priority 20 post");
+    let general = solver
+        .get_post(priority_class_general)
+        .expect("missing general post");
+    unsafe {
+        assert_eq!(simple.as_ref().next, Some(medium));
+        assert_eq!(medium.as_ref().next, Some(general));
+        assert!(general.as_ref().next.is_none());
+    }
+
+    assert!(solver.propagate());
+    assert_eq!(simple_trace.borrow().props, 0);
+    assert_eq!(medium_trace.borrow().props, 0);
+    assert_eq!(general_trace.borrow().props, 0);
+
+    assert!(ctx.end_init());
+    assert_eq!(simple_trace.borrow().inits, 1);
+    assert_eq!(medium_trace.borrow().inits, 1);
+    assert_eq!(general_trace.borrow().inits, 1);
+    assert_eq!(simple_trace.borrow().props, 1);
+    assert_eq!(medium_trace.borrow().props, 1);
+    assert_eq!(general_trace.borrow().props, 1);
+
+    let solver = ctx.master();
+    let removed = solver.remove_post(medium).expect("expected removed post");
+    assert!(solver.propagate());
+    assert_eq!(simple_trace.borrow().props, 2);
+    assert_eq!(medium_trace.borrow().props, 1);
+    assert_eq!(general_trace.borrow().props, 2);
+
+    assert!(solver.add_post(removed));
+    assert_eq!(medium_trace.borrow().inits, 2);
+    assert!(add_tracking_post(
+        solver,
+        Rc::clone(&late_trace),
+        priority_class_general,
+        false,
+    ));
+    assert_eq!(late_trace.borrow().inits, 1);
+
+    let medium = solver.get_post(20).expect("missing reattached medium post");
+    let general = solver
+        .get_post(priority_class_general)
+        .expect("missing general post after reattach");
+    unsafe {
+        assert_eq!(medium.as_ref().next, Some(general));
+        assert!(general.as_ref().next.is_some());
+    }
+}
+
+#[test]
+fn solver_post_propagation_helpers_match_upstream_subset() {
+    let mut ctx = SharedContext::default();
+    let _ = ctx.add_var();
+
+    let p1_trace = Rc::new(RefCell::new(PostTrace::default()));
+    let p2_trace = Rc::new(RefCell::new(PostTrace::default()));
+    let p3_trace = Rc::new(RefCell::new(PostTrace::default()));
+
+    let solver = ctx.start_add_constraints();
+    assert!(add_tracking_post(solver, Rc::clone(&p1_trace), 10, false));
+    assert!(add_tracking_post(solver, Rc::clone(&p2_trace), 20, false));
+    assert!(add_tracking_post(solver, Rc::clone(&p3_trace), 30, false));
+    assert!(ctx.end_init());
+
+    let solver = ctx.master();
+    p1_trace.borrow_mut().props = 0;
+    p2_trace.borrow_mut().props = 0;
+    p3_trace.borrow_mut().props = 0;
+
+    let p3 = solver.get_post(30).expect("missing priority 30 post");
+    assert_eq!(solver.propagate_until(None, Some(20)), value_free);
+    assert_eq!(p1_trace.borrow().props, 1);
+    assert_eq!(p2_trace.borrow().props, 1);
+    assert_eq!(p3_trace.borrow().props, 0);
+
+    assert!(solver.propagate_from(p3));
+    assert_eq!(p1_trace.borrow().props, 1);
+    assert_eq!(p2_trace.borrow().props, 1);
+    assert_eq!(p3_trace.borrow().props, 1);
+
+    p1_trace.borrow_mut().props = 0;
+    p2_trace.borrow_mut().props = 0;
+    p3_trace.borrow_mut().props = 0;
+    assert_eq!(solver.propagate_until(None, None), value_true);
+    assert_eq!(p1_trace.borrow().props, 1);
+    assert_eq!(p2_trace.borrow().props, 1);
+    assert_eq!(p3_trace.borrow().props, 1);
+}
+
+#[test]
+fn solver_push_root_and_stop_conflict_cover_current_control_surface() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(3);
+    solver.set_num_problem_vars(3);
+
+    assert!(solver.assume(pos_lit(1)));
+    assert!(solver.propagate());
+    assert!(solver.assume(pos_lit(2)));
+    assert_eq!(solver.decision_level(), 2);
+    assert_eq!(solver.queue_size(), 1);
+
+    solver.push_root_level(1);
+    assert_eq!(solver.root_level(), 1);
+    assert_eq!(solver.backtrack_level(), 1);
+
+    assert!(solver.push_root(pos_lit(3)));
+    assert_eq!(solver.root_level(), 2);
+    assert_eq!(solver.decision_level(), 2);
+    assert!(solver.is_true(pos_lit(1)));
+    assert!(solver.is_true(pos_lit(3)));
+    assert_eq!(solver.value(2), value_free);
+
+    solver.set_backtrack_level(1);
+    let saved_bt = solver.backtrack_level();
+    assert_eq!(solver.queue_size(), 0);
+
+    assert!(solver.assume(neg_lit(2)));
+    assert_eq!(solver.queue_size(), 1);
+    solver.set_stop_conflict();
+    assert!(solver.has_stop_conflict());
+    assert!(solver.has_conflict());
+    assert_eq!(solver.root_level(), solver.decision_level());
+    assert_eq!(solver.backtrack_level(), solver.decision_level());
+
+    solver.clear_stop_conflict();
+    assert!(!solver.has_stop_conflict());
+    assert!(!solver.has_conflict());
+    assert_eq!(solver.backtrack_level(), saved_bt);
+    assert_eq!(solver.queue_size(), 1);
+    assert!(solver.propagate());
+
+    assert!(solver.pop_root_level(1));
+    assert_eq!(solver.root_level(), 1);
+    assert_eq!(solver.decision_level(), 1);
+    assert!(solver.is_true(pos_lit(1)));
+    assert_eq!(solver.value(3), value_free);
+}
+
+#[test]
 fn solver_conflict_reason_and_clear_assumptions_cover_bundle_a_kernel_subset() {
     let mut ctx = SharedContext::default();
     let a = ctx.add_var();
@@ -551,4 +777,504 @@ fn solver_conflict_reason_and_clear_assumptions_cover_bundle_a_kernel_subset() {
     assert_eq!(solver.decision_level(), 0);
     assert_eq!(solver.num_assigned_vars(), 0);
     assert!(!solver.has_conflict());
+}
+
+#[test]
+fn short_implication_graph_remove_tracks_static_and_learnt_edges() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+    let b = ctx.add_var();
+    let c = ctx.add_var();
+
+    let _ = ctx.start_add_constraints();
+    assert!(ctx.add_binary(pos_lit(a), pos_lit(b)));
+    assert!(ctx.add_ternary(pos_lit(a), pos_lit(b), pos_lit(c)));
+    assert_eq!(ctx.num_binary(), 1);
+    assert_eq!(ctx.num_ternary(), 1);
+
+    assert_eq!(
+        ctx.add_imp(&[neg_lit(a), neg_lit(b)], ConstraintType::Conflict),
+        1
+    );
+    assert_eq!(ctx.num_learnt_short(), 1);
+
+    ctx.remove_imp(&[pos_lit(a), pos_lit(b)], false);
+    ctx.remove_imp(&[pos_lit(a), pos_lit(b), pos_lit(c)], false);
+    ctx.remove_imp(&[neg_lit(a), neg_lit(b)], true);
+
+    assert_eq!(ctx.num_binary(), 0);
+    assert_eq!(ctx.num_ternary(), 0);
+    assert_eq!(ctx.num_learnt_short(), 0);
+}
+
+#[test]
+fn solver_simplify_removes_satisfied_binary_short_clauses() {
+    let mut ctx = SharedContext::default();
+    let a = pos_lit(ctx.add_var());
+    let b = pos_lit(ctx.add_var());
+    let c = pos_lit(ctx.add_var());
+    let d = pos_lit(ctx.add_var());
+
+    let solver = ctx.start_add_constraints();
+    assert!(solver.add(
+        &ClauseRep::prepared(&[a, b], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(&[a, c], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(&[!a, d], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+
+    assert!(solver.force(a, Antecedent::new()));
+    assert!(solver.simplify());
+    assert_eq!(ctx.num_binary(), 0);
+}
+
+#[test]
+fn solver_simplify_removes_satisfied_ternary_and_keeps_binary_residual() {
+    let mut ctx = SharedContext::default();
+    let a = pos_lit(ctx.add_var());
+    let b = pos_lit(ctx.add_var());
+    let c = pos_lit(ctx.add_var());
+    let d = pos_lit(ctx.add_var());
+
+    let solver = ctx.start_add_constraints();
+    assert!(solver.add(
+        &ClauseRep::prepared(&[a, b, d], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(&[!a, b, c], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+
+    assert!(solver.force(a, Antecedent::new()));
+    assert!(solver.simplify());
+    assert!(solver.assume(!b));
+    let shared = solver.shared_context().unwrap();
+    assert_eq!(shared.num_ternary(), 0);
+    assert_eq!(shared.num_binary(), 1);
+    assert!(solver.propagate());
+    assert!(solver.is_true(c));
+}
+
+#[test]
+fn solver_estimate_bcp_matches_upstream_binary_walk_and_loop_behavior() {
+    let mut ctx = SharedContext::default();
+    let a = pos_lit(ctx.add_var());
+    let b = pos_lit(ctx.add_var());
+    let c = pos_lit(ctx.add_var());
+    let d = pos_lit(ctx.add_var());
+    let e = pos_lit(ctx.add_var());
+
+    let solver = ctx.start_add_constraints();
+    assert!(solver.add(
+        &ClauseRep::prepared(&[a, b], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(&[!b, c], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(&[!c, d], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(&[!d, e], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+
+    for depth in 0..4 {
+        assert_eq!(solver.estimate_bcp(!a, depth), depth as u32 + 2);
+    }
+
+    let mut loop_ctx = SharedContext::default();
+    let a = pos_lit(loop_ctx.add_var());
+    let b = pos_lit(loop_ctx.add_var());
+    let c = pos_lit(loop_ctx.add_var());
+    let solver = loop_ctx.start_add_constraints();
+    assert!(solver.add(
+        &ClauseRep::prepared(&[a, b], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(&[!b, c], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(&[!c, !a], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert_eq!(solver.estimate_bcp(!a, -1), 3);
+}
+
+#[test]
+fn solver_reverse_arc_reports_binary_and_ternary_short_reasons() {
+    let mut binary_ctx = SharedContext::default();
+    let a = pos_lit(binary_ctx.add_var());
+    let b = pos_lit(binary_ctx.add_var());
+
+    let solver = binary_ctx.start_add_constraints();
+    assert!(solver.add(
+        &ClauseRep::prepared(&[a, b], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(binary_ctx.end_init());
+
+    let solver = binary_ctx.master();
+    assert!(solver.force(!b, Antecedent::new()));
+    solver.mark_seen_literal(!b);
+
+    let binary = solver.reverse_arc(!a, 1).unwrap();
+    assert_eq!(binary.type_(), Antecedent::BINARY);
+    assert_eq!(binary.first_literal(), !b);
+
+    let mut ternary_ctx = SharedContext::default();
+    let a = pos_lit(ternary_ctx.add_var());
+    let b = pos_lit(ternary_ctx.add_var());
+    let c = pos_lit(ternary_ctx.add_var());
+
+    let solver = ternary_ctx.start_add_constraints();
+    assert!(solver.add(
+        &ClauseRep::prepared(&[a, b, c], ClauseInfo::new(ConstraintType::Static)),
+        true
+    ));
+    assert!(ternary_ctx.end_init());
+
+    let solver = ternary_ctx.master();
+    assert!(solver.force(!b, Antecedent::new()));
+    assert!(solver.force(!c, Antecedent::new()));
+    solver.mark_seen_literal(!b);
+    solver.mark_seen_literal(!c);
+
+    let ternary = solver.reverse_arc(!a, 1).unwrap();
+    assert_eq!(ternary.type_(), Antecedent::TERNARY);
+    assert_eq!(ternary.first_literal(), !b);
+    assert_eq!(ternary.second_literal(), !c);
+}
+
+#[test]
+fn solver_cc_minimize_matches_seen_and_marked_level_recursion() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(4);
+    solver.set_num_problem_vars(4);
+    solver.set_decision_level(3);
+
+    let a = pos_lit(1);
+    let b = pos_lit(2);
+    let d = pos_lit(4);
+
+    solver.set_value(a.var(), value_true, 1);
+    solver.set_value(b.var(), value_true, 2);
+    solver.set_value(d.var(), value_true, 3);
+    solver.set_reason(b.var(), Antecedent::from_literal(a));
+    solver.set_reason(d.var(), Antecedent::from_literal(b));
+
+    assert!(!solver.cc_minimize(d, std::ptr::null_mut()));
+
+    solver.mark_level(3);
+    let mut rec = CCMinRecursive::default();
+    solver.prepare_cc_min_recursive(&mut rec);
+    assert!(!solver.cc_minimize(d, &mut rec));
+
+    solver.mark_level(2);
+    solver.mark_seen_var(a.var());
+    solver.prepare_cc_min_recursive(&mut rec);
+    assert!(solver.cc_minimize(d, &mut rec));
+}
+
+#[test]
+fn solver_cc_minimize_honors_recursive_antecedent_limits() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(4);
+    solver.set_num_problem_vars(4);
+    solver.set_decision_level(3);
+
+    let a = pos_lit(1);
+    let b = pos_lit(2);
+    let c = pos_lit(3);
+    let d = pos_lit(4);
+
+    solver.set_value(a.var(), value_true, 1);
+    solver.set_value(b.var(), value_true, 2);
+    solver.set_value(c.var(), value_true, 2);
+    solver.set_value(d.var(), value_true, 3);
+    solver.set_reason(b.var(), Antecedent::from_literal(a));
+    solver.set_reason(d.var(), Antecedent::from_literals(b, c));
+
+    solver.mark_level(3);
+    solver.mark_level(2);
+    solver.mark_seen_var(a.var());
+    solver.mark_seen_var(c.var());
+
+    let mut rec = CCMinRecursive::default();
+    solver.strategies_mut().cc_min_antes = CCMinAntes::AllAntes as u32;
+    solver.prepare_cc_min_recursive(&mut rec);
+    assert!(solver.cc_minimize(d, &mut rec));
+
+    solver.strategies_mut().cc_min_antes = CCMinAntes::BinaryAntes as u32;
+    solver.prepare_cc_min_recursive(&mut rec);
+    assert!(!solver.cc_minimize(d, &mut rec));
+}
+
+#[test]
+fn solver_resolve_conflict_learns_unit_uip_from_short_implications() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+    let b = ctx.add_var();
+    let c = ctx.add_var();
+
+    let solver = ctx.start_add_constraints();
+    solver.stats_mut().enable_extended();
+    assert!(solver.add(
+        &ClauseRep::prepared(
+            &[pos_lit(a), pos_lit(b)],
+            ClauseInfo::new(ConstraintType::Static)
+        ),
+        true,
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(
+            &[neg_lit(b), pos_lit(c)],
+            ClauseInfo::new(ConstraintType::Static)
+        ),
+        true,
+    ));
+    assert!(solver.add(
+        &ClauseRep::prepared(
+            &[neg_lit(a), pos_lit(c)],
+            ClauseInfo::new(ConstraintType::Static)
+        ),
+        true,
+    ));
+    assert!(!solver.assume(neg_lit(c)) || !solver.propagate());
+
+    assert!(solver.resolve_conflict());
+    assert!(!solver.has_conflict());
+    assert!(solver.is_true(pos_lit(c)));
+    assert_eq!(solver.decision_level(), 0);
+    let conflict_index = ExtendedStats::index(ConstraintType::Conflict).unwrap();
+    assert_eq!(
+        solver.stats().extra.as_ref().unwrap().learnts[conflict_index],
+        1
+    );
+}
+
+#[test]
+fn solver_resolve_conflict_builds_first_uip_learnt_clause() {
+    let mut ctx = SharedContext::default();
+    let x1 = pos_lit(ctx.add_var());
+    let x2 = pos_lit(ctx.add_var());
+    let x3 = pos_lit(ctx.add_var());
+    let x4 = pos_lit(ctx.add_var());
+    let x5 = pos_lit(ctx.add_var());
+    let x6 = pos_lit(ctx.add_var());
+    let x7 = pos_lit(ctx.add_var());
+    let x8 = pos_lit(ctx.add_var());
+    let x9 = pos_lit(ctx.add_var());
+    let x10 = pos_lit(ctx.add_var());
+    let x11 = pos_lit(ctx.add_var());
+    let x12 = pos_lit(ctx.add_var());
+    let x13 = pos_lit(ctx.add_var());
+    let x14 = pos_lit(ctx.add_var());
+    let x15 = pos_lit(ctx.add_var());
+    let x16 = pos_lit(ctx.add_var());
+    let x17 = pos_lit(ctx.add_var());
+
+    let solver_ptr = ctx.start_add_constraints() as *mut Solver;
+    unsafe {
+        let solver = &mut *solver_ptr;
+        let mut creator = ClauseCreator::new(Some(solver));
+        creator
+            .start(ConstraintType::Static)
+            .add(!x11)
+            .add(x12)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(x1)
+            .add(!x12)
+            .add(!x13)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x4)
+            .add(!x12)
+            .add(x14)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(x13)
+            .add(!x14)
+            .add(!x15)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x2)
+            .add(x15)
+            .add(x16)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(x3)
+            .add(x15)
+            .add(!x17)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x6)
+            .add(!x16)
+            .add(x17)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x2)
+            .add(x9)
+            .add(x10)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x4)
+            .add(!x7)
+            .add(!x8)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(x5)
+            .add(x6)
+            .end_with_defaults();
+    }
+    assert!(ctx.end_init());
+
+    let solver = ctx.master();
+    assert!(solver.assume(!x1) && solver.propagate());
+    assert!(solver.assume(x2) && solver.propagate());
+    assert!(solver.assume(!x3) && solver.propagate());
+    assert!(solver.assume(x4) && solver.propagate());
+    assert!(solver.assume(!x5) && solver.propagate());
+    assert!(solver.assume(x7) && solver.propagate());
+    assert!(solver.assume(!x9) && solver.propagate());
+    assert!(!solver.assume(x11) || !solver.propagate());
+
+    assert!(solver.resolve_conflict());
+    assert!(solver.is_true(x15));
+    assert_eq!(solver.decision_level(), 5);
+    let mut antecedent = *solver.reason(x15.var());
+    assert_eq!(antecedent.type_(), Antecedent::GENERIC);
+
+    let mut reason = LitVec::new();
+    antecedent.reason(solver, x15, &mut reason);
+    reason.push_back(x15);
+    assert_eq!(reason.len(), 4);
+    assert!(contains(reason.as_slice(), &x2));
+    assert!(contains(reason.as_slice(), &!x3));
+    assert!(contains(reason.as_slice(), &x6));
+    assert!(contains(reason.as_slice(), &x15));
+}
+
+#[test]
+fn solver_resolve_conflict_respects_bounded_backjump_level() {
+    let mut ctx = SharedContext::default();
+    let x1 = pos_lit(ctx.add_var());
+    let x2 = pos_lit(ctx.add_var());
+    let x3 = pos_lit(ctx.add_var());
+    let x4 = pos_lit(ctx.add_var());
+    let x5 = pos_lit(ctx.add_var());
+    let x6 = pos_lit(ctx.add_var());
+    let x7 = pos_lit(ctx.add_var());
+    let x8 = pos_lit(ctx.add_var());
+    let x9 = pos_lit(ctx.add_var());
+    let x10 = pos_lit(ctx.add_var());
+    let x11 = pos_lit(ctx.add_var());
+    let x12 = pos_lit(ctx.add_var());
+    let x13 = pos_lit(ctx.add_var());
+    let x14 = pos_lit(ctx.add_var());
+    let x15 = pos_lit(ctx.add_var());
+    let x16 = pos_lit(ctx.add_var());
+    let x17 = pos_lit(ctx.add_var());
+
+    let solver_ptr = ctx.start_add_constraints() as *mut Solver;
+    unsafe {
+        let solver = &mut *solver_ptr;
+        let mut creator = ClauseCreator::new(Some(solver));
+        creator
+            .start(ConstraintType::Static)
+            .add(!x11)
+            .add(x12)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(x1)
+            .add(!x12)
+            .add(!x13)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x4)
+            .add(!x12)
+            .add(x14)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(x13)
+            .add(!x14)
+            .add(!x15)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x2)
+            .add(x15)
+            .add(x16)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(x3)
+            .add(x15)
+            .add(!x17)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x6)
+            .add(!x16)
+            .add(x17)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x2)
+            .add(x9)
+            .add(x10)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(!x4)
+            .add(!x7)
+            .add(!x8)
+            .end_with_defaults();
+        creator
+            .start(ConstraintType::Static)
+            .add(x5)
+            .add(x6)
+            .end_with_defaults();
+    }
+    assert!(ctx.end_init());
+
+    let solver = ctx.master();
+    assert!(solver.assume(!x1) && solver.propagate());
+    assert!(solver.assume(x2) && solver.propagate());
+    assert!(solver.assume(!x3) && solver.propagate());
+    assert!(solver.assume(x4) && solver.propagate());
+    assert!(solver.assume(!x5) && solver.propagate());
+    assert!(solver.assume(x7) && solver.propagate());
+    assert!(solver.assume(!x9) && solver.propagate());
+    solver.set_backtrack_level(6);
+    assert!(!solver.assume(x11) || !solver.propagate());
+
+    assert!(solver.resolve_conflict());
+    assert!(solver.is_true(x15));
+    assert_eq!(solver.decision_level(), 6);
 }

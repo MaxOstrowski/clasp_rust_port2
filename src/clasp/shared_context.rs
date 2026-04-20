@@ -6,6 +6,7 @@
 //! a short-implication graph, and a concrete `SharedContext` owning the master
 //! solver.
 
+use crate::clasp::cli::clasp_cli_options::context_params::ShortSimpMode;
 use crate::clasp::constraint::{Antecedent, ConstraintType, Solver};
 use crate::clasp::literal::{Literal, VarType, true_value, value_free};
 use crate::clasp::statistics::{StatisticMap, StatisticObject};
@@ -199,12 +200,25 @@ struct ShortImplicationNode {
     ternary: Vec<[Literal; 2]>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ShortImplicationsGraph {
     graph: Vec<ShortImplicationNode>,
     binary: [u32; 2],
     ternary: [u32; 2],
     shared: bool,
+    simp_mode: ShortSimpMode,
+}
+
+impl Default for ShortImplicationsGraph {
+    fn default() -> Self {
+        Self {
+            graph: Vec::new(),
+            binary: [0; 2],
+            ternary: [0; 2],
+            shared: false,
+            simp_mode: ShortSimpMode::SimpNo,
+        }
+    }
 }
 
 impl ShortImplicationsGraph {
@@ -219,6 +233,18 @@ impl ShortImplicationsGraph {
 
     pub const fn shared(&self) -> bool {
         self.shared
+    }
+
+    pub fn set_simp_mode(&mut self, mode: ShortSimpMode) {
+        self.simp_mode = mode;
+    }
+
+    pub const fn simp_mode(&self) -> ShortSimpMode {
+        self.simp_mode
+    }
+
+    pub fn size(&self) -> u32 {
+        self.graph.len() as u32
     }
 
     pub const fn num_binary(&self) -> u32 {
@@ -247,10 +273,16 @@ impl ShortImplicationsGraph {
         if self.graph.len() < max_id as usize {
             self.resize(max_id);
         }
+        let mut stored = lits.to_vec();
+        if learnt {
+            for lit in &mut stored {
+                lit.flag();
+            }
+        }
         let added = if lits.len() == 2 {
-            self.add_binary(lits[0], lits[1])
+            self.add_binary(stored[0], stored[1])
         } else {
-            self.add_ternary(lits[0], lits[1], lits[2])
+            self.add_ternary(stored[0], stored[1], stored[2])
         };
         if added {
             if lits.len() == 2 {
@@ -260,6 +292,57 @@ impl ShortImplicationsGraph {
             }
         }
         added
+    }
+
+    pub fn remove(&mut self, lits: &[Literal], learnt: bool) {
+        assert!((2..=3).contains(&lits.len()));
+        if lits.len() == 2 {
+            if self.remove_binary_clause(lits[0], lits[1]) {
+                self.binary[usize::from(learnt)] =
+                    self.binary[usize::from(learnt)].saturating_sub(1);
+            }
+        } else if self.remove_ternary_clause(lits[0], lits[1], lits[2]) {
+            self.ternary[usize::from(learnt)] = self.ternary[usize::from(learnt)].saturating_sub(1);
+        }
+    }
+
+    pub fn remove_true(&mut self, solver: &Solver, literal: Literal) {
+        let neg_index = (!literal).id() as usize;
+        let pos_index = literal.id() as usize;
+        let binaries = self
+            .graph
+            .get(neg_index)
+            .map(|node| node.binary.clone())
+            .unwrap_or_default();
+        let sat_ternaries = self
+            .graph
+            .get(neg_index)
+            .map(|node| node.ternary.clone())
+            .unwrap_or_default();
+        let cond_ternaries = self
+            .graph
+            .get(pos_index)
+            .map(|node| node.ternary.clone())
+            .unwrap_or_default();
+
+        for other in binaries {
+            self.remove_binary_arc(other, literal);
+        }
+        for pair in sat_ternaries {
+            self.remove_ternary_arc(solver, pair, literal);
+        }
+        for pair in cond_ternaries {
+            self.remove_ternary_arc(solver, pair, !literal);
+        }
+
+        if let Some(node) = self.graph.get_mut(neg_index) {
+            node.binary.clear();
+            node.ternary.clear();
+        }
+        if let Some(node) = self.graph.get_mut(pos_index) {
+            node.binary.clear();
+            node.ternary.clear();
+        }
     }
 
     pub fn propagate(&self, solver: &mut Solver, literal: Literal) -> bool {
@@ -296,6 +379,50 @@ impl ShortImplicationsGraph {
         true
     }
 
+    pub fn propagate_bin(
+        &self,
+        assignment: &mut crate::clasp::solver_types::Assignment,
+        literal: Literal,
+        level: u32,
+    ) -> bool {
+        let Some(node) = self.graph.get(literal.id() as usize) else {
+            return true;
+        };
+        for &other in &node.binary {
+            if !assignment.assign(other, level, Antecedent::from_literal(literal)) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn reverse_arc(
+        &self,
+        solver: &Solver,
+        literal: Literal,
+        max_level: u32,
+        out: &mut Antecedent,
+    ) -> bool {
+        let Some(node) = self.graph.get(literal.id() as usize) else {
+            return false;
+        };
+        for &other in &node.binary {
+            if Self::is_reverse_literal(solver, other, max_level) {
+                *out = Antecedent::from_literal(!other);
+                return true;
+            }
+        }
+        for &[first, second] in &node.ternary {
+            if Self::is_reverse_literal(solver, first, max_level)
+                && Self::is_reverse_literal(solver, second, max_level)
+            {
+                *out = Antecedent::from_literals(!first, !second);
+                return true;
+            }
+        }
+        false
+    }
+
     fn add_binary(&mut self, first: Literal, second: Literal) -> bool {
         let first_node = &mut self.graph[(!first).id() as usize].binary;
         if first_node.contains(&second) {
@@ -330,6 +457,83 @@ impl ShortImplicationsGraph {
         } else {
             [right, left]
         }
+    }
+
+    fn remove_binary_clause(&mut self, first: Literal, second: Literal) -> bool {
+        let left = self.erase_binary((!first).id() as usize, second);
+        let right = self.erase_binary((!second).id() as usize, first);
+        left | right
+    }
+
+    fn remove_ternary_clause(&mut self, first: Literal, second: Literal, third: Literal) -> bool {
+        let mut removed = false;
+        removed |= self.erase_ternary((!first).id() as usize, Self::canonical_pair(second, third));
+        removed |= self.erase_ternary((!second).id() as usize, Self::canonical_pair(first, third));
+        removed |= self.erase_ternary((!third).id() as usize, Self::canonical_pair(first, second));
+        removed
+    }
+
+    fn remove_binary_arc(&mut self, other: Literal, satisfied: Literal) {
+        self.binary[usize::from(other.flagged())] =
+            self.binary[usize::from(other.flagged())].saturating_sub(1);
+        let _ = self.erase_binary((!other).id() as usize, satisfied);
+    }
+
+    fn remove_ternary_arc(&mut self, solver: &Solver, pair: [Literal; 2], literal: Literal) {
+        let learnt = usize::from(pair[0].flagged() || pair[1].flagged());
+        self.ternary[learnt] = self.ternary[learnt].saturating_sub(1);
+        for lit in pair {
+            if let Some(node) = self.graph.get_mut((!lit).id() as usize) {
+                let remove_index = node.ternary.iter().position(|candidate| {
+                    candidate[0].id() == literal.id() || candidate[1].id() == literal.id()
+                });
+                if let Some(index) = remove_index {
+                    node.ternary.swap_remove(index);
+                }
+            }
+        }
+        if solver.is_false(literal)
+            && solver.value(pair[0].var()) == value_free
+            && solver.value(pair[1].var()) == value_free
+        {
+            let clause = [pair[0], pair[1]];
+            let _ = self.add(&clause, learnt != 0);
+        }
+    }
+
+    fn erase_binary(&mut self, node_id: usize, target: Literal) -> bool {
+        self.graph.get_mut(node_id).is_some_and(|node| {
+            if let Some(index) = node
+                .binary
+                .iter()
+                .position(|candidate| *candidate == target)
+            {
+                node.binary.swap_remove(index);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    fn erase_ternary(&mut self, node_id: usize, target: [Literal; 2]) -> bool {
+        self.graph.get_mut(node_id).is_some_and(|node| {
+            if let Some(index) = node
+                .ternary
+                .iter()
+                .position(|candidate| *candidate == target)
+            {
+                node.ternary.swap_remove(index);
+                true
+            } else {
+                false
+            }
+        })
+    }
+
+    fn is_reverse_literal(solver: &Solver, literal: Literal, max_level: u32) -> bool {
+        solver.is_false(literal)
+            && (solver.seen_literal(literal) || solver.level(literal.var()) < max_level)
     }
 }
 
@@ -434,6 +638,7 @@ impl SharedContext {
         self.refresh_master_link();
         self.frozen = false;
         self.btig.resize((self.num_vars() + 1) << 1);
+        self.master.begin_init();
         self.master.acquire_problem_var(self.num_vars());
         self.master
             .reserve_watch_capacity(((self.num_vars() + 1) << 1) as usize);
@@ -448,7 +653,7 @@ impl SharedContext {
         self.stats.constraints.ternary = self.btig.num_ternary();
         self.btig.mark_shared(false);
         self.frozen = true;
-        self.master.propagate()
+        self.master.end_init()
     }
 
     pub fn num_binary(&self) -> u32 {
@@ -457,6 +662,10 @@ impl SharedContext {
 
     pub fn num_ternary(&self) -> u32 {
         self.btig.num_ternary()
+    }
+
+    pub fn num_learnt_short(&self) -> u32 {
+        self.btig.num_learnt()
     }
 
     pub fn num_constraints(&self) -> u32 {
@@ -481,6 +690,34 @@ impl SharedContext {
         )
     }
 
+    pub fn add_binary(&mut self, first: Literal, second: Literal) -> bool {
+        self.add_imp(&[first, second], ConstraintType::Static) > 0
+    }
+
+    pub fn add_ternary(&mut self, first: Literal, second: Literal, third: Literal) -> bool {
+        self.add_imp(&[first, second, third], ConstraintType::Static) > 0
+    }
+
+    pub fn remove_imp(&mut self, lits: &[Literal], learnt: bool) {
+        self.btig.remove(lits, learnt);
+    }
+
+    pub fn set_short_simp_mode(&mut self, mode: ShortSimpMode) {
+        self.btig.set_simp_mode(mode);
+    }
+
+    pub fn reverse_arc(
+        &self,
+        solver: &Solver,
+        literal: Literal,
+        max_level: u32,
+    ) -> Option<Antecedent> {
+        let mut out = Antecedent::new();
+        self.btig
+            .reverse_arc(solver, literal, max_level, &mut out)
+            .then_some(out)
+    }
+
     pub fn physical_share_problem(&self) -> bool {
         self.share_problem
     }
@@ -495,6 +732,10 @@ impl SharedContext {
 
     pub(crate) fn implication_graph(&self) -> &ShortImplicationsGraph {
         &self.btig
+    }
+
+    pub(crate) fn implication_graph_mut(&mut self) -> &mut ShortImplicationsGraph {
+        &mut self.btig
     }
 
     fn refresh_master_link(&mut self) {

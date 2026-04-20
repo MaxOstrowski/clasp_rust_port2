@@ -69,6 +69,8 @@ fn collect_priorities(list: &PropagatorList) -> Vec<u32> {
 #[test]
 fn constraint_defaults_match_constraint_cpp() {
     let mut solver = Solver::default();
+    solver.set_num_vars(2);
+    solver.set_num_problem_vars(2);
     let mut constraint = Constraint::new(DummyConstraint);
     let mut reason = LitVec::default();
 
@@ -82,8 +84,10 @@ fn constraint_defaults_match_constraint_cpp() {
         constraint.is_open(&solver, &Default::default(), &mut reason),
         0
     );
-    assert!(constraint.minimize(&mut solver, pos_lit(9), std::ptr::null_mut()));
-    assert_eq!(solver.minimized_literals(), &[pos_lit(1), pos_lit(2)]);
+    solver.mark_seen_var(1);
+    assert!(!constraint.minimize(&mut solver, pos_lit(1), std::ptr::null_mut()));
+    solver.mark_seen_var(2);
+    assert!(constraint.minimize(&mut solver, pos_lit(1), std::ptr::null_mut()));
 }
 
 #[test]

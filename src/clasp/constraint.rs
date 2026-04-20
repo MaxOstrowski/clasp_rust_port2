@@ -4,9 +4,11 @@ use core::cmp::Ordering;
 use core::ffi::c_void;
 use core::ptr::NonNull;
 
-use crate::clasp::literal::{LitVec, Literal, ValT, value_free, value_true};
+use crate::clasp::clause::{CLAUSE_NO_PREPARE, ClauseCreator, ClauseInfo, ClauseRep};
+use crate::clasp::literal::{LitVec, Literal, ValT, lit_false, value_free, value_true};
+use crate::clasp::pod_vector::shrink_vec_to;
 use crate::clasp::shared_context::SharedContext;
-use crate::clasp::solver_strategies::{SolverStrategies, WatchInit};
+use crate::clasp::solver_strategies::{CCMinAntes, SearchStrategy, SolverStrategies, WatchInit};
 use crate::clasp::solver_types::{Assignment, ClauseWatch, GenericWatch, SolverStats, WatchList};
 use crate::potassco::bits::{
     BitIndex, Bitset, nth_bit, right_most_bit, store_clear_bit, store_clear_mask, store_set_mask,
@@ -48,12 +50,21 @@ impl BitIndex for ConstraintType {
 
 pub type TypeSet = Bitset<u32, ConstraintType>;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ClauseOwnerKind {
+    #[default]
+    Unknown,
+    Explicit,
+    Shared,
+}
+
 #[derive(Debug)]
 pub struct ClauseHead {
     pub(crate) info: ConstraintInfo,
     pub(crate) head: [Literal; 3],
     pub(crate) constraint: *mut Constraint,
     pub(crate) owner: *mut c_void,
+    pub(crate) owner_kind: ClauseOwnerKind,
 }
 
 impl Default for ClauseHead {
@@ -69,6 +80,7 @@ impl ClauseHead {
             head: [Literal::default(), Literal::default(), Literal::default()],
             constraint: core::ptr::null_mut(),
             owner: core::ptr::null_mut(),
+            owner_kind: ClauseOwnerKind::Unknown,
         }
     }
 
@@ -177,8 +189,51 @@ pub struct ClauseStrengthenResult {
     pub remove_clause: bool,
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CCMinState {
+    Open = 0,
+    Removable = 1,
+    Poison = 2,
+}
+
 #[derive(Debug, Default)]
-pub struct CCMinRecursive;
+pub struct CCMinRecursive {
+    todo: Vec<Literal>,
+    open: u32,
+}
+
+impl CCMinRecursive {
+    fn push(&mut self, literal: Literal) {
+        self.todo.push(literal);
+    }
+
+    fn pop(&mut self) -> Literal {
+        self.todo
+            .pop()
+            .expect("CCMinRecursive todo stack must not be empty")
+    }
+
+    fn clear(&mut self) {
+        self.todo.clear();
+    }
+
+    fn encode_state(&self, state: CCMinState) -> u32 {
+        self.open + state as u32
+    }
+
+    fn decode_state(&self, epoch: u32) -> CCMinState {
+        if epoch <= self.open {
+            CCMinState::Open
+        } else {
+            match epoch - self.open {
+                1 => CCMinState::Removable,
+                2 => CCMinState::Poison,
+                _ => CCMinState::Open,
+            }
+        }
+    }
+}
 
 pub trait DecisionHeuristic {
     fn new_constraint(&mut self, _solver: &Solver, _lits: &[Literal], _ty: ConstraintType) {}
@@ -204,17 +259,29 @@ pub struct Solver {
     tag_literal: Literal,
     decisions: Vec<Literal>,
     level_starts: Vec<u32>,
-    root_levels: Vec<u32>,
     assignment: Assignment,
     watches: Vec<WatchList>,
     undo_watches: Vec<Vec<*mut Constraint>>,
     constraints: Vec<*mut Constraint>,
     learnts: Vec<*mut Constraint>,
+    post_propagators: PropagatorList,
+    posts_active: bool,
     heuristic: Box<dyn DecisionHeuristic>,
     strategies: SolverStrategies,
     stats: SolverStats,
-    minimized: Vec<Literal>,
-    cc_minimize_result: bool,
+    epochs: Vec<u32>,
+    level_marks: Vec<bool>,
+    conflict_lits: LitVec,
+    cc_lits: LitVec,
+    cc_info: ConstraintInfo,
+    stop_conflict: Option<StopConflictState>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StopConflictState {
+    root_level: u32,
+    backtrack_level: u32,
+    queue_front: u32,
 }
 
 impl core::fmt::Debug for Solver {
@@ -257,17 +324,22 @@ impl Solver {
             tag_literal: Literal::default(),
             decisions: vec![Literal::default()],
             level_starts: vec![0],
-            root_levels: vec![0],
             assignment,
             watches: vec![WatchList::default(), WatchList::default()],
             undo_watches: vec![Vec::new()],
             constraints: Vec::new(),
             learnts: Vec::new(),
+            post_propagators: PropagatorList::default(),
+            posts_active: false,
             heuristic: Box::<SelectFirst>::default(),
             strategies: SolverStrategies::default(),
             stats: SolverStats::default(),
-            minimized: Vec::new(),
-            cc_minimize_result: true,
+            epochs: vec![0],
+            level_marks: vec![false],
+            conflict_lits: LitVec::new(),
+            cc_lits: LitVec::new(),
+            cc_info: ConstraintInfo::new(ConstraintType::Conflict),
+            stop_conflict: None,
         }
     }
 
@@ -407,12 +479,12 @@ impl Solver {
         if self.level_starts.len() <= decision_level as usize {
             self.level_starts.resize(decision_level as usize + 1, 0);
         }
-        if self.root_levels.len() <= decision_level as usize {
-            self.root_levels.resize(decision_level as usize + 1, 0);
-        }
         if self.undo_watches.len() <= decision_level as usize {
             self.undo_watches
                 .resize_with(decision_level as usize + 1, Vec::new);
+        }
+        if self.level_marks.len() <= decision_level as usize {
+            self.level_marks.resize(decision_level as usize + 1, false);
         }
     }
 
@@ -424,13 +496,38 @@ impl Solver {
         self.root_level = root_level;
     }
 
-    pub fn push_root_level(&mut self) {
-        self.root_levels.push(self.root_level);
-        self.root_level = self.decision_level;
+    pub fn push_root_level(&mut self, levels: u32) {
+        self.root_level = self
+            .decision_level
+            .min(self.root_level.saturating_add(levels));
+        self.backtrack_level = self.backtrack_level.max(self.root_level);
     }
 
-    pub fn pop_root_level(&mut self) {
-        self.root_level = self.root_levels.pop().unwrap_or(0);
+    pub fn pop_root_level(&mut self, levels: u32) -> bool {
+        self.clear_stop_conflict();
+        let new_root = self.root_level.saturating_sub(levels.min(self.root_level));
+        self.root_level = new_root;
+        self.backtrack_level = new_root;
+        self.undo_until(new_root);
+        !self.has_conflict
+    }
+
+    pub fn pop_root_level_with(&mut self, levels: u32, popped: &mut LitVec, aux: bool) -> bool {
+        self.clear_stop_conflict();
+        let old_root = self.root_level;
+        let new_root = old_root.saturating_sub(levels.min(old_root));
+        if new_root < old_root {
+            for level in new_root + 1..=old_root {
+                let decision = self.decision(level);
+                if decision != Literal::default() && (aux || !self.aux_var(decision.var())) {
+                    popped.push_back(decision);
+                }
+            }
+        }
+        self.root_level = new_root;
+        self.backtrack_level = new_root;
+        self.undo_until(new_root);
+        !self.has_conflict
     }
 
     pub fn backtrack_level(&self) -> u32 {
@@ -441,12 +538,50 @@ impl Solver {
         self.backtrack_level = backtrack_level.min(self.decision_level);
     }
 
+    pub fn has_level(&self, level: u32) -> bool {
+        level != 0
+            && level <= self.decision_level
+            && self
+                .level_marks
+                .get(level as usize)
+                .copied()
+                .unwrap_or(false)
+    }
+
+    pub fn mark_level(&mut self, level: u32) {
+        assert!(level != 0 && level <= self.decision_level);
+        if self.level_marks.len() <= level as usize {
+            self.level_marks.resize(level as usize + 1, false);
+        }
+        self.level_marks[level as usize] = true;
+    }
+
+    pub fn unmark_level(&mut self, level: u32) {
+        assert!(level != 0 && level <= self.decision_level);
+        if let Some(mark) = self.level_marks.get_mut(level as usize) {
+            *mark = false;
+        }
+    }
+
     pub fn tag_literal(&self) -> Literal {
         self.tag_literal
     }
 
     pub fn set_tag_literal(&mut self, literal: Literal) {
         self.tag_literal = literal;
+    }
+
+    pub fn begin_init(&mut self) {
+        self.posts_active = false;
+    }
+
+    pub fn end_init(&mut self) -> bool {
+        let post_list = &mut self.post_propagators as *mut PropagatorList;
+        if !unsafe { (*post_list).init(self) } {
+            return false;
+        }
+        self.posts_active = true;
+        self.propagate()
     }
 
     pub fn aux_var(&self, var: u32) -> bool {
@@ -720,6 +855,132 @@ impl Solver {
     }
 
     pub fn propagate(&mut self) -> bool {
+        if self.unit_propagate() && self.post_propagate(None, None, None) {
+            return true;
+        }
+        self.cancel_propagation();
+        false
+    }
+
+    pub fn propagate_until(
+        &mut self,
+        stop: Option<NonNull<PostPropagator>>,
+        max_prio: Option<u32>,
+    ) -> ValT {
+        let mut max_prio = max_prio;
+        if self.unit_propagate() && self.post_propagate(None, stop, max_prio.as_mut()) {
+            return if max_prio.is_some_and(|prio| prio == u32::MAX) {
+                value_free
+            } else {
+                value_true
+            };
+        }
+        self.cancel_propagation();
+        crate::clasp::literal::value_false
+    }
+
+    pub fn propagate_from(&mut self, start: NonNull<PostPropagator>) -> bool {
+        debug_assert!(
+            self.posts_active,
+            "post propagators are not active during init"
+        );
+        debug_assert!(
+            self.assignment.q_empty(),
+            "propagate_from requires a drained unit queue"
+        );
+        if self.post_propagate(Some(start), None, None) {
+            return true;
+        }
+        self.cancel_propagation();
+        false
+    }
+
+    pub fn add_post(&mut self, propagator: Box<PostPropagator>) -> bool {
+        let mut post = self.post_propagators.add(propagator);
+        if self.posts_active {
+            unsafe {
+                return post.as_mut().init(self);
+            }
+        }
+        true
+    }
+
+    pub fn remove_post(
+        &mut self,
+        propagator: NonNull<PostPropagator>,
+    ) -> Option<Box<PostPropagator>> {
+        self.post_propagators.remove(propagator)
+    }
+
+    pub fn get_post(&self, priority: u32) -> Option<NonNull<PostPropagator>> {
+        self.post_propagators.find(priority)
+    }
+
+    pub fn get_post_by<P>(&self, pred: P, max_prio: Option<u32>) -> Option<NonNull<PostPropagator>>
+    where
+        P: FnMut(&PostPropagator) -> bool,
+    {
+        self.post_propagators.find_by(pred, max_prio)
+    }
+
+    pub fn has_stop_conflict(&self) -> bool {
+        self.stop_conflict.is_some()
+    }
+
+    pub fn set_stop_conflict(&mut self) {
+        if !self.has_conflict {
+            self.stop_conflict = Some(StopConflictState {
+                root_level: self.root_level,
+                backtrack_level: self.backtrack_level,
+                queue_front: self.assignment.front,
+            });
+            self.set_conflict(lit_false, Antecedent::new(), u32::MAX);
+        }
+        self.push_root_level(self.decision_level);
+    }
+
+    pub fn clear_stop_conflict(&mut self) {
+        if let Some(saved) = self.stop_conflict.take() {
+            self.root_level = saved.root_level;
+            self.backtrack_level = saved.backtrack_level;
+            self.assignment.front = saved.queue_front;
+            self.clear_conflict();
+        }
+    }
+
+    pub fn push_root(&mut self, literal: Literal) -> bool {
+        if self.has_conflict() {
+            return false;
+        }
+        if self.decision_level() != self.root_level() && !self.pop_root_level(0) {
+            return false;
+        }
+        if self.queue_size() != 0 && !self.propagate() {
+            return false;
+        }
+        if self.value(literal.var()) != value_free {
+            return self.is_true(literal);
+        }
+        if !self.assume(literal) {
+            return false;
+        }
+        self.push_root_level(1);
+        self.propagate()
+    }
+
+    pub fn push_root_path(&mut self, path: &[Literal]) -> bool {
+        if !self.pop_root_level(0) || !self.simplify() || !self.propagate() {
+            return false;
+        }
+        for &literal in path {
+            if !self.push_root(literal) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn unit_propagate(&mut self) -> bool {
         while !self.assignment.q_empty() && !self.has_conflict {
             let literal = self.assignment.q_pop();
             if let Some(shared) = self.shared {
@@ -735,8 +996,87 @@ impl Solver {
         !self.has_conflict
     }
 
+    fn cancel_propagation(&mut self) {
+        self.assignment.q_reset();
+        if self.posts_active {
+            let mut current = self.post_propagators.head();
+            while let Some(mut ptr) = current {
+                unsafe {
+                    ptr.as_mut().reset();
+                    current = ptr.as_ref().next;
+                }
+            }
+        }
+    }
+
+    pub fn simplify(&mut self) -> bool {
+        if !self.propagate() {
+            return false;
+        }
+        let root_literals: Vec<Literal> = self
+            .assignment
+            .trail
+            .as_slice()
+            .iter()
+            .copied()
+            .filter(|lit| self.level(lit.var()) == 0 && self.is_true(*lit))
+            .collect();
+        let solver_ptr: *const Solver = self;
+        if let Some(mut shared) = self.shared {
+            unsafe {
+                let ctx = shared.as_mut();
+                for literal in root_literals {
+                    ctx.implication_graph_mut()
+                        .remove_true(&*solver_ptr, literal);
+                }
+            }
+        }
+        true
+    }
+
+    pub fn estimate_bcp(&mut self, literal: Literal, mut max_recursion_depth: i32) -> u32 {
+        if self.value(literal.var()) != value_free {
+            return 0;
+        }
+        self.assignment.ensure_var(literal.var());
+        let first = self.assignment.assigned();
+        self.assignment.set_raw_assignment(
+            literal.var(),
+            crate::clasp::literal::true_value(literal),
+            0,
+        );
+        self.assignment.push_trail_literal(literal);
+        let mut index = first as usize;
+        if let Some(shared) = self.shared {
+            let graph = unsafe { shared.as_ref().implication_graph() };
+            let max_idx = graph.size();
+            while index < self.assignment.assigned() as usize {
+                let next = self.assignment.trail[index];
+                index += 1;
+                if next.id() < max_idx && !graph.propagate_bin(&mut self.assignment, next, 0) {
+                    break;
+                }
+                if max_recursion_depth == 0 {
+                    break;
+                }
+                max_recursion_depth -= 1;
+            }
+        }
+        let result = self.assignment.assigned() - first;
+        while self.assignment.assigned() != first {
+            self.assignment.undo_last();
+        }
+        result
+    }
+
+    pub fn reverse_arc(&self, literal: Literal, max_level: u32) -> Option<Antecedent> {
+        self.shared_context()
+            .and_then(|shared| shared.reverse_arc(self, literal, max_level))
+    }
+
     pub fn undo_until(&mut self, level: u32) {
-        while self.decision_level > level {
+        let target = level.max(self.backtrack_level);
+        while self.decision_level > target {
             let current = self.decision_level;
             if current < self.undo_watches.len() as u32 {
                 let mut undo = core::mem::take(&mut self.undo_watches[current as usize]);
@@ -755,6 +1095,7 @@ impl Solver {
         }
         self.assignment.q_reset();
         self.has_conflict = false;
+        self.conflict_lits.clear();
     }
 
     pub fn backtrack(&mut self, level: u32) -> bool {
@@ -765,10 +1106,7 @@ impl Solver {
     }
 
     pub fn clear_assumptions(&mut self) -> bool {
-        self.backtrack(0);
-        self.root_level = 0;
-        self.backtrack_level = 0;
-        true
+        self.pop_root_level(self.root_level) && self.simplify()
     }
 
     pub fn count_levels(&self, lits: &[Literal]) -> u32 {
@@ -820,6 +1158,8 @@ impl Solver {
             }
             if is_new && clause.info.learnt() {
                 self.learnts.push(core::ptr::null_mut());
+                self.stats
+                    .add_learnt(clause.size, clause.info.constraint_type());
             }
             return true;
         }
@@ -828,10 +1168,15 @@ impl Solver {
             .first()
             .copied()
             .unwrap_or(crate::clasp::literal::lit_false);
-        self.force(
+        let ok = self.force(
             unit,
             Antecedent::from_literal(crate::clasp::literal::lit_true),
-        )
+        );
+        if ok && is_new && clause.info.learnt() {
+            self.stats
+                .add_learnt(clause.size, clause.info.constraint_type());
+        }
+        ok
     }
 
     pub fn allow_implicit(&self, clause: &crate::clasp::clause::ClauseRep) -> bool {
@@ -860,28 +1205,362 @@ impl Solver {
         self.learnts.len() as u32
     }
 
-    pub fn cc_minimize(&mut self, lit: Literal, _rec: *mut CCMinRecursive) -> bool {
-        self.minimized.push(lit);
-        self.cc_minimize_result
+    pub fn prepare_cc_min_recursive(&mut self, rec: &mut CCMinRecursive) {
+        rec.clear();
+        rec.open = self.inc_epoch(self.num_vars.max(self.num_problem_vars) as usize + 1, 2) - 2;
     }
 
-    pub fn minimized_literals(&self) -> &[Literal] {
-        &self.minimized
+    pub fn resolve_conflict(&mut self) -> bool {
+        if !self.has_conflict {
+            return false;
+        }
+        if self.decision_level <= self.root_level {
+            return false;
+        }
+        if self.decision_level != self.backtrack_level
+            && self.strategies.search != SearchStrategy::NoLearning as u32
+        {
+            let uip_level = self.analyze_conflict();
+            let decision_level = self.decision_level;
+            self.stats.add_conflict(
+                decision_level,
+                uip_level,
+                self.backtrack_level,
+                self.cc_info.lbd(),
+            );
+            self.undo_until(uip_level);
+            let rep = ClauseRep::prepared(self.cc_lits.as_slice(), self.cc_info);
+            return ClauseCreator::create_from_rep(self, &rep, CLAUSE_NO_PREPARE).ok();
+        }
+        self.backtrack(self.decision_level.saturating_sub(1))
     }
 
-    pub fn clear_minimized_literals(&mut self) {
-        self.minimized.clear();
-    }
-
-    pub fn set_cc_minimize_result(&mut self, result: bool) {
-        self.cc_minimize_result = result;
+    pub fn cc_minimize(&mut self, lit: Literal, rec: *mut CCMinRecursive) -> bool {
+        self.cc_minimize_with_limit(lit, self.strategies.cc_min_antes, rec)
     }
 
     fn set_conflict(&mut self, literal: Literal, antecedent: Antecedent, data: u32) {
+        self.stats.core.conflicts += 1;
         self.has_conflict = true;
         self.conflict_literal = literal;
         self.conflict_reason = antecedent;
         self.conflict_data = data;
+        let mut lits = LitVec::new();
+        lits.push_back(!literal);
+        if self.strategies.search != SearchStrategy::NoLearning as u32 && !antecedent.is_null() {
+            if data == u32::MAX {
+                let mut reason = antecedent;
+                reason.reason(self, literal, &mut lits);
+            } else {
+                let saved = self.reason_data(literal.var());
+                self.set_reason_data(literal.var(), data);
+                let mut reason = antecedent;
+                reason.reason(self, literal, &mut lits);
+                self.set_reason_data(literal.var(), saved);
+            }
+        }
+        self.conflict_lits = lits;
+    }
+
+    fn analyze_conflict(&mut self) -> u32 {
+        let mut on_level = 0u32;
+        let mut res_size = 0u32;
+        let mut pivot = Literal::default();
+        self.cc_info = ClauseInfo::new(ConstraintType::Conflict);
+        self.cc_lits.clear();
+        self.cc_lits.push_back(pivot);
+        loop {
+            let current_reason = self.conflict_lits.as_slice().to_vec();
+            for literal in current_reason {
+                let clause_level = self.level(literal.var());
+                if !self.seen_var(literal.var()) {
+                    res_size += 1;
+                    debug_assert!(self.is_true(literal), "invalid literal in conflict reason");
+                    debug_assert!(clause_level > 0, "top-level implication not marked");
+                    self.mark_seen_var(literal.var());
+                    if clause_level == self.decision_level {
+                        on_level += 1;
+                    } else {
+                        self.cc_lits.push_back(!literal);
+                        self.mark_level(clause_level);
+                    }
+                }
+            }
+            debug_assert!(on_level > 0, "conflict must touch the conflict level");
+            while !self.seen_var(self.assignment.last().var()) {
+                self.assignment.undo_last();
+            }
+            pivot = self.assignment.last();
+            let reason = *self.reason(pivot.var());
+            self.clear_seen_var(pivot.var());
+            if on_level == 1 {
+                break;
+            }
+            on_level -= 1;
+            res_size = res_size.saturating_sub(1);
+            let mut next_conflict = LitVec::new();
+            let mut antecedent = reason;
+            antecedent.reason(self, pivot, &mut next_conflict);
+            self.conflict_lits = next_conflict;
+        }
+        self.cc_lits[0] = !pivot;
+        self.simplify_conflict_clause()
+    }
+
+    fn simplify_conflict_clause(&mut self) -> u32 {
+        let mut removed = LitVec::new();
+        let mut recursive = CCMinRecursive::default();
+        let recursive_ptr = if self.strategies.cc_min_rec != 0 {
+            self.prepare_cc_min_recursive(&mut recursive);
+            &mut recursive as *mut CCMinRecursive
+        } else {
+            core::ptr::null_mut()
+        };
+        let _on_assert =
+            self.cc_minimize_clause(&mut removed, self.strategies.cc_min_antes, recursive_ptr);
+        for literal in removed.as_slice().iter().copied() {
+            self.clear_seen_var(literal.var());
+        }
+        self.finalize_conflict_clause()
+    }
+
+    fn cc_minimize_clause(
+        &mut self,
+        removed: &mut LitVec,
+        antes: u32,
+        recursive: *mut CCMinRecursive,
+    ) -> u32 {
+        let mut assert_level = 0u32;
+        let mut assert_pos = 1usize;
+        let mut on_assert = 0u32;
+        let mut write = 1usize;
+        let snapshot = self.cc_lits.as_slice()[1..].to_vec();
+        for literal in snapshot {
+            if antes == CCMinAntes::NoAntes as u32 || !self.cc_removable(!literal, antes, recursive)
+            {
+                let level = self.level(literal.var());
+                if level > assert_level {
+                    assert_level = level;
+                    assert_pos = write;
+                    on_assert = 0;
+                }
+                if level == assert_level {
+                    on_assert += 1;
+                }
+                self.cc_lits[write] = literal;
+                write += 1;
+            } else {
+                removed.push_back(literal);
+            }
+        }
+        shrink_vec_to(&mut self.cc_lits, write);
+        if assert_pos != 1 && self.cc_lits.len() > 1 {
+            self.cc_lits.as_mut_slice().swap(1, assert_pos);
+        }
+        on_assert
+    }
+
+    fn cc_removable(
+        &mut self,
+        literal: Literal,
+        antes: u32,
+        recursive: *mut CCMinRecursive,
+    ) -> bool {
+        let mut antecedent = *self.reason(literal.var());
+        if antecedent.is_null() || antes > antecedent.type_() as u32 {
+            return false;
+        }
+        if recursive.is_null() {
+            return antecedent.minimize(self, literal, core::ptr::null_mut());
+        }
+        unsafe { self.cc_min_recurse(&mut *recursive, antes, literal) }
+    }
+
+    fn finalize_conflict_clause(&mut self) -> u32 {
+        let mut lbd = 1u32;
+        let mut on_root = 0u32;
+        let mut assert_level = 0u32;
+        let mut assert_pos = 1usize;
+        let mut max_var = self.cc_lits[0].var();
+        let tag_lit = !self.tag_literal();
+        let mut tagged = false;
+        for index in 1..self.cc_lits.len() {
+            let literal = self.cc_lits[index];
+            let var = literal.var();
+            self.clear_seen_var(var);
+            if literal == tag_lit {
+                tagged = true;
+            }
+            if var > max_var {
+                max_var = var;
+            }
+            let level = self.level(var);
+            if level > assert_level {
+                assert_level = level;
+                assert_pos = index;
+            }
+            if self.has_level(level) {
+                self.unmark_level(level);
+                if level > self.root_level {
+                    lbd += 1;
+                } else {
+                    on_root += 1;
+                    if on_root == 1 {
+                        lbd += 1;
+                    }
+                }
+            }
+        }
+        if assert_pos != 1 && self.cc_lits.len() > 1 {
+            self.cc_lits.as_mut_slice().swap(1, assert_pos);
+        }
+        self.cc_info
+            .set_score(ConstraintScore::new(self.cc_info.activity(), lbd));
+        self.cc_info.set_tagged(tagged);
+        self.cc_info.set_aux(self.aux_var(max_var));
+        assert_level
+    }
+
+    fn cc_minimize_with_limit(
+        &mut self,
+        lit: Literal,
+        antes: u32,
+        rec: *mut CCMinRecursive,
+    ) -> bool {
+        if self.seen_var(lit.var()) {
+            return true;
+        }
+        if rec.is_null() {
+            return false;
+        }
+        let level = self.level(lit.var());
+        level != 0
+            && level != u32::MAX
+            && self.has_level(level)
+            && unsafe { self.cc_min_recurse(&mut *rec, antes, lit) }
+    }
+
+    fn cc_min_recurse(&mut self, rec: &mut CCMinRecursive, antes: u32, lit: Literal) -> bool {
+        let state = rec.decode_state(self.epoch(lit.var()));
+        match state {
+            CCMinState::Poison => return false,
+            CCMinState::Open => {
+                let mut start = lit;
+                start.unflag();
+                rec.push(start);
+            }
+            CCMinState::Removable => return true,
+        }
+
+        let mut dfs_state = CCMinState::Removable;
+        let rec_ptr = rec as *mut CCMinRecursive;
+        loop {
+            let mut current = rec.pop();
+            if current.flagged() {
+                if current == lit {
+                    return dfs_state == CCMinState::Removable;
+                }
+                self.set_epoch(current.var(), rec.encode_state(dfs_state));
+            } else if dfs_state != CCMinState::Poison {
+                let state = rec.decode_state(self.epoch(current.var()));
+                if state == CCMinState::Open {
+                    current.flag();
+                    rec.push(current);
+                    let mut next = *self.reason(current.var());
+                    if next.is_null()
+                        || antes > next.type_() as u32
+                        || !next.minimize(self, current, rec_ptr)
+                    {
+                        dfs_state = CCMinState::Poison;
+                    }
+                } else if state == CCMinState::Poison {
+                    dfs_state = CCMinState::Poison;
+                }
+            }
+        }
+    }
+
+    fn epoch(&mut self, index: u32) -> u32 {
+        let index = index as usize;
+        if self.epochs.len() <= index {
+            self.epochs.resize(index + 1, 0);
+        }
+        self.epochs[index]
+    }
+
+    fn set_epoch(&mut self, index: u32, value: u32) {
+        let index = index as usize;
+        if self.epochs.len() <= index {
+            self.epochs.resize(index + 1, 0);
+        }
+        self.epochs[index] = value;
+    }
+
+    fn inc_epoch(&mut self, size: usize, step: u32) -> u32 {
+        if self.epochs.len() < size {
+            self.epochs.resize(size, 0);
+        }
+        if u32::MAX - self.epochs[0] < step {
+            self.epochs.fill(0);
+        }
+        self.epochs[0] = self.epochs[0].saturating_add(step);
+        self.epochs[0]
+    }
+
+    fn find_post_link(
+        &mut self,
+        target: Option<NonNull<PostPropagator>>,
+    ) -> Option<*mut Option<NonNull<PostPropagator>>> {
+        if target.is_none() {
+            return Some(&mut self.post_propagators.head as *mut Option<NonNull<PostPropagator>>);
+        }
+        let mut link = &mut self.post_propagators.head as *mut Option<NonNull<PostPropagator>>;
+        unsafe {
+            loop {
+                match (*link, target) {
+                    (current, wanted) if current == wanted => return Some(link),
+                    (Some(mut current), _) => {
+                        link = &mut current.as_mut().next as *mut Option<NonNull<PostPropagator>>;
+                    }
+                    (None, _) => return None,
+                }
+            }
+        }
+    }
+
+    fn post_propagate(
+        &mut self,
+        start: Option<NonNull<PostPropagator>>,
+        stop: Option<NonNull<PostPropagator>>,
+        mut max_prio: Option<&mut u32>,
+    ) -> bool {
+        if !self.posts_active {
+            return true;
+        }
+        let Some(mut link) = self.find_post_link(start) else {
+            return start.is_none();
+        };
+        unsafe {
+            while (*link) != stop {
+                let mut current = match *link {
+                    Some(ptr) => ptr,
+                    None => break,
+                };
+                if let Some(limit) = max_prio.as_deref_mut() {
+                    if current.as_ref().priority() > *limit {
+                        *limit = u32::MAX;
+                        return true;
+                    }
+                }
+                if !current.as_mut().propagate_fixpoint(self, stop) {
+                    return false;
+                }
+                if *link == Some(current) {
+                    link = &mut current.as_mut().next as *mut Option<NonNull<PostPropagator>>;
+                }
+            }
+        }
+        true
     }
 
     fn propagate_watches(&mut self, literal: Literal) -> bool {
@@ -1308,7 +1987,7 @@ impl PropagatorList {
         self.head
     }
 
-    pub fn add(&mut self, propagator: Box<PostPropagator>) {
+    pub fn add(&mut self, propagator: Box<PostPropagator>) -> NonNull<PostPropagator> {
         assert!(propagator.next.is_none(), "Invalid post propagator");
 
         let priority = propagator.priority();
@@ -1326,6 +2005,7 @@ impl PropagatorList {
             leaked.next = *link;
             *link = Some(new_ptr);
         }
+        new_ptr
     }
 
     pub fn remove(&mut self, target: NonNull<PostPropagator>) -> Option<Box<PostPropagator>> {

@@ -1,12 +1,14 @@
-//! Focused Rust translation of the supported explicit-clause runtime sections
-//! from `original_clasp/tests/clause_test.cpp`.
+//! Focused Rust translation of the supported explicit, shared, and loop-formula
+//! runtime sections from `original_clasp/tests/clause_test.cpp`.
 
 use rust_clasp::clasp::clause::{
-    CLAUSE_EXPLICIT, CLAUSE_NO_ADD, CLAUSE_NO_PREPARE, ClauseCreator, ClauseInfo, SharedLiterals,
+    CLAUSE_EXPLICIT, CLAUSE_NO_ADD, CLAUSE_NO_PREPARE, ClauseCreator, ClauseInfo, ClauseRep,
+    LoopFormulaHandle, SharedLiterals, new_loop_formula, new_shared_clause,
 };
-use rust_clasp::clasp::constraint::{Antecedent, ConstraintType, Solver};
+use rust_clasp::clasp::constraint::{Antecedent, Constraint, ConstraintType, Solver};
 use rust_clasp::clasp::literal::{LitVec, Literal, neg_lit, pos_lit, value_false, value_true};
 use rust_clasp::clasp::pod_vector::contains;
+use rust_clasp::clasp::shared_context::SharedContext;
 
 fn test_solver(num_vars: u32) -> Solver {
     let mut solver = Solver::new();
@@ -40,6 +42,39 @@ fn create_explicit_clause(
         info,
     )
     .local
+}
+
+fn create_loop_formula_fixture() -> (SharedContext, LoopFormulaHandle, [Literal; 6]) {
+    let mut ctx = SharedContext::new();
+    let a1 = pos_lit(ctx.add_var());
+    let a2 = pos_lit(ctx.add_var());
+    let a3 = pos_lit(ctx.add_var());
+    let b1 = pos_lit(ctx.add_var());
+    let b2 = pos_lit(ctx.add_var());
+    let b3 = pos_lit(ctx.add_var());
+    let solver_ptr = ctx.start_add_constraints() as *mut Solver;
+    let _ = ctx.end_init();
+    unsafe {
+        let solver = &mut *solver_ptr;
+        solver.assume(!b1);
+        solver.assume(!b2);
+        solver.assume(!b3);
+        assert!(solver.propagate());
+        let clause = ClauseRep::prepared(&[!a1, b3, b2, b1], ClauseInfo::new(ConstraintType::Loop));
+        let atoms = [!a1, !a2, !a3];
+        let loop_formula = new_loop_formula(solver, &clause, &atoms, true);
+        solver.add_learnt_constraint(
+            loop_formula.constraint,
+            loop_formula.size(),
+            ConstraintType::Loop,
+        );
+        let antecedent = Antecedent::from_constraint_ptr(loop_formula.constraint);
+        assert!(solver.force(!a1, antecedent));
+        assert!(solver.force(!a2, antecedent));
+        assert!(solver.force(!a3, antecedent));
+        assert!(solver.propagate());
+        (ctx, loop_formula, [a1, a2, a3, b1, b2, b3])
+    }
 }
 
 #[test]
@@ -193,4 +228,153 @@ fn explicit_clause_creator_can_return_owned_non_added_clause() {
     assert_eq!(solver.num_constraints(), 0);
 
     unsafe { &mut *result.local }.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn shared_clause_attaches_watches_and_propagates_reason() {
+    let mut solver = test_solver(4);
+    let lits = [pos_lit(1), pos_lit(2), neg_lit(3), neg_lit(4)];
+    let clause = unsafe {
+        &mut *new_shared_clause(&mut solver, &lits, ClauseInfo::new(ConstraintType::Static))
+    };
+
+    assert_eq!(solver.num_clause_watches(!lits[0]), 1);
+    assert_eq!(solver.num_clause_watches(!lits[1]), 1);
+
+    solver.assume(!lits[0]);
+    assert!(solver.propagate());
+    solver.assume(!lits[3]);
+    assert!(solver.propagate());
+    solver.assume(!lits[1]);
+    assert!(solver.propagate());
+
+    assert!(solver.is_true(lits[2]));
+    assert!(clause.locked(&solver));
+    let mut antecedent = *solver.reason(lits[2].var());
+    let mut reason = LitVec::new();
+    antecedent.reason(&mut solver, lits[2], &mut reason);
+    assert!(contains(reason.as_slice(), &!lits[0]));
+    assert!(contains(reason.as_slice(), &!lits[1]));
+    assert!(contains(reason.as_slice(), &!lits[3]));
+
+    clause.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn shared_clause_simplify_unique_removes_false_literals_without_copying_watch_state() {
+    let mut solver = test_solver(6);
+    let lits = make_lits(3, 3);
+    let clause = unsafe {
+        &mut *new_shared_clause(&mut solver, &lits, ClauseInfo::new(ConstraintType::Static))
+    };
+
+    solver.force(!lits[2], Antecedent::new());
+    solver.force(!lits[3], Antecedent::new());
+    assert!(solver.propagate());
+
+    assert!(!clause.simplify(&mut solver, false));
+    assert_eq!(clause.size(), 4);
+    assert_eq!(solver.num_clause_watches(!lits[0]), 1);
+    assert_eq!(solver.num_clause_watches(!lits[1]), 1);
+
+    clause.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn loop_formula_initializes_watches_like_upstream_subset() {
+    let (mut ctx, loop_formula, lits) = create_loop_formula_fixture();
+    let solver_ptr = ctx.master() as *mut Solver;
+    unsafe {
+        let solver = &mut *solver_ptr;
+        assert!(solver.has_watch(lits[0], loop_formula.constraint));
+        assert!(solver.has_watch(lits[1], loop_formula.constraint));
+        assert!(solver.has_watch(lits[2], loop_formula.constraint));
+        assert!(solver.has_watch(!lits[5], loop_formula.constraint));
+        Constraint::destroy_raw(loop_formula.constraint, Some(solver), true);
+    }
+}
+
+#[test]
+fn loop_formula_propagates_body_reason_from_active_atom_and_bodies() {
+    let (mut ctx, loop_formula, lits) = create_loop_formula_fixture();
+    let solver_ptr = ctx.master() as *mut Solver;
+    unsafe {
+        let solver = &mut *solver_ptr;
+        solver.undo_until(0);
+        solver.assume(!lits[3]);
+        assert!(solver.propagate());
+        solver.assume(!lits[5]);
+        assert!(solver.propagate());
+        solver.assume(lits[2]);
+        assert!(solver.propagate());
+
+        assert!(solver.is_true(lits[4]));
+        let mut antecedent = *solver.reason(lits[4].var());
+        let mut reason = LitVec::new();
+        antecedent.reason(solver, lits[4], &mut reason);
+        assert_eq!(reason.len(), 3);
+        assert!(contains(reason.as_slice(), &lits[2]));
+        assert!(contains(reason.as_slice(), &!lits[5]));
+        assert!(contains(reason.as_slice(), &!lits[3]));
+        assert!((*loop_formula.constraint).locked(solver));
+        Constraint::destroy_raw(loop_formula.constraint, Some(solver), true);
+    }
+}
+
+#[test]
+fn loop_formula_propagates_all_atoms_when_all_bodies_become_false() {
+    let (mut ctx, loop_formula, lits) = create_loop_formula_fixture();
+    let solver_ptr = ctx.master() as *mut Solver;
+    unsafe {
+        let solver = &mut *solver_ptr;
+        solver.undo_until(0);
+        solver.assume(!lits[5]);
+        assert!(solver.propagate());
+        solver.assume(!lits[3]);
+        assert!(solver.propagate());
+        solver.assume(!lits[4]);
+        assert!(solver.propagate());
+
+        assert!(solver.is_true(!lits[0]));
+        assert!(solver.is_true(!lits[1]));
+        assert!(solver.is_true(!lits[2]));
+        let mut antecedent = *solver.reason(lits[1].var());
+        let mut reason = LitVec::new();
+        antecedent.reason(solver, !lits[1], &mut reason);
+        assert_eq!(reason.len(), 3);
+        assert!(contains(reason.as_slice(), &!lits[3]));
+        assert!(contains(reason.as_slice(), &!lits[4]));
+        assert!(contains(reason.as_slice(), &!lits[5]));
+        Constraint::destroy_raw(loop_formula.constraint, Some(solver), true);
+    }
+}
+
+#[test]
+fn loop_formula_simplify_false_bodies_collapse_into_learnt_short_clauses() {
+    let (mut ctx, loop_formula, lits) = create_loop_formula_fixture();
+    let solver_ptr = ctx.master() as *mut Solver;
+    unsafe {
+        let solver = &mut *solver_ptr;
+        solver.undo_until(0);
+        solver.force(!lits[3], Antecedent::new());
+        assert!(solver.propagate());
+        assert!((*loop_formula.constraint).simplify(solver, false));
+        assert_eq!(ctx.num_learnt_short(), 3);
+        Constraint::destroy_raw(loop_formula.constraint, Some(solver), true);
+    }
+}
+
+#[test]
+fn loop_formula_simplify_true_atom_collapses_to_single_learnt_short_clause() {
+    let (mut ctx, loop_formula, lits) = create_loop_formula_fixture();
+    let solver_ptr = ctx.master() as *mut Solver;
+    unsafe {
+        let solver = &mut *solver_ptr;
+        solver.undo_until(0);
+        solver.force(lits[0], Antecedent::new());
+        assert!(solver.propagate());
+        assert!((*loop_formula.constraint).simplify(solver, false));
+        assert_eq!(ctx.num_learnt_short(), 1);
+        Constraint::destroy_raw(loop_formula.constraint, Some(solver), true);
+    }
 }
