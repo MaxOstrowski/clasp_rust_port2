@@ -1,17 +1,25 @@
-use std::sync::Mutex;
+use std::cell::RefCell;
+use std::collections::VecDeque;
 
 use rust_clasp::clasp::util::timer::{
     ProcessTime, RealTime, ThreadTime, TimeSource, Timer, diff_time_unchecked, is_valid_time,
 };
 
-static MOCK_TIMES: Mutex<Vec<f64>> = Mutex::new(Vec::new());
+thread_local! {
+    static MOCK_TIMES: RefCell<VecDeque<f64>> = const { RefCell::new(VecDeque::new()) };
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct MockTime;
 
 impl TimeSource for MockTime {
     fn get_time() -> f64 {
-        MOCK_TIMES.lock().unwrap().remove(0)
+        MOCK_TIMES.with(|times| {
+            times
+                .borrow_mut()
+                .pop_front()
+                .expect("mock timer queue exhausted")
+        })
     }
 
     fn diff_time(t_end: f64, t_start: f64) -> f64 {
@@ -20,7 +28,9 @@ impl TimeSource for MockTime {
 }
 
 fn set_mock_times(values: &[f64]) {
-    *MOCK_TIMES.lock().unwrap() = values.to_vec();
+    MOCK_TIMES.with(|times| {
+        *times.borrow_mut() = values.iter().copied().collect();
+    });
 }
 
 #[test]

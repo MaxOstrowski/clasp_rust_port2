@@ -16,7 +16,7 @@ use crate::clasp::constraint::{
 use crate::clasp::literal::{
     LitVec, Literal, ValT, ValueVec, Var_t, VarVec, true_value, value_free, value_true,
 };
-use crate::clasp::pod_vector::{PodVectorT, size32};
+use crate::clasp::pod_vector::{PodVectorT, VectorLike, size32};
 pub use crate::clasp::statistics::{
     StatisticArray, StatisticMap, StatisticObject, StatisticType, StatisticValue,
 };
@@ -1247,6 +1247,40 @@ impl ImpliedList {
             self.level = dl;
         }
         self.lits.push_back(literal);
+    }
+
+    pub fn assign(&mut self, solver: &mut Solver) -> bool {
+        assert!(self.front as usize <= self.lits.len());
+        let dl = solver.decision_level();
+        let mut ok = !solver.has_conflict();
+        let start = self.front as usize;
+        let pending: Vec<ImpliedLiteral> = self.lits.as_slice()[start..].to_vec();
+        let mut write = start;
+
+        for implied in pending {
+            if implied.level <= dl {
+                if ok {
+                    ok = solver.force_with_data(
+                        implied.lit,
+                        implied.ante.ante(),
+                        implied.ante.data(),
+                    );
+                }
+                if implied.level < dl || implied.ante.ante().is_null() {
+                    self.lits.as_mut_slice()[write] = implied;
+                    write += 1;
+                }
+            }
+        }
+
+        self.lits.truncate(write);
+        self.level = dl * u32::from(!self.lits.is_empty());
+        self.front = if self.level > solver.root_level() {
+            self.front
+        } else {
+            size32(&self.lits)
+        };
+        ok
     }
 
     pub fn active(&self, dl: u32) -> bool {

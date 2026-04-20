@@ -599,11 +599,7 @@ fn assert_clause_literal(
         .literals()
         .get(1)
         .map(|lit| solver.level(lit.var()))
-        .unwrap_or(0)
-        .min(solver.decision_level());
-    if solver.decision_level() > implied_level.max(solver.root_level()) {
-        solver.backtrack(implied_level.max(solver.root_level()));
-    }
+        .unwrap_or(0);
     let antecedent = if !local.is_null() {
         let head = unsafe { &*local };
         Antecedent::from_constraint_ptr(head.constraint_ptr())
@@ -614,7 +610,7 @@ fn assert_clause_literal(
             _ => Antecedent::from_literals(!clause.literals()[1], !clause.literals()[2]),
         }
     };
-    if solver.force(clause.literals()[0], antecedent) {
+    if solver.force_at_level(clause.literals()[0], implied_level, antecedent) {
         ClauseStatus::Unit
     } else {
         ClauseStatus::Unsat

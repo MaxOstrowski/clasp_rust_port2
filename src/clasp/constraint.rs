@@ -9,7 +9,9 @@ use crate::clasp::literal::{LitVec, Literal, ValT, lit_false, value_free, value_
 use crate::clasp::pod_vector::shrink_vec_to;
 use crate::clasp::shared_context::SharedContext;
 use crate::clasp::solver_strategies::{CCMinAntes, SearchStrategy, SolverStrategies, WatchInit};
-use crate::clasp::solver_types::{Assignment, ClauseWatch, GenericWatch, SolverStats, WatchList};
+use crate::clasp::solver_types::{
+    Assignment, ClauseWatch, GenericWatch, ImpliedList, ImpliedLiteral, SolverStats, WatchList,
+};
 use crate::potassco::bits::{
     BitIndex, Bitset, nth_bit, right_most_bit, store_clear_bit, store_clear_mask, store_set_mask,
     store_toggle_bit, test_any, test_bit,
@@ -271,6 +273,7 @@ pub struct Solver {
     stats: SolverStats,
     epochs: Vec<u32>,
     level_marks: Vec<bool>,
+    implied_lits: ImpliedList,
     conflict_lits: LitVec,
     cc_lits: LitVec,
     cc_info: ConstraintInfo,
@@ -336,6 +339,7 @@ impl Solver {
             stats: SolverStats::default(),
             epochs: vec![0],
             level_marks: vec![false],
+            implied_lits: ImpliedList::default(),
             conflict_lits: LitVec::new(),
             cc_lits: LitVec::new(),
             cc_info: ConstraintInfo::new(ConstraintType::Conflict),
@@ -508,6 +512,7 @@ impl Solver {
         let new_root = self.root_level.saturating_sub(levels.min(self.root_level));
         self.root_level = new_root;
         self.backtrack_level = new_root;
+        self.implied_lits.front = 0;
         self.undo_until(new_root);
         !self.has_conflict
     }
@@ -526,6 +531,7 @@ impl Solver {
         }
         self.root_level = new_root;
         self.backtrack_level = new_root;
+        self.implied_lits.front = 0;
         self.undo_until(new_root);
         !self.has_conflict
     }
@@ -701,6 +707,19 @@ impl Solver {
         self.assignment.set_data(var, data);
     }
 
+    fn set_reason_for_literal(
+        &mut self,
+        literal: Literal,
+        antecedent: Antecedent,
+        data: u32,
+    ) -> bool {
+        self.set_reason(literal.var(), antecedent);
+        if data != u32::MAX {
+            self.set_reason_data(literal.var(), data);
+        }
+        true
+    }
+
     pub fn reserve_watch_capacity(&mut self, size: usize) {
         if self.watches.len() < size {
             self.watches.resize_with(size, WatchList::default);
@@ -811,6 +830,24 @@ impl Solver {
         self.force_with_data(literal, antecedent, u32::MAX)
     }
 
+    pub fn force_at_level(&mut self, literal: Literal, level: u32, antecedent: Antecedent) -> bool {
+        self.force_at_level_with_data(literal, level, antecedent, u32::MAX)
+    }
+
+    pub fn force_at_level_with_data(
+        &mut self,
+        literal: Literal,
+        level: u32,
+        antecedent: Antecedent,
+        data: u32,
+    ) -> bool {
+        if level == self.decision_level {
+            self.force_with_data(literal, antecedent, data)
+        } else {
+            self.force_implied(ImpliedLiteral::with_data(literal, level, antecedent, data))
+        }
+    }
+
     pub fn force_with_data(&mut self, literal: Literal, antecedent: Antecedent, data: u32) -> bool {
         if self.has_conflict && self.is_true(literal) {
             return true;
@@ -828,6 +865,37 @@ impl Solver {
         } else {
             self.set_conflict(literal, antecedent, data);
             false
+        }
+    }
+
+    fn force_implied(&mut self, implied: ImpliedLiteral) -> bool {
+        if self.is_true(implied.lit) {
+            if self.level(implied.lit.var()) <= implied.level {
+                return true;
+            }
+            let mut update_reason = false;
+            if let Some(existing) = self.implied_lits.find(implied.lit) {
+                if existing.level > implied.level {
+                    *existing = implied;
+                    update_reason = true;
+                }
+                if update_reason {
+                    self.set_reason_for_literal(
+                        implied.lit,
+                        implied.ante.ante(),
+                        implied.ante.data(),
+                    );
+                }
+                return true;
+            }
+        }
+        if self.undo_until(implied.level) != implied.level {
+            self.implied_lits.add(self.decision_level, implied);
+        }
+        if self.is_true(implied.lit) {
+            self.set_reason_for_literal(implied.lit, implied.ante.ante(), implied.ante.data())
+        } else {
+            self.force_with_data(implied.lit, implied.ante.ante(), implied.ante.data())
         }
     }
 
@@ -1074,7 +1142,7 @@ impl Solver {
             .and_then(|shared| shared.reverse_arc(self, literal, max_level))
     }
 
-    pub fn undo_until(&mut self, level: u32) {
+    pub fn undo_until(&mut self, level: u32) -> u32 {
         let target = level.max(self.backtrack_level);
         while self.decision_level > target {
             let current = self.decision_level;
@@ -1096,12 +1164,42 @@ impl Solver {
         self.assignment.q_reset();
         self.has_conflict = false;
         self.conflict_lits.clear();
+        let actual = self.decision_level;
+        if self.implied_lits.active(actual) {
+            let mut implied_lits = core::mem::take(&mut self.implied_lits);
+            let _ = implied_lits.assign(self);
+            self.implied_lits = implied_lits;
+        }
+        actual
     }
 
     pub fn backtrack(&mut self, level: u32) -> bool {
         let target = level.max(self.root_level);
         self.undo_until(target);
         self.backtrack_level = self.backtrack_level.min(self.decision_level);
+        true
+    }
+
+    pub fn backtrack_step(&mut self) -> bool {
+        let mut last_choice_inverted;
+        loop {
+            if self.decision_level == self.root_level {
+                self.set_stop_conflict();
+                return false;
+            }
+            last_choice_inverted = !self.decision(self.decision_level);
+            let target = self.decision_level.saturating_sub(1).max(self.root_level);
+            self.backtrack_level = target;
+            self.undo_until(target);
+            self.set_backtrack_level(self.decision_level);
+            if !self.has_conflict() && self.force(last_choice_inverted, Antecedent::new()) {
+                break;
+            }
+        }
+        self.implied_lits.add(
+            self.decision_level,
+            ImpliedLiteral::new(last_choice_inverted, self.decision_level, Antecedent::new()),
+        );
         true
     }
 

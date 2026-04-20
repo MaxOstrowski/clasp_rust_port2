@@ -1277,4 +1277,38 @@ fn solver_resolve_conflict_respects_bounded_backjump_level() {
     assert!(solver.resolve_conflict());
     assert!(solver.is_true(x15));
     assert_eq!(solver.decision_level(), 6);
+
+    let mut antecedent = *solver.reason(x15.var());
+    assert_eq!(antecedent.type_(), Antecedent::GENERIC);
+
+    let mut reason = LitVec::new();
+    antecedent.reason(solver, x15, &mut reason);
+    assert!(contains(reason.as_slice(), &x2));
+    assert!(contains(reason.as_slice(), &!x3));
+    assert!(contains(reason.as_slice(), &x6));
+
+    let mut has_learnt_watch = false;
+    for index in 0..solver.num_clause_watches(x6) as usize {
+        let clause_head = solver.get_clause_watch(x6, index).unwrap().head;
+        let lits = unsafe { (*clause_head).to_lits() };
+        if lits.len() == 4
+            && contains(lits.as_slice(), &!x2)
+            && contains(lits.as_slice(), &x3)
+            && contains(lits.as_slice(), &!x6)
+            && contains(lits.as_slice(), &x15)
+        {
+            has_learnt_watch = true;
+            assert!(solver.has_clause_watch(x6, clause_head));
+            break;
+        }
+    }
+    assert!(has_learnt_watch);
+
+    assert!(solver.backtrack_step());
+    assert!(solver.is_true(x15));
+    assert_eq!(solver.decision_level(), 5);
+
+    assert!(solver.backtrack_step());
+    assert_eq!(solver.value(x15.var()), value_free);
+    assert_eq!(solver.decision_level(), 4);
 }
