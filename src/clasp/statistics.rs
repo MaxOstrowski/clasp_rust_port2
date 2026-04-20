@@ -1,42 +1,41 @@
-//! Partial Rust port of `original_clasp/clasp/statistics.h`.
-//!
-//! This module provides a *solver-agnostic* statistics object model similar to the
-//! upstream C++ `StatisticObject`.
-//!
-//! The core design constraint is that this module must not depend on solver/runtime
-//! types (e.g., `SolverStats`). Instead, those types implement the small trait
-//! surfaces (`StatisticMap` / `StatisticArray`) and can then be exported through
-//! `StatisticObject`.
+//! Partial Rust port of `original_clasp/clasp/statistics.h` and
+//! `original_clasp/src/statistics.cpp`.
 
 use core::marker::PhantomData;
 use core::mem;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind, panic_any};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StatisticType {
-    Value,
-    Map,
-    Array,
-}
+use crate::clasp::claspfwd::Asp;
+use crate::clasp::shared_context::ProblemStats;
+use crate::clasp::solver_types::SolverStats;
+use crate::potassco::clingo::{AbstractStatistics, StatisticsKey, StatisticsType};
+use crate::potassco::error::Error;
+
+pub type StatisticType = StatisticsType;
 
 pub trait StatisticValue {
     fn to_f64(&self) -> f64;
 }
 
 macro_rules! impl_stat_value {
-	($($t:ty),+ $(,)?) => {
-		$(
-			impl StatisticValue for $t {
-				fn to_f64(&self) -> f64 { *self as f64 }
-			}
-		)+
-	};
+    ($($t:ty),+ $(,)?) => {
+        $(
+            impl StatisticValue for $t {
+                fn to_f64(&self) -> f64 {
+                    *self as f64
+                }
+            }
+        )+
+    };
 }
 
 impl_stat_value!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize, f32, f64);
 
 pub trait StatisticMap {
     fn size(&self) -> u32;
-    fn key(&self, index: u32) -> &'static str;
+    fn key(&self, index: u32) -> &str;
     fn at<'a>(&'a self, key: &str) -> StatisticObject<'a>;
 }
 
@@ -48,11 +47,23 @@ pub trait StatisticArray {
 #[derive(Clone, Copy)]
 pub enum StatisticObject<'a> {
     InlineValue(f64),
+    ValueRef {
+        obj: *const (),
+        value: unsafe fn(*const (), usize) -> f64,
+        op_id: usize,
+        _life: PhantomData<&'a ()>,
+    },
     Erased {
         obj: *const (),
         vtab: &'static Vtab,
         _life: PhantomData<&'a ()>,
     },
+}
+
+impl Default for StatisticObject<'_> {
+    fn default() -> Self {
+        Self::null_value()
+    }
 }
 
 impl<'a> core::fmt::Debug for StatisticObject<'a> {
@@ -63,33 +74,79 @@ impl<'a> core::fmt::Debug for StatisticObject<'a> {
     }
 }
 
+impl PartialEq for StatisticObject<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (*self, *other) {
+            (Self::InlineValue(lhs), Self::InlineValue(rhs)) => lhs.to_bits() == rhs.to_bits(),
+            (
+                Self::ValueRef {
+                    obj: lhs_obj,
+                    value: lhs_value,
+                    op_id: lhs_op,
+                    ..
+                },
+                Self::ValueRef {
+                    obj: rhs_obj,
+                    value: rhs_value,
+                    op_id: rhs_op,
+                    ..
+                },
+            ) => {
+                lhs_obj == rhs_obj && std::ptr::fn_addr_eq(lhs_value, rhs_value) && lhs_op == rhs_op
+            }
+            (
+                Self::Erased {
+                    obj: lhs_obj,
+                    vtab: lhs_vtab,
+                    ..
+                },
+                Self::Erased {
+                    obj: rhs_obj,
+                    vtab: rhs_vtab,
+                    ..
+                },
+            ) => lhs_obj == rhs_obj && std::ptr::eq(lhs_vtab, rhs_vtab),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for StatisticObject<'_> {}
+
 impl<'a> StatisticObject<'a> {
     pub const fn from_f64(value: f64) -> Self {
         Self::InlineValue(value)
     }
 
     pub fn from_value<T: StatisticValue>(obj: &'a T) -> Self {
-        let obj_ptr = core::ptr::from_ref(obj).cast::<()>();
-        Self::Erased {
-            obj: obj_ptr,
-            vtab: Vtab::value::<T>(),
+        Self::ValueRef {
+            obj: core::ptr::from_ref(obj).cast::<()>(),
+            value: value_ref::<T>,
+            op_id: 0,
+            _life: PhantomData,
+        }
+    }
+
+    pub fn from_mapped_value<T>(obj: &'a T, getter: fn(&T) -> f64) -> Self {
+        Self::ValueRef {
+            obj: core::ptr::from_ref(obj).cast::<()>(),
+            value: mapped_value::<T>,
+            op_id: getter as usize,
             _life: PhantomData,
         }
     }
 
     pub fn map<T: StatisticMap>(obj: &'a T) -> Self {
-        let obj_ptr = core::ptr::from_ref(obj).cast::<()>();
         Self::Erased {
-            obj: obj_ptr,
+            obj: core::ptr::from_ref(obj).cast::<()>(),
             vtab: Vtab::map::<T>(),
             _life: PhantomData,
         }
     }
 
     pub fn array<T: StatisticArray>(obj: &'a T) -> Self {
-        let obj_ptr = core::ptr::from_ref(obj).cast::<()>();
         Self::Erased {
-            obj: obj_ptr,
+            obj: core::ptr::from_ref(obj).cast::<()>(),
             vtab: Vtab::array::<T>(),
             _life: PhantomData,
         }
@@ -97,54 +154,679 @@ impl<'a> StatisticObject<'a> {
 
     pub const fn type_(&self) -> StatisticType {
         match self {
-            Self::InlineValue(_) => StatisticType::Value,
+            Self::InlineValue(_) | Self::ValueRef { .. } => StatisticType::Value,
             Self::Erased { vtab, .. } => vtab.type_,
         }
     }
 
     pub fn size(&self) -> u32 {
         match self {
-            Self::InlineValue(_) => 0,
+            Self::InlineValue(_) | Self::ValueRef { .. } => 0,
             Self::Erased { obj, vtab, .. } => unsafe { (vtab.size)(*obj) },
         }
     }
 
-    pub fn key(&self, index: u32) -> &'static str {
+    pub fn key(&self, index: u32) -> &'a str {
         match self {
-            Self::InlineValue(_) => panic!("StatisticObject::key called on value object"),
-            Self::Erased { obj, vtab, .. } => unsafe { (vtab.key)(*obj, index) },
+            Self::Erased { obj, vtab, .. } if vtab.type_ == StatisticType::Map => unsafe {
+                mem::transmute::<&str, &'a str>((vtab.key)(*obj, index))
+            },
+            _ => panic_type(StatisticType::Map, self.type_()),
         }
     }
 
     pub fn at(&self, key: &str) -> StatisticObject<'a> {
         match self {
-            Self::InlineValue(_) => panic!("StatisticObject::at called on value object"),
-            Self::Erased { obj, vtab, .. } => unsafe {
-                let child: StatisticObject<'static> = (vtab.at_map)(*obj, key);
+            Self::Erased { obj, vtab, .. } if vtab.type_ == StatisticType::Map => unsafe {
+                let child = (vtab.at_map)(*obj, key);
                 mem::transmute::<StatisticObject<'static>, StatisticObject<'a>>(child)
             },
+            _ => panic_type(StatisticType::Map, self.type_()),
         }
     }
 
     pub fn index(&self, index: u32) -> StatisticObject<'a> {
         match self {
-            Self::InlineValue(_) => panic!("StatisticObject::index called on value object"),
-            Self::Erased { obj, vtab, .. } => unsafe {
-                let child: StatisticObject<'static> = (vtab.at_arr)(*obj, index);
+            Self::Erased { obj, vtab, .. } if vtab.type_ == StatisticType::Array => unsafe {
+                let child = (vtab.at_arr)(*obj, index);
                 mem::transmute::<StatisticObject<'static>, StatisticObject<'a>>(child)
             },
-        }
-    }
-
-    pub fn value_as_f64(&self) -> f64 {
-        match self {
-            Self::InlineValue(v) => *v,
-            Self::Erased { obj, vtab, .. } => unsafe { (vtab.value)(*obj) },
+            _ => panic_type(StatisticType::Array, self.type_()),
         }
     }
 
     pub fn value(&self) -> f64 {
-        self.value_as_f64()
+        match self {
+            Self::InlineValue(value) => *value,
+            Self::ValueRef {
+                obj, value, op_id, ..
+            } => unsafe { (value)(*obj, *op_id) },
+            Self::Erased { .. } => panic_type(StatisticType::Value, self.type_()),
+        }
+    }
+
+    fn null_value() -> Self {
+        Self::ValueRef {
+            obj: core::ptr::null(),
+            value: null_value,
+            op_id: 0,
+            _life: PhantomData,
+        }
+    }
+
+    fn external_key(&self) -> ExternalObjectKey {
+        match *self {
+            Self::InlineValue(value) => ExternalObjectKey::InlineValue(value.to_bits()),
+            Self::ValueRef {
+                obj, value, op_id, ..
+            } => ExternalObjectKey::ValueRef {
+                obj: obj as usize,
+                value: value as usize,
+                op_id,
+            },
+            Self::Erased { obj, vtab, .. } => ExternalObjectKey::Erased {
+                obj: obj as usize,
+                vtab: vtab as *const Vtab as usize,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Operation {
+    Enter,
+    Leave,
+}
+
+pub trait StatsVisitor {
+    fn visit_generator(&mut self, _op: Operation) -> bool {
+        true
+    }
+
+    fn visit_threads(&mut self, _op: Operation) -> bool {
+        true
+    }
+
+    fn visit_tester(&mut self, _op: Operation) -> bool {
+        true
+    }
+
+    fn visit_hccs(&mut self, _op: Operation) -> bool {
+        true
+    }
+
+    fn visit_thread(&mut self, _thread_id: u32, stats: &SolverStats) {
+        self.visit_solver_stats(stats);
+    }
+
+    fn visit_hcc(&mut self, _hcc_id: u32, problem: &ProblemStats, solver: &SolverStats) {
+        self.visit_problem_stats(problem);
+        self.visit_solver_stats(solver);
+    }
+
+    fn visit_logic_program_stats(&mut self, stats: &Asp::LpStats);
+    fn visit_problem_stats(&mut self, stats: &ProblemStats);
+    fn visit_solver_stats(&mut self, stats: &SolverStats);
+    fn visit_external_stats(&mut self, stats: StatisticObject<'_>);
+}
+
+#[derive(Debug)]
+pub struct ClaspStatistics {
+    inner: Box<ClaspStatisticsInner>,
+}
+
+impl Default for ClaspStatistics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ClaspStatistics {
+    pub fn new() -> Self {
+        let mut inner = Box::new(ClaspStatisticsInner::new());
+        let owner = inner.as_ref() as *const ClaspStatisticsInner;
+        inner.maps.push(WritableMap::new(owner));
+        Self { inner }
+    }
+
+    pub fn add_object(
+        &mut self,
+        map: StatisticsKey,
+        name: &str,
+        object: StatisticObject<'_>,
+        skip_check: bool,
+    ) -> StatisticsKey {
+        self.inner.add_map_object(map, name, object, skip_check)
+    }
+
+    pub fn visit_external(&self, name: &str, visitor: &mut dyn StatsVisitor) -> bool {
+        if let Some(key) = self.inner.root_map().find(name) {
+            visitor.visit_external_stats(self.inner.object_for_key(key));
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn freeze(&mut self, frozen: bool) {
+        self.inner.frozen = frozen;
+    }
+
+    pub fn root(&self) -> StatisticsKey {
+        make_key(KeyType::Map, 0)
+    }
+
+    pub fn type_of(&self, key: StatisticsKey) -> StatisticType {
+        self.inner.object_for_key(key).type_()
+    }
+
+    pub fn size(&self, key: StatisticsKey) -> usize {
+        self.inner.object_for_key(key).size() as usize
+    }
+
+    pub fn writable(&self, key: StatisticsKey) -> bool {
+        let _ = self.inner.object_for_key(key);
+        key_type(key) != KeyType::Ext
+    }
+
+    pub fn at(&self, array: StatisticsKey, index: usize) -> StatisticsKey {
+        self.inner.child_key_at(array, index)
+    }
+
+    pub fn push(&mut self, array: StatisticsKey, item_type: StatisticType) -> StatisticsKey {
+        self.inner.push_array(array, item_type)
+    }
+
+    pub fn key(&self, map: StatisticsKey, index: usize) -> &str {
+        let object = self.inner.object_for_key(map);
+        if object.type_() != StatisticType::Map {
+            panic_type(StatisticType::Map, object.type_());
+        }
+        if index >= object.size() as usize {
+            panic_range(index, object.size() as usize);
+        }
+        object.key(index as u32)
+    }
+
+    pub fn get(&self, map: StatisticsKey, path: &str) -> StatisticsKey {
+        self.inner.child_key_get(map, path)
+    }
+
+    pub fn find(
+        &self,
+        map: StatisticsKey,
+        element: &str,
+        out_key: Option<&mut StatisticsKey>,
+    ) -> bool {
+        match catch_unwind(AssertUnwindSafe(|| self.get(map, element))) {
+            Ok(key) => {
+                if let Some(out) = out_key {
+                    *out = key;
+                }
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    pub fn add(
+        &mut self,
+        map: StatisticsKey,
+        name: &str,
+        item_type: StatisticType,
+    ) -> StatisticsKey {
+        self.inner.add_map(map, name, item_type)
+    }
+
+    pub fn value(&self, key: StatisticsKey) -> f64 {
+        self.inner.object_for_key(key).value()
+    }
+
+    pub fn set(&mut self, key: StatisticsKey, value: f64) {
+        self.inner.set_value(key, value);
+    }
+}
+
+impl AbstractStatistics for ClaspStatistics {
+    fn root(&self) -> StatisticsKey {
+        self.root()
+    }
+
+    fn type_of(&self, key: StatisticsKey) -> StatisticsType {
+        self.type_of(key)
+    }
+
+    fn size(&self, key: StatisticsKey) -> usize {
+        self.size(key)
+    }
+
+    fn writable(&self, key: StatisticsKey) -> bool {
+        self.writable(key)
+    }
+
+    fn at(&self, array: StatisticsKey, index: usize) -> StatisticsKey {
+        self.at(array, index)
+    }
+
+    fn push(&mut self, array: StatisticsKey, item_type: StatisticsType) -> StatisticsKey {
+        self.push(array, item_type)
+    }
+
+    fn key(&self, map: StatisticsKey, index: usize) -> &str {
+        self.key(map, index)
+    }
+
+    fn get(&self, map: StatisticsKey, at: &str) -> StatisticsKey {
+        self.get(map, at)
+    }
+
+    fn find(&self, map: StatisticsKey, element: &str, out_key: Option<&mut StatisticsKey>) -> bool {
+        self.find(map, element, out_key)
+    }
+
+    fn add(&mut self, map: StatisticsKey, name: &str, item_type: StatisticsType) -> StatisticsKey {
+        self.add(map, name, item_type)
+    }
+
+    fn value(&self, key: StatisticsKey) -> f64 {
+        self.value(key)
+    }
+
+    fn set(&mut self, key: StatisticsKey, value: f64) {
+        self.set(key, value);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum ExternalObjectKey {
+    InlineValue(u64),
+    ValueRef {
+        obj: usize,
+        value: usize,
+        op_id: usize,
+    },
+    Erased {
+        obj: usize,
+        vtab: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KeyType {
+    Value = 0,
+    Array = 1,
+    Map = 2,
+    Ext = 3,
+}
+
+const KEY_SHIFT: u64 = 62;
+
+const fn make_key(key_type: KeyType, index: usize) -> StatisticsKey {
+    ((key_type as StatisticsKey) << KEY_SHIFT) | index as StatisticsKey
+}
+
+const fn key_type(key: StatisticsKey) -> KeyType {
+    match key >> KEY_SHIFT {
+        0 => KeyType::Value,
+        1 => KeyType::Array,
+        2 => KeyType::Map,
+        3 => KeyType::Ext,
+        _ => unreachable!(),
+    }
+}
+
+const fn key_index(key: StatisticsKey) -> usize {
+    (key & ((1u64 << KEY_SHIFT) - 1)) as usize
+}
+
+#[derive(Debug)]
+struct WritableMap {
+    owner: *const ClaspStatisticsInner,
+    entries: Vec<(String, StatisticsKey)>,
+}
+
+impl WritableMap {
+    fn new(owner: *const ClaspStatisticsInner) -> Self {
+        Self {
+            owner,
+            entries: Vec::new(),
+        }
+    }
+
+    fn find(&self, name: &str) -> Option<StatisticsKey> {
+        self.entries
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, child)| *child)
+    }
+
+    fn child(&self, name: &str) -> StatisticsKey {
+        self.find(name).unwrap_or_else(|| {
+            panic_any(Error::OutOfRange(format!(
+                "WritableMap::at with key '{name}'"
+            )))
+        })
+    }
+
+    fn add(&mut self, name: &str, key: StatisticsKey) {
+        self.entries.push((name.to_owned(), key));
+    }
+}
+
+impl StatisticMap for WritableMap {
+    fn size(&self) -> u32 {
+        self.entries.len() as u32
+    }
+
+    fn key(&self, index: u32) -> &str {
+        self.entries[index as usize].0.as_str()
+    }
+
+    fn at<'a>(&'a self, key: &str) -> StatisticObject<'a> {
+        let child = self.child(key);
+        let object = unsafe { (*self.owner).object_for_key(child) };
+        unsafe { mem::transmute::<StatisticObject<'_>, StatisticObject<'a>>(object) }
+    }
+}
+
+#[derive(Debug)]
+struct WritableArray {
+    owner: *const ClaspStatisticsInner,
+    entries: Vec<StatisticsKey>,
+}
+
+impl WritableArray {
+    fn new(owner: *const ClaspStatisticsInner) -> Self {
+        Self {
+            owner,
+            entries: Vec::new(),
+        }
+    }
+
+    fn child(&self, index: u32) -> StatisticsKey {
+        self.entries[index as usize]
+    }
+
+    fn add(&mut self, key: StatisticsKey) {
+        self.entries.push(key);
+    }
+}
+
+impl StatisticArray for WritableArray {
+    fn size(&self) -> u32 {
+        self.entries.len() as u32
+    }
+
+    fn at<'a>(&'a self, index: u32) -> StatisticObject<'a> {
+        let child = self.child(index);
+        let object = unsafe { (*self.owner).object_for_key(child) };
+        unsafe { mem::transmute::<StatisticObject<'_>, StatisticObject<'a>>(object) }
+    }
+}
+
+#[derive(Debug)]
+struct ClaspStatisticsInner {
+    ext: RefCell<Vec<StatisticObject<'static>>>,
+    maps: Vec<WritableMap>,
+    arrays: Vec<WritableArray>,
+    values: Vec<f64>,
+    ext_index: RefCell<HashMap<ExternalObjectKey, StatisticsKey>>,
+    frozen: bool,
+}
+
+impl ClaspStatisticsInner {
+    fn new() -> Self {
+        Self {
+            ext: RefCell::new(Vec::new()),
+            maps: Vec::new(),
+            arrays: Vec::new(),
+            values: Vec::new(),
+            ext_index: RefCell::new(HashMap::new()),
+            frozen: false,
+        }
+    }
+
+    fn root_map(&self) -> &WritableMap {
+        &self.maps[0]
+    }
+
+    fn object_for_key<'a>(&'a self, key: StatisticsKey) -> StatisticObject<'a> {
+        let index = key_index(key);
+        match key_type(key) {
+            KeyType::Value => {
+                let value = self
+                    .values
+                    .get(index)
+                    .unwrap_or_else(|| panic_invalid_key(key));
+                StatisticObject::from_value(value)
+            }
+            KeyType::Array => {
+                let array = self
+                    .arrays
+                    .get(index)
+                    .unwrap_or_else(|| panic_invalid_key(key));
+                StatisticObject::array(array)
+            }
+            KeyType::Map => {
+                let map = self
+                    .maps
+                    .get(index)
+                    .unwrap_or_else(|| panic_invalid_key(key));
+                StatisticObject::map(map)
+            }
+            KeyType::Ext => {
+                if self.frozen {
+                    panic_not_accessible();
+                }
+                let object = self
+                    .ext
+                    .borrow()
+                    .get(index)
+                    .copied()
+                    .unwrap_or_else(|| panic_invalid_key(key));
+                unsafe { mem::transmute::<StatisticObject<'static>, StatisticObject<'a>>(object) }
+            }
+        }
+    }
+
+    fn add_writable(&mut self, item_type: StatisticType) -> StatisticsKey {
+        let owner = self as *const ClaspStatisticsInner;
+        match item_type {
+            StatisticType::Value => {
+                self.values.push(0.0);
+                make_key(KeyType::Value, self.values.len() - 1)
+            }
+            StatisticType::Array => {
+                self.arrays.push(WritableArray::new(owner));
+                make_key(KeyType::Array, self.arrays.len() - 1)
+            }
+            StatisticType::Map => {
+                self.maps.push(WritableMap::new(owner));
+                make_key(KeyType::Map, self.maps.len() - 1)
+            }
+        }
+    }
+
+    fn ensure_writable(&self, key: StatisticsKey, item_type: StatisticType) -> usize {
+        let object = self.object_for_key(key);
+        if key_type(key) != KeyType::Ext && object.type_() == item_type {
+            key_index(key)
+        } else {
+            panic_write(key, item_type);
+        }
+    }
+
+    fn add_external(&self, object: StatisticObject<'_>, skip_mapping: bool) -> StatisticsKey {
+        let object =
+            unsafe { mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(object) };
+        let external_key = object.external_key();
+        if !skip_mapping {
+            if let Some(existing) = self.ext_index.borrow().get(&external_key).copied() {
+                return existing;
+            }
+        }
+
+        let key = {
+            let mut ext = self.ext.borrow_mut();
+            let key = make_key(KeyType::Ext, ext.len());
+            ext.push(object);
+            key
+        };
+        if !skip_mapping {
+            self.ext_index.borrow_mut().insert(external_key, key);
+        }
+        key
+    }
+
+    fn add_map(
+        &mut self,
+        map: StatisticsKey,
+        name: &str,
+        item_type: StatisticType,
+    ) -> StatisticsKey {
+        let index = self.ensure_writable(map, StatisticType::Map);
+        if let Some(existing) = self.maps[index].find(name) {
+            let _ = self.ensure_writable(existing, item_type);
+            return existing;
+        }
+
+        let child = self.add_writable(item_type);
+        self.maps[index].add(name, child);
+        child
+    }
+
+    fn add_map_object(
+        &mut self,
+        map: StatisticsKey,
+        name: &str,
+        object: StatisticObject<'_>,
+        skip_check: bool,
+    ) -> StatisticsKey {
+        let index = self.ensure_writable(map, StatisticType::Map);
+        if !skip_check {
+            if let Some(existing) = self.maps[index].find(name) {
+                if self.object_for_key(existing) == object {
+                    return existing;
+                }
+                panic_any(Error::InvalidArgument(format!(
+                    "unexpected object for key '{name}'"
+                )));
+            }
+        }
+
+        let child = self.add_external(object, true);
+        self.maps[index].add(name, child);
+        child
+    }
+
+    fn set_value(&mut self, key: StatisticsKey, value: f64) {
+        let index = self.ensure_writable(key, StatisticType::Value);
+        self.values[index] = value;
+    }
+
+    fn push_array(&mut self, array: StatisticsKey, item_type: StatisticType) -> StatisticsKey {
+        let index = self.ensure_writable(array, StatisticType::Array);
+        let child = self.add_writable(item_type);
+        self.arrays[index].add(child);
+        child
+    }
+
+    fn child_key_at(&self, array: StatisticsKey, index: usize) -> StatisticsKey {
+        let object = self.object_for_key(array);
+        if object.type_() != StatisticType::Array {
+            panic_type(StatisticType::Array, object.type_());
+        }
+        if index >= object.size() as usize {
+            panic_range(index, object.size() as usize);
+        }
+
+        match key_type(array) {
+            KeyType::Array => self.arrays[key_index(array)].child(index as u32),
+            KeyType::Ext => {
+                let child = unsafe {
+                    mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(
+                        object.index(index as u32),
+                    )
+                };
+                self.add_external(child, false)
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn child_key_get(&self, map: StatisticsKey, path: &str) -> StatisticsKey {
+        let mut current_key = map;
+        let mut current_object = unsafe {
+            mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(
+                self.object_for_key(map),
+            )
+        };
+        let has_key = key_type(map) != KeyType::Ext;
+        let mut position = 0usize;
+
+        while position < path.len() {
+            let rest = &path[position..];
+            let offset = rest.find('.').unwrap_or(rest.len());
+            let segment = &rest[..offset];
+            let consumed = position + offset;
+
+            match current_object.type_() {
+                StatisticType::Map => {
+                    if has_key {
+                        let map_index = key_index(current_key);
+                        let child = self.maps[map_index]
+                            .find(segment)
+                            .unwrap_or_else(|| panic_path(&path[..consumed], segment));
+                        current_key = child;
+                        current_object = unsafe {
+                            mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(
+                                self.object_for_key(child),
+                            )
+                        };
+                    } else {
+                        let next = catch_unwind(AssertUnwindSafe(|| current_object.at(segment)))
+                            .unwrap_or_else(|_| panic_path(&path[..consumed], segment));
+                        current_object = unsafe {
+                            mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(next)
+                        };
+                    }
+                }
+                StatisticType::Array => {
+                    let index = parse_array_index(segment)
+                        .filter(|array_index| {
+                            (*array_index as usize) < current_object.size() as usize
+                        })
+                        .unwrap_or_else(|| panic_path(&path[..consumed], segment));
+                    if has_key {
+                        current_key = self.arrays[key_index(current_key)].child(index);
+                        current_object = unsafe {
+                            mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(
+                                self.object_for_key(current_key),
+                            )
+                        };
+                    } else {
+                        current_object = unsafe {
+                            mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(
+                                current_object.index(index),
+                            )
+                        };
+                    }
+                }
+                StatisticType::Value => panic_path(&path[..consumed], segment),
+            }
+
+            position = if consumed == path.len() {
+                consumed
+            } else {
+                consumed + 1
+            };
+        }
+
+        if has_key {
+            current_key
+        } else {
+            self.add_external(current_object, false)
+        }
     }
 }
 
@@ -155,7 +837,6 @@ pub struct Vtab {
     key: unsafe fn(*const (), u32) -> &'static str,
     at_map: unsafe fn(*const (), &str) -> StatisticObject<'static>,
     at_arr: unsafe fn(*const (), u32) -> StatisticObject<'static>,
-    value: unsafe fn(*const ()) -> f64,
 }
 
 impl Vtab {
@@ -163,15 +844,10 @@ impl Vtab {
         Self {
             type_,
             size: panic_size,
-            key: panic_key,
+            key: panic_key_vtab,
             at_map: panic_at_map,
             at_arr: panic_at_arr,
-            value: panic_value,
         }
-    }
-
-    fn value<T: StatisticValue>() -> &'static Self {
-        &ValueVtab::<T>::VTAB
     }
 
     fn map<T: StatisticMap>() -> &'static Self {
@@ -183,9 +859,17 @@ impl Vtab {
     }
 }
 
-unsafe fn v_value<T: StatisticValue>(obj: *const ()) -> f64 {
-    let obj = unsafe { &*(obj.cast::<T>()) };
-    obj.to_f64()
+unsafe fn value_ref<T: StatisticValue>(obj: *const (), _op_id: usize) -> f64 {
+    unsafe { (*(obj.cast::<T>())).to_f64() }
+}
+
+unsafe fn mapped_value<T>(obj: *const (), op_id: usize) -> f64 {
+    let getter = unsafe { mem::transmute::<usize, fn(&T) -> f64>(op_id) };
+    getter(unsafe { &*(obj.cast::<T>()) })
+}
+
+unsafe fn null_value(_obj: *const (), _op_id: usize) -> f64 {
+    0.0
 }
 
 unsafe fn v_map_size<T: StatisticMap>(obj: *const ()) -> u32 {
@@ -193,7 +877,8 @@ unsafe fn v_map_size<T: StatisticMap>(obj: *const ()) -> u32 {
 }
 
 unsafe fn v_map_key<T: StatisticMap>(obj: *const (), index: u32) -> &'static str {
-    unsafe { (*(obj.cast::<T>())).key(index) }
+    let key = unsafe { (*(obj.cast::<T>())).key(index) };
+    unsafe { mem::transmute::<&str, &'static str>(key) }
 }
 
 unsafe fn v_map_at<T: StatisticMap>(obj: *const (), key: &str) -> StatisticObject<'static> {
@@ -208,15 +893,6 @@ unsafe fn v_arr_size<T: StatisticArray>(obj: *const ()) -> u32 {
 unsafe fn v_arr_at<T: StatisticArray>(obj: *const (), index: u32) -> StatisticObject<'static> {
     let child = unsafe { (*(obj.cast::<T>())).at(index) };
     unsafe { mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(child) }
-}
-
-struct ValueVtab<T>(PhantomData<T>);
-impl<T: StatisticValue> ValueVtab<T> {
-    const VTAB: Vtab = {
-        let mut v = Vtab::new(StatisticType::Value);
-        v.value = v_value::<T>;
-        v
-    };
 }
 
 struct MapVtab<T>(PhantomData<T>);
@@ -240,22 +916,78 @@ impl<T: StatisticArray> ArrayVtab<T> {
     };
 }
 
-unsafe fn panic_size(_obj: *const ()) -> u32 {
-    panic!("StatisticObject::size called on non-composite object")
+fn parse_array_index(value: &str) -> Option<u32> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<u32>().ok()
 }
 
-unsafe fn panic_key(_obj: *const (), _index: u32) -> &'static str {
-    panic!("StatisticObject::key called on non-map object")
+fn stat_type_name(value: StatisticType) -> &'static str {
+    match value {
+        StatisticType::Value => "value",
+        StatisticType::Array => "array",
+        StatisticType::Map => "map",
+    }
+}
+
+fn panic_type(expected: StatisticType, got: StatisticType) -> ! {
+    panic_any(Error::InvalidArgument(format!(
+        "bad stats access: '{}' expected but got '{}'",
+        stat_type_name(expected),
+        stat_type_name(got)
+    )))
+}
+
+fn panic_invalid_key(key: StatisticsKey) -> ! {
+    panic_any(Error::InvalidArgument(format!(
+        "bad stats access: invalid key '{key}'"
+    )))
+}
+
+fn panic_path(path: &str, at: &str) -> ! {
+    if path.is_empty() || at.is_empty() {
+        let target = if at.is_empty() { path } else { at };
+        panic_any(Error::OutOfRange(format!(
+            "bad stats access: invalid key '{target}'"
+        )));
+    }
+    panic_any(Error::OutOfRange(format!(
+        "bad stats access: invalid key '{at}' in path '{path}'"
+    )))
+}
+
+fn panic_write(key: StatisticsKey, item_type: StatisticType) -> ! {
+    panic_any(Error::InvalidArgument(format!(
+        "bad stats access: key '{key}' is not a writable {}",
+        stat_type_name(item_type)
+    )))
+}
+
+fn panic_range(index: usize, size: usize) -> ! {
+    panic_any(Error::OutOfRange(format!(
+        "bad stats access: index '{index}' is out of range for object of size '{size}'"
+    )))
+}
+
+fn panic_not_accessible() -> ! {
+    panic_any(Error::InvalidArgument(
+        "statistics not (yet) accessible".to_owned(),
+    ))
+}
+
+unsafe fn panic_size(_obj: *const ()) -> u32 {
+    panic_type(StatisticType::Array, StatisticType::Value)
+}
+
+unsafe fn panic_key_vtab(_obj: *const (), _index: u32) -> &'static str {
+    panic_type(StatisticType::Map, StatisticType::Value)
 }
 
 unsafe fn panic_at_map(_obj: *const (), _key: &str) -> StatisticObject<'static> {
-    panic!("StatisticObject::at called on non-map object")
+    panic_type(StatisticType::Map, StatisticType::Value)
 }
 
 unsafe fn panic_at_arr(_obj: *const (), _index: u32) -> StatisticObject<'static> {
-    panic!("StatisticObject::index called on non-array object")
-}
-
-unsafe fn panic_value(_obj: *const ()) -> f64 {
-    panic!("StatisticObject::value_as_f64 called on non-value object")
+    panic_type(StatisticType::Array, StatisticType::Value)
 }

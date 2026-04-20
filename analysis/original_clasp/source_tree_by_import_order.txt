@@ -115,11 +115,11 @@ libpotassco/tests/test_options.cpp: ported
 clasp/solver_strategies.h: ported
     src/clasp/solver_strategies.rs
     tests/ported/clasp/solver_strategies_test.rs
-clasp/solver_types.h: blocked by clasp/statistics.h, clasp/solver.h; solver_types/statistics/solver cycle remains unresolved in Rust (StatisticObject + ClauseHead/watch APIs), rust stub only
+clasp/solver_types.h: partially ported, CoreStats/JumpStats/ExtendedStats/SolverStats accumulation, derived ratios, and statistics-object lookup/export are ported; ClauseHead, SmallClauseAlloc, ClauseRep, and solver-integrated clause/watch runtime remain blocked by clasp/solver.h, clasp/clause.h, and the remaining src/solver_types.cpp logic
     src/clasp/solver_types.rs
 clasp/weight_constraint.h: blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h; upstream unit still needs unresolved solver watch/undo/heuristic APIs plus shared-context freeze/share support, rust stub only
     src/clasp/weight_constraint.rs
-clasp/statistics.h: blocked by clasp/solver_types.h, clasp/shared_context.h; visitor API still needs concrete SolverStats/ProblemStats types for an honest Rust port, rust stub only
+clasp/statistics.h: partially ported, solver-agnostic StatisticObject, StatsVisitor defaults, and ClaspStatistics writable/external store over Potassco AbstractStatistics are ported; downstream facade/output/runtime traversal remains blocked by clasp/clasp_facade.h, clasp/cli/clasp_output.h, clasp/logic_program.h, and their unported users
     src/clasp/statistics.rs
 libpotassco/tests/test_error.cpp: ported
     tests/ported/potassco/test_error.rs
@@ -167,7 +167,7 @@ libpotassco/tests/test_string_convert.cpp: ported
     tests/ported/potassco/test_enum.rs
 clasp/minimize_constraint.h: blocked by clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/shared_context.h; upstream minimize unit still needs real solver propagation/backtrack/watch/root APIs, SharedContext-backed builder/freeze support, and WeightConstraint/Clause-based unsat-core support, rust stub only
     src/clasp/minimize_constraint.rs
-clasp/shared_context.h: blocked by clasp/clause.h, clasp/statistics.h, clasp/solver.h; shared context still needs solver attach/detach/cloneDB/endInit/assignment-reason APIs, clause destroy/cloneAttach hooks, and concrete ProblemStats/SolverStats/StatisticObject support for an honest Rust port, rust stub only
+clasp/shared_context.h: partially ported, ProblemStats aggregation and its statistics-object interface are ported; shared-context runtime still needs solver attach/detach/cloneDB/endInit/assignment-reason APIs, clause destroy/cloneAttach hooks, and the remaining SharedContext/event/preprocessor implementation, rust stub otherwise
     src/clasp/shared_context.rs
 clasp/solve_algorithms.h: blocked by clasp/shared_context.h, clasp/enumerator.h, clasp/solver.h; original BasicSolve/SolveAlgorithm need solver search/restart/reduce/assumption APIs, enumerator start/update/commit flows, and SharedContext master/attach/detach/report/endInit hooks that are still missing in Rust, rust stub only
     src/clasp/solve_algorithms.rs
@@ -175,7 +175,7 @@ clasp/clause.h: blocked by clasp/solver_types.h, clasp/solver.h; clause port sti
     src/clasp/clause.rs
 tests/literal_test.cpp: ported
     tests/ported/clasp/literal_test.rs
-src/statistics.cpp: blocked by clasp/statistics.h; upstream source only implements StatsVisitor defaults plus ClaspStatistics methods over the still-unported StatisticObject/ClaspStatistics object model, so the current Rust file remains a stub
+src/statistics.cpp: ported, StatsVisitor defaults and ClaspStatistics writable/external statistics store over the ported StatisticObject object model are implemented in Rust
     src/clasp/statistics.rs
 libpotassco/potassco/reify.h: ported
     src/potassco/reify.rs
@@ -307,7 +307,7 @@ src/logic_program.cpp: blocked by clasp/logic_program.h, clasp/logic_program_typ
     src/clasp/logic_program.rs
 src/parser.cpp: blocked by clasp/parser.h, clasp/program_builder.h, clasp/logic_program.h, clasp/shared_context.h, clasp/solver.h; rust stub only because parser behavior still depends on blocked parser/program-builder/logic-program/shared-context/solver units
     src/clasp/parser.rs
-src/shared_context.cpp: blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/statistics.h, clasp/solver_types.h, src/solver.cpp; rust stub only because shared-context implementation still depends on unresolved solver/clause/statistics integration
+src/shared_context.cpp: partially ported, ProblemStats aggregation/diff/accu/statistics lookup are ported; the remaining shared-context implementation is still blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/solver_types.h, and src/solver.cpp
     src/clasp/shared_context.rs
 tests/dependency_graph_test.cpp: blocked by clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h, src/logic_program.cpp, clasp/shared_context.h, src/shared_context.cpp, clasp/solver.h, src/solver.cpp; rust stub only because dependency-graph and acyclicity behavior still needs unresolved logic-program/shared-context/solver integration
     tests/ported/clasp/dependency_graph_test.rs

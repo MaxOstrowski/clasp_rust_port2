@@ -58,6 +58,10 @@ const EXTENDED_STAT_KEYS: [&str; 23] = [
     "jumps",
 ];
 
+fn sum_u64_array(values: &[u64; 3]) -> f64 {
+    values.iter().copied().sum::<u64>() as f64
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CoreStats {
     pub choices: u64,
@@ -102,16 +106,15 @@ impl CoreStats {
     }
 
     pub fn at(&self, key: &str) -> StatisticObject<'_> {
-        let value = match key {
-            "choices" => self.choices as f64,
-            "conflicts" => self.conflicts as f64,
-            "conflicts_analyzed" => self.analyzed as f64,
-            "restarts" => self.restarts as f64,
-            "restarts_last" => self.last_restart as f64,
-            "restarts_blocked" => self.bl_restarts as f64,
+        match key {
+            "choices" => StatisticObject::from_value(&self.choices),
+            "conflicts" => StatisticObject::from_value(&self.conflicts),
+            "conflicts_analyzed" => StatisticObject::from_value(&self.analyzed),
+            "restarts" => StatisticObject::from_value(&self.restarts),
+            "restarts_last" => StatisticObject::from_value(&self.last_restart),
+            "restarts_blocked" => StatisticObject::from_value(&self.bl_restarts),
             _ => panic!("unknown CoreStats key: {key}"),
-        };
-        StatisticObject::from_f64(value)
+        }
     }
 }
 
@@ -120,7 +123,7 @@ impl StatisticMap for CoreStats {
         CoreStats::size()
     }
 
-    fn key(&self, index: u32) -> &'static str {
+    fn key(&self, index: u32) -> &str {
         CoreStats::key(index)
     }
 
@@ -197,17 +200,16 @@ impl JumpStats {
     }
 
     pub fn at(&self, key: &str) -> StatisticObject<'_> {
-        let value = match key {
-            "jumps" => self.jumps as f64,
-            "jumps_bounded" => self.bounded as f64,
-            "levels" => self.jump_sum as f64,
-            "levels_bounded" => self.bound_sum as f64,
-            "max" => self.max_jump as f64,
-            "max_executed" => self.max_jump_ex as f64,
-            "max_bounded" => self.max_bound as f64,
+        match key {
+            "jumps" => StatisticObject::from_value(&self.jumps),
+            "jumps_bounded" => StatisticObject::from_value(&self.bounded),
+            "levels" => StatisticObject::from_value(&self.jump_sum),
+            "levels_bounded" => StatisticObject::from_value(&self.bound_sum),
+            "max" => StatisticObject::from_value(&self.max_jump),
+            "max_executed" => StatisticObject::from_value(&self.max_jump_ex),
+            "max_bounded" => StatisticObject::from_value(&self.max_bound),
             _ => panic!("unknown JumpStats key: {key}"),
-        };
-        StatisticObject::from_f64(value)
+        }
     }
 }
 
@@ -216,7 +218,7 @@ impl StatisticMap for JumpStats {
         JumpStats::size()
     }
 
-    fn key(&self, index: u32) -> &'static str {
+    fn key(&self, index: u32) -> &str {
         JumpStats::key(index)
     }
 
@@ -381,28 +383,28 @@ impl ExtendedStats {
 
     pub fn at(&self, key: &str) -> StatisticObject<'_> {
         match key {
-            "domain_choices" => StatisticObject::from_f64(self.dom_choices as f64),
-            "models" => StatisticObject::from_f64(self.models as f64),
-            "models_level" => StatisticObject::from_f64(self.model_lits as f64),
-            "hcc_tests" => StatisticObject::from_f64(self.hcc_tests as f64),
-            "hcc_partial" => StatisticObject::from_f64(self.hcc_partial as f64),
-            "lemmas_deleted" => StatisticObject::from_f64(self.deleted as f64),
-            "distributed" => StatisticObject::from_f64(self.distributed as f64),
-            "distributed_sum_lbd" => StatisticObject::from_f64(self.sum_dist_lbd as f64),
-            "integrated" => StatisticObject::from_f64(self.integrated as f64),
-            "lemmas" => StatisticObject::from_f64(Self::sum(self.learnts) as f64),
-            "lits_learnt" => StatisticObject::from_f64(Self::sum(self.lits) as f64),
-            "lemmas_binary" => StatisticObject::from_f64(self.binary as f64),
-            "lemmas_ternary" => StatisticObject::from_f64(self.ternary as f64),
-            "cpu_time" => StatisticObject::from_f64(self.cpu_time),
-            "integrated_imps" => StatisticObject::from_f64(self.int_imps as f64),
-            "integrated_jumps" => StatisticObject::from_f64(self.int_jumps as f64),
-            "guiding_paths_lits" => StatisticObject::from_f64(self.gp_lits as f64),
-            "guiding_paths" => StatisticObject::from_f64(self.gps as f64),
-            "splits" => StatisticObject::from_f64(self.splits as f64),
-            "lemmas_conflict" => StatisticObject::from_f64(self.learnts[0] as f64),
-            "lemmas_loop" => StatisticObject::from_f64(self.learnts[1] as f64),
-            "lemmas_other" => StatisticObject::from_f64(self.learnts[2] as f64),
+            "domain_choices" => StatisticObject::from_value(&self.dom_choices),
+            "models" => StatisticObject::from_value(&self.models),
+            "models_level" => StatisticObject::from_value(&self.model_lits),
+            "hcc_tests" => StatisticObject::from_value(&self.hcc_tests),
+            "hcc_partial" => StatisticObject::from_value(&self.hcc_partial),
+            "lemmas_deleted" => StatisticObject::from_value(&self.deleted),
+            "distributed" => StatisticObject::from_value(&self.distributed),
+            "distributed_sum_lbd" => StatisticObject::from_value(&self.sum_dist_lbd),
+            "integrated" => StatisticObject::from_value(&self.integrated),
+            "lemmas" => StatisticObject::from_mapped_value(&self.learnts, sum_u64_array),
+            "lits_learnt" => StatisticObject::from_mapped_value(&self.lits, sum_u64_array),
+            "lemmas_binary" => StatisticObject::from_value(&self.binary),
+            "lemmas_ternary" => StatisticObject::from_value(&self.ternary),
+            "cpu_time" => StatisticObject::from_value(&self.cpu_time),
+            "integrated_imps" => StatisticObject::from_value(&self.int_imps),
+            "integrated_jumps" => StatisticObject::from_value(&self.int_jumps),
+            "guiding_paths_lits" => StatisticObject::from_value(&self.gp_lits),
+            "guiding_paths" => StatisticObject::from_value(&self.gps),
+            "splits" => StatisticObject::from_value(&self.splits),
+            "lemmas_conflict" => StatisticObject::from_value(&self.learnts[0]),
+            "lemmas_loop" => StatisticObject::from_value(&self.learnts[1]),
+            "lemmas_other" => StatisticObject::from_value(&self.learnts[2]),
             "jumps" => StatisticObject::map(&self.jumps),
             _ => panic!("unknown ExtendedStats key: {key}"),
         }
@@ -414,7 +416,7 @@ impl StatisticMap for ExtendedStats {
         ExtendedStats::size()
     }
 
-    fn key(&self, index: u32) -> &'static str {
+    fn key(&self, index: u32) -> &str {
         ExtendedStats::key(index)
     }
 
@@ -498,7 +500,7 @@ impl SolverStats {
         CoreStats::size() + self.extra.is_some() as u32
     }
 
-    pub fn key(&self, index: u32) -> &'static str {
+    pub fn key(&self, index: u32) -> &str {
         if index < CoreStats::size() {
             CoreStats::key(index)
         } else if index == CoreStats::size() && self.extra.is_some() {
@@ -614,7 +616,7 @@ impl StatisticMap for SolverStats {
         SolverStats::size(self)
     }
 
-    fn key(&self, index: u32) -> &'static str {
+    fn key(&self, index: u32) -> &str {
         SolverStats::key(self, index)
     }
 

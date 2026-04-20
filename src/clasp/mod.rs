@@ -20,6 +20,7 @@ pub mod parser;
 pub mod pod_vector;
 pub mod program_builder;
 pub mod satelite;
+pub mod shared_context;
 pub mod solver_strategies;
 pub mod solver_types;
 pub mod statistics;
