@@ -148,6 +148,7 @@ libpotassco/potassco/convert.h: ported
 libpotassco/potassco/smodels.h: ported
     clasp/solver.h: partially ported, the Bundle A solver kernel subset is ported: SharedContext backlink access, Assignment-backed value/level/reason/data/trail/queue helpers, generic/clause watch management, undo watches, force/assume/conflict handling, short-implication plus generic-watch and explicit ClauseHead watch propagation, root/backtrack/clearAssumptions bookkeeping, the current SelectFirst/default literal-selection hook, tag-aux creation plus conditional learnt-clause remove/strengthen lifecycle, explicit constraint/learnt attachment, Bundle A search/restart control, solver-local model detection, and current learnt-db reduction over the explicit learnt constraint store; dynamic restart-block mutation, full heuristic/search control, enumeration/minimize-specific model validation, and multi-solver/distribution APIs remain blocked
     tests/ported/potassco/test_smodels.rs
+        # BundleA conflict-helper cluster (freeze/unfreeze level, input_var, values, update_on_reason, update_on_minimize, resolve_to_flagged, resolve_to_core) now ported in src/clasp/constraint.rs
 libpotassco/src/match_basic_types.cpp: ported
     src/potassco/match_basic_types.rs
     tests/ported/potassco/test_match_basic_types.rs
@@ -191,6 +192,7 @@ clasp/clause.h: partially ported, ClauseRep, SharedLiterals storage/refcount/sim
     tests/clasp_clause.rs
     tests/ported/clasp/clause_creator_test.rs
     tests/ported/clasp/clause_test.rs
+    # The explicit clause storage/runtime now uses an upstream-shaped abstraction with tail/contracted/strengthened handling, replacing the Box/Vec divergence. Allocator-specific small-clause storage and full shared-clause distribution remain blocked.
 tests/literal_test.cpp: ported
     tests/ported/clasp/literal_test.rs
 src/statistics.cpp: ported, StatsVisitor defaults and ClaspStatistics writable/external statistics store over the ported StatisticObject object model are implemented in Rust

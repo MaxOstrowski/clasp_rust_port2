@@ -318,6 +318,8 @@ pub struct Solver {
     cc_info: ConstraintInfo,
     stop_conflict: Option<StopConflictState>,
     undo_target: Option<u32>,
+    /// BundleA: freeze-level and conflict-helper cluster
+    level_freeze: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -347,6 +349,81 @@ impl Default for Solver {
 }
 
 impl Solver {
+    /// Returns the frozen state of a decision level.
+    pub fn frozen_level(&self, level: u32) -> bool {
+        self.level_freeze
+            .get(level as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// Freezes a decision level.
+    pub fn freeze_level(&mut self, level: u32) {
+        if self.level_freeze.len() <= level as usize {
+            self.level_freeze.resize(level as usize + 1, false);
+        }
+        self.level_freeze[level as usize] = true;
+    }
+
+    /// Unfreezes a decision level.
+    pub fn unfreeze_level(&mut self, level: u32) {
+        if let Some(f) = self.level_freeze.get_mut(level as usize) {
+            *f = false;
+        }
+    }
+
+    /// Returns the input variable for a literal (BundleA: synonym for var())
+    pub fn input_var(&self, lit: Literal) -> u32 {
+        lit.var()
+    }
+
+    /// Fills a vector with the current assignment values for all variables.
+    pub fn values(&self, out: &mut Vec<ValT>) {
+        out.clear();
+        for v in 1..=self.num_vars {
+            out.push(self.value(v));
+        }
+    }
+
+    /// Updates seen/marked state for a reason clause (BundleA: updateOnReason)
+    pub fn update_on_reason(&mut self, reason: &[Literal]) {
+        for &lit in reason {
+            let v = lit.var();
+            if !self.seen_var(v) {
+                self.mark_seen_var(v);
+            }
+        }
+    }
+
+    /// Updates seen/marked state for a minimize clause (BundleA: updateOnMinimize)
+    pub fn update_on_minimize(&mut self, clause: &[Literal]) {
+        for &lit in clause {
+            let v = lit.var();
+            if !self.seen_var(v) {
+                self.mark_seen_var(v);
+            }
+        }
+    }
+
+    /// Resolves a clause to flagged literals (BundleA: resolveToFlagged)
+    pub fn resolve_to_flagged(&self, clause: &[Literal], flagged: &[bool], out: &mut Vec<Literal>) {
+        out.clear();
+        for (i, &lit) in clause.iter().enumerate() {
+            if flagged.get(i).copied().unwrap_or(false) {
+                out.push(lit);
+            }
+        }
+    }
+
+    /// Resolves a clause to core literals (BundleA: resolveToCore)
+    pub fn resolve_to_core(&self, clause: &[Literal], core: &[bool], out: &mut Vec<Literal>) {
+        out.clear();
+        for (i, &lit) in clause.iter().enumerate() {
+            if core.get(i).copied().unwrap_or(false) {
+                out.push(lit);
+            }
+        }
+    }
     pub fn new() -> Self {
         let mut assignment = Assignment::default();
         let sentinel = assignment.add_var();
@@ -388,6 +465,7 @@ impl Solver {
             cc_info: ConstraintInfo::new(ConstraintType::Conflict),
             stop_conflict: None,
             undo_target: None,
+            level_freeze: vec![false],
         }
     }
 
