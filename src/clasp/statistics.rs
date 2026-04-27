@@ -60,6 +60,13 @@ pub enum StatisticObject<'a> {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatisticObjectTypeId {
+    InlineValue,
+    ValueRef { value_fn: usize, op_id: usize },
+    Erased { vtab: usize },
+}
+
 impl Default for StatisticObject<'_> {
     fn default() -> Self {
         Self::null_value()
@@ -195,6 +202,10 @@ impl<'a> StatisticObject<'a> {
         }
     }
 
+    pub fn at_index(&self, index: u32) -> StatisticObject<'a> {
+        self.index(index)
+    }
+
     pub fn value(&self) -> f64 {
         match self {
             Self::InlineValue(value) => *value,
@@ -229,6 +240,23 @@ impl<'a> StatisticObject<'a> {
                 vtab: vtab as *const Vtab as usize,
             },
         }
+    }
+
+    pub fn type_id(&self) -> StatisticObjectTypeId {
+        match *self {
+            Self::InlineValue(_) => StatisticObjectTypeId::InlineValue,
+            Self::ValueRef { value, op_id, .. } => StatisticObjectTypeId::ValueRef {
+                value_fn: value as usize,
+                op_id,
+            },
+            Self::Erased { vtab, .. } => StatisticObjectTypeId::Erased {
+                vtab: vtab as *const Vtab as usize,
+            },
+        }
+    }
+
+    pub fn eq_type_id(&self, other: &Self) -> bool {
+        self.type_id() == other.type_id()
     }
 }
 
@@ -310,6 +338,22 @@ impl ClaspStatistics {
 
     pub fn freeze(&mut self, frozen: bool) {
         self.inner.frozen = frozen;
+    }
+
+    #[allow(non_snake_case)]
+    pub fn addObject(
+        &mut self,
+        map: StatisticsKey,
+        name: &str,
+        object: StatisticObject<'_>,
+        skip_check: bool,
+    ) -> StatisticsKey {
+        self.add_object(map, name, object, skip_check)
+    }
+
+    #[allow(non_snake_case)]
+    pub fn visitExternal(&self, name: &str, visitor: &mut dyn StatsVisitor) -> bool {
+        self.visit_external(name, visitor)
     }
 
     pub fn root(&self) -> StatisticsKey {

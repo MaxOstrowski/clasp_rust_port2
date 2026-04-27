@@ -4,12 +4,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use rust_clasp::clasp::clause::{
-    CLAUSE_EXPLICIT, CLAUSE_FLAG_NONE, CLAUSE_FORCE_SIMPLIFY, ClauseCreator, ClauseInfo,
-    ClauseStatus, SharedLiterals,
+    CLAUSE_EXPLICIT, CLAUSE_FLAG_NONE, CLAUSE_FORCE_SIMPLIFY, CLAUSE_NO_ADD, CLAUSE_NO_PREPARE,
+    ClauseCreator, ClauseInfo, ClauseRep, ClauseStatus, SharedLiterals,
 };
-use rust_clasp::clasp::constraint::{ConstraintType, DecisionHeuristic, Solver};
+use rust_clasp::clasp::constraint::ConstraintType;
 use rust_clasp::clasp::literal::{LitVec, lit_false, lit_true, neg_lit, pos_lit, value_true};
 use rust_clasp::clasp::shared_context::SharedContext;
+use rust_clasp::clasp::solver::{Antecedent, DecisionHeuristic, Solver};
 
 fn setup_context(num_vars: u32) -> (SharedContext, Vec<rust_clasp::clasp::literal::Literal>) {
     let mut ctx = SharedContext::new();
@@ -91,7 +92,7 @@ fn clause_creator_end_handles_empty_units_sat_and_problem_constraints() {
             .end_with_defaults();
         assert!(sat.ok());
 
-        (*solver_ptr).force(!lits[1], rust_clasp::clasp::constraint::Antecedent::new());
+        (*solver_ptr).force(!lits[1], Antecedent::new());
         let unit = creator
             .start(ConstraintType::Static)
             .add(lits[1])
@@ -252,4 +253,32 @@ fn clause_creator_status_matches_upstream_helper_cases() {
         ClauseCreator::status(&mut solver, &[pos_lit(1), pos_lit(2)]),
         ClauseStatus::Subsumed
     );
+}
+
+#[test]
+fn clause_creator_parity_aliases_delegate_to_existing_behavior() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(4);
+    solver.set_num_problem_vars(4);
+
+    let mut creator = ClauseCreator::new(Some(&mut solver));
+    creator.start_default().add(pos_lit(1)).add(neg_lit(2));
+
+    assert_eq!(creator[0], pos_lit(1));
+    assert_eq!(creator[1], neg_lit(2));
+    assert_eq!(creator.r#type(), ConstraintType::Static);
+
+    let rep = ClauseRep::prepared(
+        &[pos_lit(1), pos_lit(2), pos_lit(3), pos_lit(4)],
+        ClauseInfo::new(ConstraintType::Static),
+    );
+    let created = ClauseCreator::create_rep(
+        &mut solver,
+        &rep,
+        CLAUSE_EXPLICIT | CLAUSE_NO_ADD | CLAUSE_NO_PREPARE,
+    );
+
+    assert!(created.ok());
+    assert!(!created.local.is_null());
+    unsafe { &mut *created.local }.destroy(Some(&mut solver), true);
 }

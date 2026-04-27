@@ -2,13 +2,17 @@
 //! runtime sections from `original_clasp/tests/clause_test.cpp`.
 
 use rust_clasp::clasp::clause::{
-    CLAUSE_EXPLICIT, CLAUSE_NO_ADD, CLAUSE_NO_PREPARE, ClauseCreator, ClauseInfo, ClauseRep,
-    LoopFormulaHandle, SharedLiterals, new_loop_formula, new_shared_clause,
+    CLAUSE_EXPLICIT, CLAUSE_NO_ADD, CLAUSE_NO_PREPARE, ClauseCreator, ClauseHead, ClauseInfo,
+    ClauseRep, LoopFormulaHandle, SharedLiterals, new_contracted_clause, new_loop_formula,
+    new_shared_clause,
 };
-use rust_clasp::clasp::constraint::{Antecedent, Constraint, ConstraintType, Solver};
-use rust_clasp::clasp::literal::{LitVec, Literal, neg_lit, pos_lit, value_false, value_true};
+use rust_clasp::clasp::constraint::{Constraint, ConstraintType};
+use rust_clasp::clasp::literal::{
+    LitVec, Literal, neg_lit, pos_lit, value_false, value_free, value_true,
+};
 use rust_clasp::clasp::pod_vector::contains;
 use rust_clasp::clasp::shared_context::SharedContext;
+use rust_clasp::clasp::solver::{Antecedent, Solver};
 
 fn test_solver(num_vars: u32) -> Solver {
     let mut solver = Solver::new();
@@ -32,7 +36,7 @@ fn create_explicit_clause(
     solver: &mut Solver,
     lits: &[Literal],
     info: ClauseInfo,
-) -> *mut rust_clasp::clasp::constraint::ClauseHead {
+) -> *mut ClauseHead {
     let mut owned = LitVec::new();
     owned.assign_from_slice(lits);
     ClauseCreator::create(
@@ -95,6 +99,23 @@ fn shared_literals_still_preserve_shared_and_unique_simplify_semantics() {
 
     let shared = shared.share();
     assert_eq!(shared.ref_count(), 2);
+}
+
+#[test]
+fn shared_literals_parity_aliases_delegate_to_existing_behavior() {
+    let shared = SharedLiterals::new(&[pos_lit(1), neg_lit(2)], ConstraintType::Conflict);
+    let ptr_range = shared.literals().as_ptr_range();
+
+    assert_eq!(shared.ref_count(), 1);
+    assert_eq!(shared.r#type(), ConstraintType::Conflict);
+    assert_eq!(shared.begin(), ptr_range.start);
+    assert_eq!(shared.end(), ptr_range.end);
+
+    let shared = shared.share();
+    assert_eq!(shared.ref_count(), 2);
+    assert!(!shared.release_one());
+    assert_eq!(shared.ref_count(), 1);
+    assert!(shared.release_one());
 }
 
 #[test]
@@ -209,6 +230,162 @@ fn explicit_clause_strengthen_supports_simple_literal_removal() {
     assert_eq!(head.to_lits(), vec![lits[0], lits[2], lits[3]]);
 
     head.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn learnt_clause_creation_contracts_false_tail_and_restores_on_backtrack() {
+    let mut solver = test_solver(12);
+    let mut clause = LitVec::new();
+    clause.push_back(pos_lit(1));
+    for var in 2..=12 {
+        assert!(solver.assume(neg_lit(var)));
+        clause.push_back(pos_lit(var));
+    }
+    let all_lits = clause.as_slice().to_vec();
+
+    solver.strategies_mut().compress = 6;
+    let head = unsafe {
+        &mut *ClauseCreator::create(
+            &mut solver,
+            &mut clause,
+            0,
+            ClauseInfo::new(ConstraintType::Conflict),
+        )
+        .local
+    };
+
+    assert!(head.size() < all_lits.len() as u32);
+    let clause_lits = head.to_lits();
+    assert_eq!(clause_lits.len(), all_lits.len());
+    for lit in &all_lits {
+        assert!(clause_lits.contains(lit));
+    }
+
+    let mut antecedent = Antecedent::from_constraint_ptr(head.constraint_ptr());
+    let mut reason = LitVec::new();
+    antecedent.reason(&mut solver, pos_lit(1), &mut reason);
+    assert_eq!(reason.len(), all_lits.len() - 1);
+
+    solver.undo_until(0);
+    assert_eq!(head.size(), all_lits.len() as u32);
+
+    head.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn new_contracted_clause_keeps_hidden_tail_in_reason_but_not_active_size() {
+    let mut solver = test_solver(12);
+    let mut lits = vec![pos_lit(1), pos_lit(2), pos_lit(3)];
+    for var in 4..=12 {
+        assert!(solver.assume(neg_lit(var)));
+        lits.push(pos_lit(var));
+    }
+    let rep = ClauseRep::create(&lits, ClauseInfo::new(ConstraintType::Conflict));
+    let head = unsafe { &mut *new_contracted_clause(&mut solver, &rep, 3, false) };
+    solver.add_learnt_constraint(head.constraint_ptr(), rep.size, ConstraintType::Conflict);
+
+    assert!(head.size() < lits.len() as u32);
+    assert_eq!(head.to_lits(), lits);
+
+    assert!(solver.assume(neg_lit(1)));
+    assert!(solver.propagate());
+    assert!(solver.assume(neg_lit(3)));
+    assert!(solver.propagate());
+    assert!(solver.is_true(pos_lit(2)));
+
+    let mut antecedent = *solver.reason(pos_lit(2).var());
+    let mut reason = LitVec::new();
+    antecedent.reason(&mut solver, pos_lit(2), &mut reason);
+    assert_eq!(reason.len(), lits.len() - 1);
+
+    head.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn strengthen_contracted_clause_restores_active_prefix_on_backtrack() {
+    let mut solver = test_solver(12);
+    let mut clause = LitVec::new();
+    clause.push_back(pos_lit(1));
+    for var in 2..=12 {
+        assert!(solver.assume(neg_lit(var)));
+        clause.push_back(pos_lit(var));
+    }
+
+    solver.strategies_mut().compress = 4;
+    let head = unsafe {
+        &mut *ClauseCreator::create(
+            &mut solver,
+            &mut clause,
+            0,
+            ClauseInfo::new(ConstraintType::Conflict),
+        )
+        .local
+    };
+    let active_before = head.size();
+
+    let result = head.strengthen(&mut solver, pos_lit(12), true);
+    assert!(result.lit_removed);
+    assert!(!head.to_lits().contains(&pos_lit(12)));
+    assert_eq!(head.size(), active_before);
+
+    solver.undo_until(solver.level(9).saturating_sub(1));
+    assert!(head.size() > active_before);
+
+    head.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn strengthen_contracted_clause_without_extend_keeps_active_size_fixed() {
+    let mut solver = test_solver(6);
+    let lits = [
+        pos_lit(1),
+        pos_lit(2),
+        pos_lit(3),
+        pos_lit(4),
+        pos_lit(5),
+        pos_lit(6),
+    ];
+    for var in 2..=6 {
+        assert!(solver.assume(neg_lit(var)));
+    }
+    let rep = ClauseRep::create(&lits, ClauseInfo::new(ConstraintType::Conflict));
+    let head = unsafe { &mut *new_contracted_clause(&mut solver, &rep, 4, false) };
+    solver.add_learnt_constraint(head.constraint_ptr(), 4, ConstraintType::Conflict);
+
+    assert_eq!(head.size(), 4);
+    let result = head.strengthen(&mut solver, pos_lit(2), true);
+    assert!(result.lit_removed);
+    assert_eq!(head.size(), 4);
+
+    solver.undo_until(0);
+    assert_eq!(head.size(), 4);
+
+    head.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn explicit_clause_strengthen_can_downgrade_to_implicit_short_clause() {
+    let mut ctx = SharedContext::new();
+    let a = pos_lit(ctx.add_var());
+    let b = pos_lit(ctx.add_var());
+    let c = pos_lit(ctx.add_var());
+    let solver_ptr = ctx.start_add_constraints() as *mut Solver;
+    let _ = ctx.end_init();
+    let solver = unsafe { &mut *solver_ptr };
+
+    let head = unsafe {
+        &mut *create_explicit_clause(solver, &[a, b, c], ClauseInfo::new(ConstraintType::Static))
+    };
+    let result = head.strengthen(solver, c, true);
+    assert!(result.lit_removed);
+    assert!(result.remove_clause);
+
+    head.destroy(Some(solver), true);
+
+    assert!(solver.assume(!a));
+    assert!(solver.propagate());
+    assert!(solver.is_true(b));
+    assert_eq!(solver.value(c.var()), value_free);
 }
 
 #[test]

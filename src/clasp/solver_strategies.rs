@@ -14,8 +14,9 @@ pub use crate::clasp::cli::clasp_cli_options::solver_params::Forget;
 pub use crate::clasp::cli::clasp_cli_options::solver_strategies::{
     CCMinAntes, CCMinType, CCRepMode, LbdMode, SignHeu, UpdateMode, WatchInit,
 };
-use crate::clasp::constraint::{ConstraintInfo, ConstraintScore, Solver, lbd_max};
+use crate::clasp::constraint::{ConstraintInfo, ConstraintScore, lbd_max};
 use crate::clasp::literal::{LitView, VarType, Wsum_t, weight_sum_min};
+use crate::clasp::solver::Solver;
 use crate::clasp::util::misc_types::{
     Event, EventLike, MovingAvg, MovingAvgType, Range32, Subsystem, Verbosity,
 };

@@ -20,8 +20,9 @@ opaque_type!(PBBuilder);
 
 pub use crate::clasp::dependency_graph::ExtDepGraph;
 pub use crate::clasp::shared_context::SharedContext;
+pub use crate::clasp::solver::Solver;
 
-pub use crate::clasp::constraint::{Constraint, ConstraintInfo, Solver};
+pub use crate::clasp::constraint::{Constraint, ConstraintInfo};
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

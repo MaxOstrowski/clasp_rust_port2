@@ -1,8 +1,8 @@
 use std::panic::{self, AssertUnwindSafe};
 
 use rust_clasp::clasp::clingo::ClingoAssignment;
-use rust_clasp::clasp::constraint::Solver;
 use rust_clasp::clasp::literal::{encode_lit, neg_lit, pos_lit, value_false, value_true};
+use rust_clasp::clasp::solver::Solver;
 use rust_clasp::potassco::clingo::AbstractAssignment;
 use rust_clasp::potassco::error::Error;
 

@@ -1,9 +1,10 @@
-use rust_clasp::clasp::constraint::{Antecedent, Constraint, ConstraintDyn, PropResult, Solver};
+use rust_clasp::clasp::constraint::{Constraint, ConstraintDyn, PropResult};
 use rust_clasp::clasp::literal::{
     Literal, WeightLiteral, decode_lit, decode_var, encode_lit, false_value, hash_lit, is_sentinel,
     lit_false, lit_true, neg_lit, pos_lit, sent_var, swap, to_int, to_lit, true_value, val_sign,
     value_false, value_true, var_max,
 };
+use rust_clasp::clasp::solver::{Antecedent, Solver};
 use std::cmp::Ordering;
 
 struct TestConstraint;

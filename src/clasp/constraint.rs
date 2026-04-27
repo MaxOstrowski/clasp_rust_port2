@@ -5,13 +5,20 @@ use core::ffi::c_void;
 use core::ptr::NonNull;
 
 use crate::clasp::clause::{CLAUSE_NO_PREPARE, ClauseCreator, ClauseInfo, ClauseRep};
-use crate::clasp::literal::{LitVec, Literal, ValT, lit_false, value_free, value_true};
+use crate::clasp::literal::{
+    LitVec, Literal, ValT, lit_false, value_false, value_free, value_true,
+};
 use crate::clasp::pod_vector::shrink_vec_to;
 use crate::clasp::shared_context::SharedContext;
-use crate::clasp::solver_strategies::{CCMinAntes, SearchStrategy, SolverStrategies, WatchInit};
-use crate::clasp::solver_types::{
-    Assignment, ClauseWatch, GenericWatch, ImpliedList, ImpliedLiteral, SolverStats, WatchList,
+use crate::clasp::solver_strategies::{
+    CCMinAntes, ReduceAlgorithm, ReduceStrategy, SearchLimits, SearchStrategy, SolverStrategies,
+    WatchInit,
 };
+use crate::clasp::solver_types::{
+    Assignment, ClauseWatch, GenericWatch, ImpliedList, ImpliedLiteral, SolverStats, ValueSet,
+    WatchList,
+};
+use crate::clasp::util::misc_types::Rng;
 use crate::potassco::bits::{
     BitIndex, Bitset, nth_bit, right_most_bit, store_clear_bit, store_clear_mask, store_set_mask,
     store_toggle_bit, test_any, test_bit,
@@ -239,6 +246,19 @@ impl CCMinRecursive {
 
 pub trait DecisionHeuristic {
     fn new_constraint(&mut self, _solver: &Solver, _lits: &[Literal], _ty: ConstraintType) {}
+
+    fn select_literal(&self, _solver: &Solver, var: u32, _idx: u32) -> Literal {
+        Literal::new(var, false)
+    }
+
+    fn select(&mut self, solver: &mut Solver) -> bool {
+        for var in 1..=solver.num_vars() {
+            if solver.value(var) == value_free {
+                return solver.assume(self.select_literal(solver, var, 0));
+            }
+        }
+        false
+    }
 }
 
 #[derive(Debug, Default)]
@@ -258,6 +278,7 @@ pub struct Solver {
     decision_level: u32,
     root_level: u32,
     backtrack_level: u32,
+    pub(crate) backtrack_mode: u32,
     tag_literal: Literal,
     decisions: Vec<Literal>,
     level_starts: Vec<u32>,
@@ -271,6 +292,7 @@ pub struct Solver {
     heuristic: Box<dyn DecisionHeuristic>,
     strategies: SolverStrategies,
     stats: SolverStats,
+    rng: Rng,
     epochs: Vec<u32>,
     level_marks: Vec<bool>,
     implied_lits: ImpliedList,
@@ -278,6 +300,7 @@ pub struct Solver {
     cc_lits: LitVec,
     cc_info: ConstraintInfo,
     stop_conflict: Option<StopConflictState>,
+    undo_target: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -324,6 +347,7 @@ impl Solver {
             decision_level: 0,
             root_level: 0,
             backtrack_level: 0,
+            backtrack_mode: 1,
             tag_literal: Literal::default(),
             decisions: vec![Literal::default()],
             level_starts: vec![0],
@@ -337,6 +361,7 @@ impl Solver {
             heuristic: Box::<SelectFirst>::default(),
             strategies: SolverStrategies::default(),
             stats: SolverStats::default(),
+            rng: Rng::default(),
             epochs: vec![0],
             level_marks: vec![false],
             implied_lits: ImpliedList::default(),
@@ -344,6 +369,7 @@ impl Solver {
             cc_lits: LitVec::new(),
             cc_info: ConstraintInfo::new(ConstraintType::Conflict),
             stop_conflict: None,
+            undo_target: None,
         }
     }
 
@@ -439,6 +465,11 @@ impl Solver {
     pub fn clear_seen_var(&mut self, var: u32) {
         self.assignment.ensure_var(var);
         self.assignment.clear_seen(var);
+    }
+
+    pub fn eliminate_var(&mut self, var: u32) {
+        self.assignment.ensure_var(var);
+        self.assignment.eliminate(var);
     }
 
     pub fn has_conflict(&self) -> bool {
@@ -541,7 +572,9 @@ impl Solver {
     }
 
     pub fn set_backtrack_level(&mut self, backtrack_level: u32) {
-        self.backtrack_level = backtrack_level.min(self.decision_level);
+        self.backtrack_level = backtrack_level
+            .min(self.decision_level)
+            .max(self.root_level);
     }
 
     pub fn has_level(&self, level: u32) -> bool {
@@ -577,6 +610,104 @@ impl Solver {
         self.tag_literal = literal;
     }
 
+    pub fn push_aux_var(&mut self) -> u32 {
+        let aux = self.assignment.add_var();
+        self.num_vars = self.num_vars.max(aux);
+        self.reserve_watch_capacity(((aux + 1) << 1) as usize);
+        self.assignment.request_prefs();
+        self.assignment
+            .set_pref(aux, ValueSet::def_value, value_false);
+        aux
+    }
+
+    pub fn push_tag_var(&mut self, push_to_root: bool) -> u32 {
+        if self.tag_literal.var() == 0 {
+            self.tag_literal = Literal::new(self.push_aux_var(), false);
+        }
+        if push_to_root {
+            let _ = self.push_root(self.tag_literal);
+        }
+        self.tag_literal.var()
+    }
+
+    pub fn remove_conditional(&mut self) {
+        if self.tag_literal.var() == 0 {
+            return;
+        }
+        let old_learnts = core::mem::take(&mut self.learnts);
+        let mut kept = Vec::with_capacity(old_learnts.len());
+        for constraint_ptr in old_learnts {
+            let remove = unsafe {
+                constraint_ptr
+                    .as_mut()
+                    .and_then(|constraint| constraint.clause())
+                    .is_some_and(|head| head.as_ref().tagged())
+            };
+            if remove {
+                destroy_constraint_ptr(constraint_ptr, self);
+            } else {
+                kept.push(constraint_ptr);
+            }
+        }
+        kept.extend(core::mem::take(&mut self.learnts));
+        self.learnts = kept;
+    }
+
+    pub fn strengthen_conditional(&mut self) {
+        if self.tag_literal.var() == 0 {
+            return;
+        }
+        let tag_literal = !self.tag_literal;
+        let old_learnts = core::mem::take(&mut self.learnts);
+        let mut kept = Vec::with_capacity(old_learnts.len());
+        for constraint_ptr in old_learnts {
+            let mut remove_clause = false;
+            let mut unit_literal = Literal::default();
+            unsafe {
+                if let Some(constraint) = constraint_ptr.as_mut() {
+                    if let Some(mut head) = constraint.clause() {
+                        if head.as_ref().tagged() {
+                            let remaining: Vec<Literal> = head
+                                .as_ref()
+                                .to_lits()
+                                .into_iter()
+                                .filter(|lit| *lit != tag_literal)
+                                .collect();
+                            remove_clause = head
+                                .as_mut()
+                                .strengthen(self, tag_literal, true)
+                                .remove_clause;
+                            if remove_clause && remaining.len() == 1 {
+                                unit_literal = remaining[0];
+                            }
+                            if remove_clause {
+                                debug_assert!(
+                                    self.decision_level == self.root_level
+                                        || !constraint.locked(self),
+                                    "Solver::strengthen_conditional(): must not remove locked constraint!"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            if remove_clause {
+                if unit_literal.var() != 0 {
+                    let _ = self.force_at_level(
+                        unit_literal,
+                        0,
+                        Antecedent::from_literal(crate::clasp::literal::lit_true),
+                    );
+                }
+                destroy_constraint_ptr(constraint_ptr, self);
+            } else {
+                kept.push(constraint_ptr);
+            }
+        }
+        kept.extend(core::mem::take(&mut self.learnts));
+        self.learnts = kept;
+    }
+
     pub fn begin_init(&mut self) {
         self.posts_active = false;
     }
@@ -606,6 +737,23 @@ impl Solver {
         }
     }
 
+    pub fn update_vars(&mut self, new_num_vars: u32) {
+        self.num_vars = self.num_vars.min(new_num_vars);
+        self.num_problem_vars = self.num_problem_vars.min(new_num_vars);
+        self.assignment
+            .truncate_vars(self.num_vars.max(self.num_problem_vars));
+        self.watches
+            .truncate((((self.num_vars + 1) << 1) as usize).max(2));
+        if self.tag_literal.var() > self.num_vars {
+            self.tag_literal = Literal::default();
+        }
+        for decision in &mut self.decisions {
+            if decision.var() > self.num_vars {
+                *decision = Literal::default();
+            }
+        }
+    }
+
     pub fn decision(&self, level: u32) -> Literal {
         self.decisions[level as usize]
     }
@@ -632,6 +780,10 @@ impl Solver {
 
     pub fn trail_lit(&self, index: u32) -> Literal {
         self.assignment.trail[index as usize]
+    }
+
+    pub fn assignment(&self) -> &Assignment {
+        &self.assignment
     }
 
     pub fn level_start(&self, level: u32) -> u32 {
@@ -1144,6 +1296,7 @@ impl Solver {
 
     pub fn undo_until(&mut self, level: u32) -> u32 {
         let target = level.max(self.backtrack_level);
+        let saved_undo_target = self.undo_target.replace(target);
         while self.decision_level > target {
             let current = self.decision_level;
             if current < self.undo_watches.len() as u32 {
@@ -1170,6 +1323,7 @@ impl Solver {
             let _ = implied_lits.assign(self);
             self.implied_lits = implied_lits;
         }
+        self.undo_target = saved_undo_target;
         actual
     }
 
@@ -1178,6 +1332,10 @@ impl Solver {
         self.undo_until(target);
         self.backtrack_level = self.backtrack_level.min(self.decision_level);
         true
+    }
+
+    pub(crate) fn current_undo_target(&self) -> Option<u32> {
+        self.undo_target
     }
 
     pub fn backtrack_step(&mut self) -> bool {
@@ -1301,6 +1459,133 @@ impl Solver {
 
     pub fn num_learnt_constraints(&self) -> u32 {
         self.learnts.len() as u32
+    }
+
+    pub fn restart(&mut self) {
+        self.undo_until(0);
+        self.stats.core.restarts += 1;
+        let mut score = self.cc_info.score();
+        score.bump_activity();
+        self.cc_info.set_score(score);
+    }
+
+    pub fn reduce_learnts(&mut self, rem_frac: f64, strategy: &ReduceStrategy) -> DBInfo {
+        let old_size = self.num_learnt_constraints();
+        let max_remove = (f64::from(old_size) * rem_frac.clamp(0.0, 1.0)) as u32;
+        let cmp = CmpScore::new(*strategy);
+        let reduced = match ReduceAlgorithm::from_underlying(strategy.algo as u8) {
+            Some(ReduceAlgorithm::ReduceLinear) => self.reduce_linear(max_remove, cmp),
+            Some(ReduceAlgorithm::ReduceStable)
+            | Some(ReduceAlgorithm::ReduceSort)
+            | Some(ReduceAlgorithm::ReduceHeap)
+            | None => self.reduce_sort_in_place(max_remove, cmp),
+        };
+        self.stats
+            .add_deleted(old_size.saturating_sub(reduced.size));
+        reduced
+    }
+
+    pub fn search_with_limits(&mut self, limit: &mut SearchLimits<'_>, randf: f64) -> ValT {
+        assert!(!self.is_false(self.tag_literal()));
+        let randf = randf.clamp(0.0, 1.0);
+        let mut local_used = 0_u64;
+        loop {
+            let mut conflict = self.has_conflict() || !self.propagate() || !self.simplify();
+            while conflict {
+                let mut resolved = 0_u64;
+                loop {
+                    resolved += 1;
+                    if !self.resolve_conflict() {
+                        break;
+                    }
+                    if self.propagate() {
+                        break;
+                    }
+                }
+                limit.used = limit.used.saturating_add(resolved);
+                local_used = local_used.saturating_add(resolved);
+                if self.has_conflict() || (self.decision_level() == 0 && !self.simplify()) {
+                    return crate::clasp::literal::value_false;
+                }
+                if self.num_free_vars() != 0
+                    && (limit.used >= limit.conflicts
+                        || self.restart_reached(limit, local_used)
+                        || self.reduce_reached(limit))
+                {
+                    return value_free;
+                }
+                conflict = false;
+            }
+            if self.decide_next_branch(randf) {
+                conflict = !self.propagate();
+                if conflict {
+                    continue;
+                }
+            } else if self.is_model() {
+                return value_true;
+            }
+        }
+    }
+
+    pub fn search(
+        &mut self,
+        max_conflicts: u64,
+        max_learnts: u32,
+        local: bool,
+        rand_prob: f64,
+    ) -> ValT {
+        let mut limit = SearchLimits {
+            conflicts: max_conflicts,
+            learnts: max_learnts,
+            local,
+            ..SearchLimits::default()
+        };
+        self.search_with_limits(&mut limit, rand_prob)
+    }
+
+    pub(crate) fn constraint_db(&self) -> &[*mut Constraint] {
+        &self.constraints
+    }
+
+    pub(crate) fn clone_db(&mut self, db: &[*mut Constraint]) -> bool {
+        for &constraint_ptr in db {
+            if self.has_conflict {
+                break;
+            }
+            let Some(constraint) = (unsafe { constraint_ptr.as_ref() }) else {
+                continue;
+            };
+            if let Some(clone) = constraint.clone_attach(self) {
+                self.constraints.push(Box::into_raw(clone));
+            }
+        }
+        !self.has_conflict
+    }
+
+    pub(crate) fn detach_local_runtime(&mut self) {
+        let shared = self.shared;
+        let solver_id = self.id;
+        let mut owned = core::mem::take(&mut self.constraints);
+        owned.extend(core::mem::take(&mut self.learnts));
+        owned.sort_unstable_by_key(|ptr| *ptr as usize);
+        owned.dedup();
+        for constraint_ptr in owned {
+            if constraint_ptr.is_null() {
+                continue;
+            }
+            unsafe {
+                if let Some(constraint) = constraint_ptr.as_mut() {
+                    if let Some(mut head) = constraint.clause() {
+                        head.as_mut().destroy(Some(self), true);
+                    } else {
+                        Constraint::destroy_raw(constraint_ptr, Some(self), true);
+                    }
+                }
+            }
+        }
+        *self = Solver::new();
+        self.shared = shared;
+        self.id = solver_id;
     }
 
     pub fn prepare_cc_min_recursive(&mut self, rec: &mut CCMinRecursive) {
@@ -1737,6 +2022,184 @@ impl Solver {
             }
         }
         true
+    }
+
+    fn decide_next_branch(&mut self, randf: f64) -> bool {
+        if self.num_free_vars() == 0 {
+            return false;
+        }
+        if randf <= 0.0 || self.rng.drand() >= randf {
+            let solver_ptr = self as *mut Solver;
+            let chose = unsafe { (*solver_ptr).heuristic.select(&mut *solver_ptr) };
+            self.stats.core.choices += u64::from(chose);
+            return chose;
+        }
+        let max_var = self.num_vars() + 1;
+        let mut var = self.rng.irand(max_var).max(1);
+        loop {
+            if self.value(var) == value_free {
+                let choice = self.heuristic.select_literal(self, var, 0);
+                let chose = self.assume(choice);
+                self.stats.core.choices += u64::from(chose);
+                return chose;
+            }
+            var += 1;
+            if var == max_var {
+                var = 1;
+            }
+        }
+    }
+
+    fn reduce_reached(&self, limits: &SearchLimits<'_>) -> bool {
+        self.num_learnt_constraints() > limits.learnts
+    }
+
+    fn restart_reached(&self, limits: &SearchLimits<'_>, local_used: u64) -> bool {
+        let used = if limits.local {
+            local_used
+        } else {
+            limits.used
+        };
+        used >= limits.restart_conflicts
+            || limits
+                .dynamic
+                .is_some_and(crate::clasp::solver_strategies::DynamicLimit::reached)
+    }
+
+    fn is_model(&mut self) -> bool {
+        if self.has_conflict() {
+            return false;
+        }
+        let post_list = &mut self.post_propagators as *mut PropagatorList;
+        unsafe { (*post_list).is_model(self) }
+    }
+
+    fn reduce_linear(&mut self, mut max_remove: u32, cmp: CmpScore) -> DBInfo {
+        let old_learnts = core::mem::take(&mut self.learnts);
+        let score_sum = old_learnts
+            .iter()
+            .filter_map(|&ptr| unsafe { ptr.as_ref() })
+            .map(|constraint| u64::from(cmp.score(constraint.activity())))
+            .sum::<u64>();
+        let avg_activity = if old_learnts.is_empty() {
+            0.0
+        } else {
+            score_sum as f64 / old_learnts.len() as f64
+        };
+        let score_max = f64::from(cmp.score(ConstraintScore::new(act_max, 1)));
+        let mut score_thresh = avg_activity * 1.5;
+        if score_thresh > score_max {
+            score_thresh = (score_max + avg_activity) / 2.0;
+        }
+        let mut kept = Vec::with_capacity(old_learnts.len());
+        let mut info = DBInfo::default();
+        let solver_ptr = self as *mut Solver;
+        for constraint_ptr in old_learnts {
+            if constraint_ptr.is_null() {
+                kept.push(constraint_ptr);
+                continue;
+            }
+            let constraint = unsafe { &mut *constraint_ptr };
+            let score = constraint.activity();
+            let is_locked = unsafe { constraint.locked(&*solver_ptr) };
+            let is_glue = f64::from(cmp.score(score)) > score_thresh || cmp.is_glue(score);
+            if max_remove == 0 || is_locked || is_glue || cmp.is_frozen(score) {
+                info.pinned += u32::from(is_glue);
+                info.locked += u32::from(is_locked);
+                constraint.decrease_activity();
+                kept.push(constraint_ptr);
+            } else {
+                max_remove -= 1;
+                destroy_constraint_ptr(constraint_ptr, self);
+            }
+        }
+        info.size = kept.len() as u32;
+        self.learnts = kept;
+        info
+    }
+
+    fn reduce_sort_in_place(&mut self, mut max_remove: u32, cmp: CmpScore) -> DBInfo {
+        let mut old_learnts = core::mem::take(&mut self.learnts);
+        old_learnts.sort_by(|lhs, rhs| compare_learnts(*lhs, *rhs, cmp));
+        let mut kept = Vec::with_capacity(old_learnts.len());
+        let mut info = DBInfo::default();
+        let solver_ptr = self as *mut Solver;
+        for constraint_ptr in old_learnts {
+            if constraint_ptr.is_null() {
+                kept.push(constraint_ptr);
+                continue;
+            }
+            let constraint = unsafe { &mut *constraint_ptr };
+            let score = constraint.activity();
+            let is_glue = cmp.is_glue(score);
+            let is_locked = unsafe { constraint.locked(&*solver_ptr) };
+            if max_remove == 0 || is_locked || is_glue || cmp.is_frozen(score) {
+                info.pinned += u32::from(is_glue);
+                info.locked += u32::from(is_locked);
+                constraint.decrease_activity();
+                kept.push(constraint_ptr);
+            } else {
+                max_remove -= 1;
+                destroy_constraint_ptr(constraint_ptr, self);
+            }
+        }
+        info.size = kept.len() as u32;
+        self.learnts = kept;
+        info
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DBInfo {
+    pub size: u32,
+    pub locked: u32,
+    pub pinned: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CmpScore {
+    strategy: ReduceStrategy,
+}
+
+impl CmpScore {
+    const fn new(strategy: ReduceStrategy) -> Self {
+        Self { strategy }
+    }
+
+    fn score(self, score: ConstraintScore) -> u32 {
+        self.strategy.as_score(score)
+    }
+
+    fn is_frozen(self, score: ConstraintScore) -> bool {
+        score.bumped() && score.lbd() <= self.strategy.protect
+    }
+
+    fn is_glue(self, score: ConstraintScore) -> bool {
+        score.lbd() <= self.strategy.glue
+    }
+}
+
+fn compare_learnts(lhs: *mut Constraint, rhs: *mut Constraint, cmp: CmpScore) -> Ordering {
+    match (unsafe { lhs.as_ref() }, unsafe { rhs.as_ref() }) {
+        (Some(lhs), Some(rhs)) => {
+            let result = cmp.strategy.compare(lhs.activity(), rhs.activity());
+            result.cmp(&0)
+        }
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (None, None) => Ordering::Equal,
+    }
+}
+
+fn destroy_constraint_ptr(constraint_ptr: *mut Constraint, solver: &mut Solver) {
+    unsafe {
+        if let Some(constraint) = constraint_ptr.as_mut() {
+            if let Some(mut head) = constraint.clause() {
+                head.as_mut().destroy(Some(solver), true);
+            } else {
+                Constraint::destroy_raw(constraint_ptr, Some(solver), true);
+            }
+        }
     }
 }
 

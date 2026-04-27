@@ -624,6 +624,69 @@ impl SolverStats {
     }
 }
 
+#[allow(non_snake_case)]
+impl SolverStats {
+    pub fn enableExtended(&mut self) -> bool {
+        self.enable_extended()
+    }
+
+    pub fn swapStats(&mut self, other: &mut Self) {
+        self.swap_stats(other)
+    }
+
+    pub fn addLearnt(&mut self, size: u32, kind: ConstraintType) {
+        self.add_learnt(size, kind)
+    }
+
+    pub fn addConflict(&mut self, dl: u32, uip_level: u32, b_level: u32, lbd: u32) {
+        self.add_conflict(dl, uip_level, b_level, lbd)
+    }
+
+    pub fn addDeleted(&mut self, num: u32) {
+        self.add_deleted(num)
+    }
+
+    pub fn addDistributed(&mut self, lbd: u32, kind: ConstraintType) {
+        self.add_distributed(lbd, kind)
+    }
+
+    pub fn addTest(&mut self, partial: bool) {
+        self.add_test(partial)
+    }
+
+    pub fn addModel(&mut self, dl: u32) {
+        self.add_model(dl)
+    }
+
+    pub fn addCpuTime(&mut self, time: f64) {
+        self.add_cpu_time(time)
+    }
+
+    pub fn addSplit(&mut self, count: u32) {
+        self.add_split(count)
+    }
+
+    pub fn addDomChoice(&mut self, count: u32) {
+        self.add_dom_choice(count)
+    }
+
+    pub fn addIntegratedAsserting(&mut self, start_level: u32, jump_level: u32) {
+        self.add_integrated_asserting(start_level, jump_level)
+    }
+
+    pub fn addIntegrated(&mut self, count: u32) {
+        self.add_integrated(count)
+    }
+
+    pub fn removeIntegrated(&mut self, count: u32) {
+        self.remove_integrated(count)
+    }
+
+    pub fn addPath(&mut self, size: usize) {
+        self.add_path(size)
+    }
+}
+
 impl StatisticMap for SolverStats {
     fn size(&self) -> u32 {
         SolverStats::size(self)
@@ -647,6 +710,25 @@ impl ClauseWatch {
     pub const fn new(head: *mut ClauseHead) -> Self {
         Self { head }
     }
+
+    pub const fn eq_head(head: *mut ClauseHead) -> ClauseWatchEqHead {
+        ClauseWatchEqHead::new(head)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClauseWatchEqHead {
+    pub head: *mut ClauseHead,
+}
+
+impl ClauseWatchEqHead {
+    pub const fn new(head: *mut ClauseHead) -> Self {
+        Self { head }
+    }
+
+    pub fn matches(&self, watch: &ClauseWatch) -> bool {
+        self.head == watch.head
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -660,10 +742,29 @@ impl GenericWatch {
         Self { con, data }
     }
 
+    pub const fn eq_constraint(con: *mut Constraint) -> GenericWatchEqConstraint {
+        GenericWatchEqConstraint::new(con)
+    }
+
     pub fn propagate(&mut self, solver: &mut Solver, literal: Literal) -> PropResult {
         let constraint = unsafe { self.con.as_mut() }
             .expect("generic watch requires a non-null constraint pointer");
         constraint.propagate(solver, literal, &mut self.data)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GenericWatchEqConstraint {
+    pub con: *mut Constraint,
+}
+
+impl GenericWatchEqConstraint {
+    pub const fn new(con: *mut Constraint) -> Self {
+        Self { con }
+    }
+
+    pub fn matches(&self, watch: &GenericWatch) -> bool {
+        self.con == watch.con
     }
 }
 
@@ -698,6 +799,10 @@ impl ReasonStore32 {
 
     pub fn resize(&mut self, new_len: usize) {
         self.entries.resize(new_len, Antecedent::new());
+    }
+
+    pub fn truncate(&mut self, new_len: usize) {
+        self.entries.truncate(new_len);
     }
 
     pub fn push_back(&mut self, antecedent: Antecedent) {
@@ -785,6 +890,11 @@ impl ReasonStore64 {
 
     pub fn resize(&mut self, new_len: usize) {
         self.entries.resize(new_len, Antecedent::new());
+    }
+
+    pub fn truncate(&mut self, new_len: usize) {
+        self.entries.truncate(new_len);
+        self.dv.truncate(new_len);
     }
 
     pub fn push_back(&mut self, antecedent: Antecedent) {
@@ -993,6 +1103,31 @@ impl Assignment {
     pub fn resize(&mut self, new_vars: u32) {
         self.assign_.resize(new_vars as usize, 0);
         self.reason_.resize(new_vars as usize);
+    }
+
+    pub fn truncate_vars(&mut self, new_vars: u32) {
+        let new_len = new_vars as usize + 1;
+        let old_trail = self.trail.as_slice().to_vec();
+        let front_prefix = old_trail[..(self.front as usize).min(old_trail.len())]
+            .iter()
+            .filter(|lit| lit.var() <= new_vars)
+            .count() as u32;
+        let units_prefix = old_trail[..(self.units_ as usize).min(old_trail.len())]
+            .iter()
+            .filter(|lit| lit.var() <= new_vars)
+            .count() as u32;
+        let kept: Vec<Literal> = old_trail
+            .into_iter()
+            .filter(|lit| lit.var() <= new_vars)
+            .collect();
+
+        self.assign_.truncate(new_len);
+        self.reason_.truncate(new_len);
+        self.pref_.truncate(new_len);
+        self.trail.assign_from_slice(&kept);
+        self.front = front_prefix.min(size32(&self.trail));
+        self.units_ = units_prefix.min(size32(&self.trail));
+        self.elims_ = (1..=new_vars).filter(|&var| !self.valid(var)).count() as u32;
     }
 
     pub fn add_var(&mut self) -> Var_t {

@@ -3,7 +3,10 @@ use std::panic::{self, AssertUnwindSafe};
 use rust_clasp::clasp::claspfwd::Asp;
 use rust_clasp::clasp::shared_context::ProblemStats;
 use rust_clasp::clasp::solver_types::SolverStats;
-use rust_clasp::clasp::statistics::{ClaspStatistics, Operation, StatisticObject, StatsVisitor};
+use rust_clasp::clasp::statistics::{
+    ClaspStatistics, Operation, StatisticArray, StatisticObject, StatisticObjectTypeId,
+    StatsVisitor,
+};
 use rust_clasp::potassco::clingo::StatisticsType;
 use rust_clasp::potassco::error::Error;
 
@@ -321,4 +324,68 @@ fn clasp_statistics_keys_stay_stable_across_growth() {
 
     assert_eq!(after, "val1");
     assert_eq!(after.as_ptr(), before_ptr);
+}
+
+struct PairStats([u64; 2]);
+
+impl StatisticArray for PairStats {
+    fn size(&self) -> u32 {
+        self.0.len() as u32
+    }
+
+    fn at<'a>(&'a self, index: u32) -> StatisticObject<'a> {
+        StatisticObject::from_value(&self.0[index as usize])
+    }
+}
+
+#[test]
+fn compatibility_wrappers_preserve_statistics_surface_behavior() {
+    let value_a = 7u64;
+    let value_b = 11u64;
+    let value_c = 3u32;
+    let lhs = StatisticObject::from_value(&value_a);
+    let rhs_same_type = StatisticObject::from_value(&value_b);
+    let rhs_other_type = StatisticObject::from_value(&value_c);
+    let inline = StatisticObject::from_f64(1.5);
+
+    assert_eq!(lhs.type_id(), rhs_same_type.type_id());
+    assert!(lhs.eq_type_id(&rhs_same_type));
+    assert_eq!(inline.type_id(), StatisticObjectTypeId::InlineValue);
+    assert!(!lhs.eq_type_id(&rhs_other_type));
+
+    let array = PairStats([2, 9]);
+    let array_obj = StatisticObject::array(&array);
+    assert_eq!(array_obj.at_index(1).value(), 9.0);
+
+    struct ExternalVisitor {
+        seen: u32,
+        value: f64,
+    }
+
+    impl StatsVisitor for ExternalVisitor {
+        fn visit_logic_program_stats(&mut self, _stats: &Asp::LpStats) {}
+
+        fn visit_problem_stats(&mut self, _stats: &ProblemStats) {}
+
+        fn visit_solver_stats(&mut self, _stats: &SolverStats) {}
+
+        fn visit_external_stats(&mut self, stats: StatisticObject<'_>) {
+            self.seen += 1;
+            self.value = stats.value();
+        }
+    }
+
+    let mut stats = ClaspStatistics::new();
+    let root = stats.root();
+    let key = stats.addObject(root, "fixed", lhs, false);
+    assert_eq!(stats.value(key), 7.0);
+
+    let mut visitor = ExternalVisitor {
+        seen: 0,
+        value: 0.0,
+    };
+    assert!(stats.visitExternal("fixed", &mut visitor));
+    assert!(!stats.visitExternal("missing", &mut visitor));
+    assert_eq!(visitor.seen, 1);
+    assert_eq!(visitor.value, 7.0);
 }

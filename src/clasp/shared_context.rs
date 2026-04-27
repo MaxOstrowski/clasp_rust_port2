@@ -7,8 +7,9 @@
 //! solver.
 
 use crate::clasp::cli::clasp_cli_options::context_params::ShortSimpMode;
-use crate::clasp::constraint::{Antecedent, ConstraintType, Solver};
-use crate::clasp::literal::{Literal, VarType, true_value, value_free};
+use crate::clasp::constraint::{Antecedent, ConstraintType};
+use crate::clasp::literal::{Literal, VarType, lit_false, lit_true, true_value, value_free};
+use crate::clasp::solver::Solver;
 use crate::clasp::statistics::{StatisticMap, StatisticObject};
 use crate::potassco::bits::{
     store_clear_mask, store_set_mask, store_toggle_bit, test_any, test_mask,
@@ -141,6 +142,10 @@ impl VarInfo {
         }
     }
 
+    pub fn r#type(self) -> VarType {
+        self.type_()
+    }
+
     pub fn atom(self) -> bool {
         !matches!(self.type_(), VarType::Body)
     }
@@ -171,6 +176,10 @@ impl VarInfo {
 
     pub fn has_any(self, flags: u8) -> bool {
         test_any(self.rep, flags)
+    }
+
+    pub fn has_all(self, flags: u8) -> bool {
+        test_mask(self.rep, flags)
     }
 
     pub fn set(&mut self, flag: u8) {
@@ -543,6 +552,11 @@ pub struct SharedContext {
     var_info: Vec<VarInfo>,
     btig: ShortImplicationsGraph,
     master: Box<Solver>,
+    // Attached solvers must keep a stable address because helper objects like
+    // ClauseCreator cache raw solver pointers across later SharedContext calls.
+    #[allow(clippy::vec_box)]
+    solvers: Vec<Box<Solver>>,
+    step_literal: Literal,
     frozen: bool,
     share_problem: bool,
     share_learnts: bool,
@@ -555,16 +569,26 @@ impl Default for SharedContext {
             var_info: vec![VarInfo::default()],
             btig: ShortImplicationsGraph::default(),
             master: Box::new(Solver::new()),
+            solvers: Vec::new(),
+            step_literal: lit_true,
             frozen: false,
             share_problem: false,
             share_learnts: false,
         };
-        context.refresh_master_link();
+        context.refresh_solver_links();
         context
     }
 }
 
 impl SharedContext {
+    fn mark_mask(literal: Literal) -> u8 {
+        if literal.sign() {
+            VarInfo::FLAG_NEG
+        } else {
+            VarInfo::FLAG_POS
+        }
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -581,12 +605,23 @@ impl SharedContext {
         self.frozen
     }
 
+    pub fn ok(&self) -> bool {
+        self.master_ref().decision_level() != 0
+            || !self.master_ref().has_conflict()
+            || self.master_ref().has_stop_conflict()
+    }
+
+    pub fn is_extended(&self) -> bool {
+        self.stats.vars.frozen != 0
+    }
+
     pub fn add_var(&mut self) -> u32 {
         self.add_typed_var(VarType::Atom, VarInfo::FLAG_NANT | VarInfo::FLAG_INPUT)
     }
 
     pub fn add_typed_var(&mut self, var_type: VarType, flags: u8) -> u32 {
         let mut info = VarInfo::new(flags);
+        info.clear(VarInfo::FLAG_POS | VarInfo::FLAG_NEG);
         if matches!(var_type, VarType::Body) {
             info.set(VarInfo::FLAG_BODY);
         }
@@ -594,7 +629,7 @@ impl SharedContext {
             info.set(VarInfo::FLAG_EQ);
         }
         self.var_info.push(info);
-        self.stats.vars.num = self.num_vars();
+        self.stats.vars.num = self.num_vars() - u32::from(self.step_literal.var() != 0);
         let var = self.num_vars();
         self.master.acquire_problem_var(var);
         var
@@ -608,8 +643,41 @@ impl SharedContext {
         self.var_info.len().saturating_sub(1) as u32
     }
 
+    pub fn vars(&self) -> impl Iterator<Item = u32> + '_ {
+        1..(self.num_vars() + 1)
+    }
+
+    pub fn num_eliminated_vars(&self) -> u32 {
+        self.stats.vars.eliminated
+    }
+
     pub fn var_info(&self, var: u32) -> VarInfo {
         self.var_info[var as usize]
+    }
+
+    pub fn eliminated(&self, var: u32) -> bool {
+        assert!(self.valid_var(var));
+        !self.master_ref().assignment().valid(var)
+    }
+
+    pub fn marked(&self, literal: Literal) -> bool {
+        assert!(self.valid_var(literal.var()));
+        self.var_info(literal.var()).has(Self::mark_mask(literal))
+    }
+
+    pub fn mark(&mut self, literal: Literal) {
+        assert!(self.valid_var(literal.var()));
+        self.var_info[literal.var() as usize].set(Self::mark_mask(literal));
+    }
+
+    pub fn unmark_literal(&mut self, literal: Literal) {
+        assert!(self.valid_var(literal.var()));
+        self.var_info[literal.var() as usize].clear(Self::mark_mask(literal));
+    }
+
+    pub fn unmark_var(&mut self, var: u32) {
+        assert!(self.valid_var(var));
+        self.var_info[var as usize].clear(VarInfo::FLAG_POS | VarInfo::FLAG_NEG);
     }
 
     pub fn set_frozen(&mut self, var: u32, frozen: bool) {
@@ -625,8 +693,74 @@ impl SharedContext {
         }
     }
 
+    pub fn step_literal(&self) -> Literal {
+        self.step_literal
+    }
+
+    pub fn request_step_var(&mut self) {
+        if self.step_literal == lit_true {
+            self.step_literal = lit_false;
+        }
+    }
+
+    pub fn require_step_var(&mut self) -> Literal {
+        if self.step_literal.var() == 0 {
+            let mut info = VarInfo::default();
+            info.set(VarInfo::FLAG_FROZEN);
+            self.var_info.push(info);
+            self.stats.vars.frozen += 1;
+            self.step_literal = Literal::new(self.num_vars(), false);
+            self.btig.resize((self.num_vars() + 1) << 1);
+        }
+        self.step_literal
+    }
+
+    pub fn eliminate(&mut self, var: u32) {
+        assert!(self.valid_var(var));
+        assert!(!self.frozen);
+        assert_eq!(self.master_ref().decision_level(), 0);
+        if !self.eliminated(var) {
+            self.stats.vars.eliminated += 1;
+            self.master.eliminate_var(var);
+        }
+    }
+
+    pub fn unfreeze(&mut self) -> bool {
+        if !self.frozen() {
+            return true;
+        }
+        self.frozen = false;
+        self.btig.mark_shared(false);
+        let root_level = self.master.root_level();
+        self.master.pop_root_level(root_level)
+            && self.btig.propagate(&mut self.master, lit_true)
+            && self.unfreeze_step()
+    }
+
+    fn unfreeze_step(&mut self) -> bool {
+        let tag = self.step_literal.var();
+        if tag == 0 {
+            return !self.master.has_conflict();
+        }
+        self.btig.remove_true(&self.master, !self.step_literal);
+        for solver in &mut self.solvers {
+            if solver.valid_var(tag) {
+                let _ = solver.pop_root_level(solver.root_level());
+            }
+        }
+        if !self.valid_var(tag + 1) {
+            self.var_info[tag as usize] = VarInfo::default();
+            self.pop_vars(1);
+            self.stats.vars.num += 1;
+        } else {
+            debug_assert!(self.master.is_false(self.step_literal));
+        }
+        self.step_literal = lit_false;
+        !self.master.has_conflict()
+    }
+
     pub fn master(&mut self) -> &mut Solver {
-        self.refresh_master_link();
+        self.refresh_solver_links();
         &mut self.master
     }
 
@@ -634,10 +768,49 @@ impl SharedContext {
         &self.master
     }
 
+    pub fn num_solvers(&self) -> u32 {
+        1 + self.solvers.len() as u32
+    }
+
+    pub fn has_solver(&self, id: u32) -> bool {
+        id == 0 || (id as usize) <= self.solvers.len()
+    }
+
+    pub fn push_solver(&mut self) -> &mut Solver {
+        let mut solver = Box::new(Solver::new());
+        solver.set_id(self.num_solvers());
+        solver.set_shared_context(self as *mut SharedContext);
+        self.solvers.push(solver);
+        self.solvers
+            .last_mut()
+            .expect("pushed solver must be present")
+    }
+
+    pub fn solver(&mut self, id: u32) -> Option<&mut Solver> {
+        self.refresh_solver_links();
+        if id == 0 {
+            Some(&mut self.master)
+        } else {
+            self.solvers.get_mut(id as usize - 1).map(Box::as_mut)
+        }
+    }
+
+    pub fn solver_ref(&self, id: u32) -> Option<&Solver> {
+        if id == 0 {
+            Some(&self.master)
+        } else {
+            self.solvers.get(id as usize - 1).map(Box::as_ref)
+        }
+    }
+
     pub fn start_add_constraints(&mut self) -> &mut Solver {
-        self.refresh_master_link();
+        self.refresh_solver_links();
         self.frozen = false;
-        self.btig.resize((self.num_vars() + 1) << 1);
+        let mut expected_size = (self.num_vars() + 1) << 1;
+        if self.step_literal == lit_false {
+            expected_size += 2;
+        }
+        self.btig.resize(expected_size);
         self.master.begin_init();
         self.master.acquire_problem_var(self.num_vars());
         self.master
@@ -646,8 +819,14 @@ impl SharedContext {
     }
 
     pub fn end_init(&mut self) -> bool {
-        self.refresh_master_link();
+        self.refresh_solver_links();
+        if self.step_literal == lit_false {
+            self.require_step_var();
+        }
         self.master.acquire_problem_var(self.num_vars());
+        if self.step_literal.var() != 0 {
+            let _ = self.master.force(!self.step_literal, Antecedent::new());
+        }
         self.stats.constraints.other = self.master.num_constraints();
         self.stats.constraints.binary = self.btig.num_binary();
         self.stats.constraints.ternary = self.btig.num_ternary();
@@ -730,6 +909,102 @@ impl SharedContext {
         }
     }
 
+    pub fn short_implications(&self) -> &ShortImplicationsGraph {
+        &self.btig
+    }
+
+    pub fn attach(&mut self, solver_id: u32) -> bool {
+        if !self.frozen || !self.has_solver(solver_id) {
+            return false;
+        }
+        self.refresh_solver_links();
+        if solver_id == 0 {
+            return true;
+        }
+
+        let master_stats = self.master_ref().stats().clone();
+        let master_num_vars = self.master_ref().num_vars();
+        let master_watch_cap = ((master_num_vars + 1) << 1) as usize;
+        let master_trail = self
+            .master_ref()
+            .trail_view(0)
+            .iter()
+            .copied()
+            .filter(|lit| !self.master_ref().aux_var(lit.var()))
+            .collect::<Vec<_>>();
+        let master_db = self.master_ref().constraint_db().to_vec();
+        let other_ptr = match self.solver(solver_id) {
+            Some(solver) => solver as *mut Solver,
+            None => return false,
+        };
+        let ok = unsafe {
+            let other = &mut *other_ptr;
+            other.detach_local_runtime();
+            other.stats_mut().enable(&master_stats);
+            other.stats_mut().reset();
+            other.begin_init();
+            other.acquire_problem_var(master_num_vars);
+            other.reserve_watch_capacity(master_watch_cap);
+            if other.has_conflict() {
+                false
+            } else {
+                let mut attached = true;
+                for literal in &master_trail {
+                    if !other.force(*literal, Antecedent::new()) {
+                        attached = false;
+                        break;
+                    }
+                }
+                attached && other.clone_db(&master_db) && other.end_init()
+            }
+        };
+        if !ok {
+            self.detach(solver_id, false);
+        }
+        ok
+    }
+
+    pub fn detach(&mut self, solver_id: u32, _reset: bool) {
+        if solver_id == 0 {
+            return;
+        }
+        self.refresh_solver_links();
+        if let Some(solver) = self.solver(solver_id) {
+            solver.detach_local_runtime();
+        }
+    }
+
+    pub fn pop_vars(&mut self, mut n_vars: u32) {
+        assert!(!self.frozen, "Cannot pop vars from frozen program");
+        assert!(n_vars <= self.num_vars(), "Too many variables to pop");
+        let new_vars = self.num_vars() - n_vars;
+        let committed_vars = self.master_ref().num_vars();
+        if new_vars >= committed_vars {
+            self.var_info.truncate(new_vars as usize + 1);
+            self.stats.vars.num -= n_vars;
+        } else {
+            for var in (new_vars + 1..=self.num_vars()).rev() {
+                self.stats.vars.eliminated -= u32::from(self.eliminated(var));
+                self.stats.vars.frozen -= u32::from(self.var_info(var).frozen());
+                self.stats.vars.num -= 1;
+                self.var_info.pop();
+                n_vars -= 1;
+                if n_vars == 0 {
+                    break;
+                }
+            }
+            let current_vars = self.num_vars();
+            self.btig.resize((current_vars + 1) << 1);
+            self.master.update_vars(current_vars);
+            for solver in &mut self.solvers {
+                solver.update_vars(current_vars);
+            }
+        }
+        if self.step_literal.var() > self.num_vars() {
+            self.step_literal = lit_false;
+        }
+    }
+
     pub(crate) fn implication_graph(&self) -> &ShortImplicationsGraph {
         &self.btig
     }
@@ -738,8 +1013,11 @@ impl SharedContext {
         &mut self.btig
     }
 
-    fn refresh_master_link(&mut self) {
+    fn refresh_solver_links(&mut self) {
         let this = self as *mut SharedContext;
         self.master.set_shared_context(this);
+        for solver in &mut self.solvers {
+            solver.set_shared_context(this);
+        }
     }
 }

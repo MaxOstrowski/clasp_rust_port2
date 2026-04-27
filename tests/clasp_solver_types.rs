@@ -1,6 +1,7 @@
 use rust_clasp::clasp::constraint::ConstraintType;
+use rust_clasp::clasp::constraint::{ClauseHead, Constraint};
 use rust_clasp::clasp::solver_types::{
-    CoreStats, ExtendedStats, JumpStats, SolverStats, StatisticType,
+    ClauseWatch, CoreStats, ExtendedStats, GenericWatch, JumpStats, SolverStats, StatisticType,
 };
 
 #[test]
@@ -55,6 +56,22 @@ fn jump_stats_track_bounded_and_unbounded_jumps() {
     assert!((stats.avg_jump_ex() - 5.0).abs() < f64::EPSILON);
     assert!((stats.jumped_ratio() - (10.0 / 13.0)).abs() < f64::EPSILON);
     assert_eq!(JumpStats::key(5), "max_executed");
+}
+
+#[test]
+fn watch_helper_predicates_match_pointer_identity() {
+    let clause_a = 0x11usize as *mut ClauseHead;
+    let clause_b = 0x12usize as *mut ClauseHead;
+    let constraint_a = 0x21usize as *mut Constraint;
+    let constraint_b = 0x22usize as *mut Constraint;
+
+    let clause_match = ClauseWatch::eq_head(clause_a);
+    assert!(clause_match.matches(&ClauseWatch::new(clause_a)));
+    assert!(!clause_match.matches(&ClauseWatch::new(clause_b)));
+
+    let constraint_match = GenericWatch::eq_constraint(constraint_a);
+    assert!(constraint_match.matches(&GenericWatch::new(constraint_a, 7)));
+    assert!(!constraint_match.matches(&GenericWatch::new(constraint_b, 7)));
 }
 
 #[test]
@@ -157,4 +174,45 @@ fn solver_stats_enable_accumulate_flush_and_swap() {
     assert!(swap_a.extra.is_some());
     assert_eq!(swap_b.core.choices, 1);
     assert!(swap_b.extra.is_none());
+}
+
+#[test]
+fn solver_stats_camel_case_wrappers_delegate_to_existing_behavior() {
+    let mut stats = SolverStats::default();
+    assert!(stats.enableExtended());
+
+    stats.addLearnt(3, ConstraintType::Other);
+    stats.addDistributed(4, ConstraintType::Conflict);
+    stats.addTest(false);
+    stats.addModel(5);
+    stats.addCpuTime(0.5);
+    stats.addSplit(2);
+    stats.addDomChoice(7);
+    stats.addIntegratedAsserting(9, 6);
+    stats.addIntegrated(3);
+    stats.removeIntegrated(1);
+    stats.addPath(8);
+    stats.addConflict(10, 4, 6, 99);
+    stats.addDeleted(11);
+
+    let extra = stats.at("extra");
+    assert_eq!(extra.at("lemmas_other").value(), 1.0);
+    assert_eq!(extra.at("distributed_sum_lbd").value(), 4.0);
+    assert_eq!(extra.at("hcc_partial").value(), 0.0);
+    assert_eq!(extra.at("models_level").value(), 5.0);
+    assert_eq!(extra.at("cpu_time").value(), 0.5);
+    assert_eq!(extra.at("splits").value(), 2.0);
+    assert_eq!(extra.at("domain_choices").value(), 7.0);
+    assert_eq!(extra.at("integrated_imps").value(), 1.0);
+    assert_eq!(extra.at("integrated_jumps").value(), 3.0);
+    assert_eq!(extra.at("integrated").value(), 2.0);
+    assert_eq!(extra.at("guiding_paths").value(), 1.0);
+    assert_eq!(extra.at("guiding_paths_lits").value(), 8.0);
+    assert_eq!(extra.at("lemmas_deleted").value(), 11.0);
+
+    let mut other = SolverStats::default();
+    other.core.choices = 42;
+    stats.swapStats(&mut other);
+    assert_eq!(stats.core.choices, 42);
+    assert_eq!(other.at("extra").at("lemmas_deleted").value(), 11.0);
 }

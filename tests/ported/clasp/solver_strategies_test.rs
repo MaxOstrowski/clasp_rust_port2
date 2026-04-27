@@ -1,5 +1,6 @@
-use rust_clasp::clasp::constraint::{ConstraintInfo, ConstraintType, Solver};
+use rust_clasp::clasp::constraint::{ConstraintInfo, ConstraintType};
 use rust_clasp::clasp::literal::{LitVec, pos_lit};
+use rust_clasp::clasp::solver::Solver;
 use rust_clasp::clasp::solver_strategies::{
     BasicSatConfig, CCMinAntes, Configuration, ConflictEvent, HeuParams, HeuristicType, LbdMode,
     RestartKeep, ScheduleStrategy, SearchLimits, SearchStrategy, SignHeu, SolverParams, WatchInit,

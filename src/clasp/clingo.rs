@@ -6,10 +6,10 @@
 
 use std::panic::panic_any;
 
-use crate::clasp::constraint::Solver;
 use crate::clasp::literal::{
     decode_var, encode_lit, lit_true, value_false, value_free, value_true,
 };
+use crate::clasp::solver::Solver;
 use crate::potassco::basic_types::TruthValue;
 use crate::potassco::clingo::AbstractAssignment;
 use crate::potassco::error::Error;
