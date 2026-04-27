@@ -7,6 +7,7 @@
 
 use core::cmp::Reverse;
 use core::ffi::c_void;
+use core::mem::size_of;
 use core::ops::Index;
 use core::ptr::{self, NonNull};
 
@@ -40,6 +41,16 @@ pub const CLAUSE_NO_HEURISTIC: CreateFlag = 512;
 pub const CLAUSE_WATCH_FIRST: CreateFlag = 1024;
 pub const CLAUSE_WATCH_RAND: CreateFlag = 2048;
 pub const CLAUSE_WATCH_LEAST: CreateFlag = 4096;
+
+const EXPLICIT_CLAUSE_HEAD_LITS: usize = 3;
+const EXPLICIT_CLAUSE_MAX_SHORT_LEN: u32 = 5;
+const SMALL_CLAUSE_ALLOC_SIZE: u32 = 32;
+
+fn should_physically_share(solver: &Solver, constraint_type: ConstraintType) -> bool {
+    solver
+        .shared_context()
+        .is_some_and(|shared| shared.physical_share(constraint_type))
+}
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,7 +266,10 @@ struct ExplicitClauseState {
     head: ClauseHead,
     literals: LitVec,
     active_len: u32,
+    retained_alloc_len: u32,
     contracted: bool,
+    storage_is_small: bool,
+    strengthened: bool,
     extend_on_backtrack: bool,
 }
 
@@ -267,7 +281,10 @@ impl ExplicitClauseState {
             head: ClauseHead::new(rep.info),
             literals,
             active_len: rep.size,
+            retained_alloc_len: rep.size,
             contracted: false,
+            storage_is_small: rep.size <= EXPLICIT_CLAUSE_MAX_SHORT_LEN,
+            strengthened: false,
             extend_on_backtrack: false,
         };
         state.sync_head();
@@ -301,6 +318,30 @@ impl ExplicitClauseState {
 
     fn active_size(&self) -> u32 {
         self.active_len
+    }
+
+    fn alloc_len(&self) -> u32 {
+        if self.strengthened {
+            self.retained_alloc_len.max(self.full_len())
+        } else {
+            self.full_len()
+        }
+    }
+
+    fn compute_alloc_size(&self) -> u32 {
+        if self.storage_is_small {
+            return SMALL_CLAUSE_ALLOC_SIZE;
+        }
+        explicit_clause_base_alloc_size() + self.alloc_len() * (size_of::<Literal>() as u32)
+    }
+
+    fn preserve_retained_allocation(&mut self, previous_full_len: u32) {
+        if previous_full_len == self.full_len() || self.storage_is_small || !self.head.info.learnt()
+        {
+            return;
+        }
+        self.retained_alloc_len = self.retained_alloc_len.max(previous_full_len);
+        self.strengthened = true;
     }
 
     fn remove_current_undo_watch(&self, solver: &mut Solver) -> bool {
@@ -435,6 +476,10 @@ impl ConstraintDyn for ExplicitClause {
     }
 }
 
+fn explicit_clause_base_alloc_size() -> u32 {
+    (size_of::<ExplicitClauseState>() - (EXPLICIT_CLAUSE_HEAD_LITS * size_of::<Literal>())) as u32
+}
+
 fn explicit_state_from_head(head: &ClauseHead) -> &ExplicitClauseState {
     unsafe { &*(head.owner as *const ExplicitClauseState) }
 }
@@ -443,8 +488,14 @@ fn explicit_state_from_head_mut(head: &mut ClauseHead) -> &mut ExplicitClauseSta
     unsafe { &mut *(head.owner as *mut ExplicitClauseState) }
 }
 
-fn build_explicit_clause(rep: &ClauseRep) -> (*mut ClauseHead, *mut Constraint) {
+fn build_explicit_clause(
+    solver: &mut Solver,
+    rep: &ClauseRep,
+) -> (*mut ClauseHead, *mut Constraint) {
     let mut state = Box::new(ExplicitClauseState::new(rep));
+    if rep.info.learnt() {
+        solver.add_learnt_bytes(state.compute_alloc_size());
+    }
     let state_ptr: *mut ExplicitClauseState = &mut *state;
     state.head.owner = state_ptr.cast::<c_void>();
     state.head.owner_kind = ClauseOwnerKind::Explicit;
@@ -465,6 +516,9 @@ fn build_contracted_explicit_clause(
     let mut state = Box::new(ExplicitClauseState::new_contracted(
         solver, rep, tail_start, extend,
     ));
+    if rep.info.learnt() {
+        solver.add_learnt_bytes(state.compute_alloc_size());
+    }
     let state_ptr: *mut ExplicitClauseState = &mut *state;
     state.head.owner = state_ptr.cast::<c_void>();
     state.head.owner_kind = ClauseOwnerKind::Explicit;
@@ -622,6 +676,7 @@ fn clone_clause_constraint(head: &ClauseHead, other: &mut Solver) -> Option<Box<
 }
 
 fn build_shared_clause_from_ptr(
+    solver: &mut Solver,
     shared: *mut SharedLiterals,
     info: ClauseInfo,
     watched: LitView<'_>,
@@ -633,6 +688,9 @@ fn build_shared_clause_from_ptr(
         }
     }
     let mut state = Box::new(SharedClauseState::new(shared, info, watched));
+    if info.learnt() {
+        solver.add_learnt_bytes(SMALL_CLAUSE_ALLOC_SIZE);
+    }
     let state_ptr: *mut SharedClauseState = &mut *state;
     state.head.owner = state_ptr.cast::<c_void>();
     let constraint = Box::new(Constraint::new(SharedClause::new(state_ptr)));
@@ -641,14 +699,6 @@ fn build_shared_clause_from_ptr(
     let head_ptr: *mut ClauseHead = &mut state.head;
     let _ = Box::into_raw(state);
     (head_ptr, constraint_ptr)
-}
-
-fn clone_shared_literals(shared: &SharedLiterals) -> *mut SharedLiterals {
-    Box::into_raw(Box::new(SharedLiterals::new_shareable(
-        shared.literals(),
-        shared.constraint_type(),
-        1,
-    )))
 }
 
 pub fn new_shared_clause(
@@ -661,7 +711,8 @@ pub fn new_shared_clause(
         info.constraint_type(),
         1,
     )));
-    let (head_ptr, _constraint_ptr) = build_shared_clause_from_ptr(shared, info, lits, false);
+    let (head_ptr, _constraint_ptr) =
+        build_shared_clause_from_ptr(solver, shared, info, lits, false);
     unsafe { (*head_ptr).attach(solver) };
     head_ptr
 }
@@ -859,6 +910,36 @@ pub(crate) fn clause_head_size(head: &ClauseHead) -> u32 {
     }
 }
 
+pub(crate) fn clause_head_is_small(head: &ClauseHead) -> bool {
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => explicit_state_from_head(head).storage_is_small,
+        ClauseOwnerKind::Shared => true,
+        ClauseOwnerKind::Unknown => false,
+    }
+}
+
+pub(crate) fn clause_head_contracted(head: &ClauseHead) -> bool {
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => explicit_state_from_head(head).contracted,
+        ClauseOwnerKind::Shared | ClauseOwnerKind::Unknown => false,
+    }
+}
+
+pub(crate) fn clause_head_strengthened(head: &ClauseHead) -> bool {
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => explicit_state_from_head(head).strengthened,
+        ClauseOwnerKind::Shared | ClauseOwnerKind::Unknown => false,
+    }
+}
+
+pub(crate) fn clause_head_compute_alloc_size(head: &ClauseHead) -> u32 {
+    match head.owner_kind {
+        ClauseOwnerKind::Explicit => explicit_state_from_head(head).compute_alloc_size(),
+        ClauseOwnerKind::Shared => SMALL_CLAUSE_ALLOC_SIZE,
+        ClauseOwnerKind::Unknown => 0,
+    }
+}
+
 pub(crate) fn clause_head_to_lits(head: &ClauseHead) -> Vec<Literal> {
     match head.owner_kind {
         ClauseOwnerKind::Explicit => explicit_state_from_head(head).literals.as_slice().to_vec(),
@@ -890,6 +971,7 @@ fn simplify_explicit_clause(head: &mut ClauseHead, solver: &mut Solver) -> bool 
     explicit_state_from_head(head).remove_current_undo_watch(solver);
     head.detach(solver);
     let state = explicit_state_from_head_mut(head);
+    let old_full_len = state.full_len();
     let retained: Vec<Literal> = state
         .literals
         .as_slice()
@@ -904,6 +986,7 @@ fn simplify_explicit_clause(head: &mut ClauseHead, solver: &mut Solver) -> bool 
     state.literals.assign_from_slice(&retained);
     state.active_len = state.full_len();
     state.contracted = false;
+    state.preserve_retained_allocation(old_full_len);
     state.sync_head();
     head.attach(solver);
     false
@@ -990,6 +1073,9 @@ pub(crate) fn clause_head_destroy(
     detach: bool,
 ) {
     if let Some(solver) = solver {
+        if head.info.learnt() {
+            solver.free_learnt_bytes(u64::from(head.compute_alloc_size()));
+        }
         if detach {
             if matches!(head.owner_kind, ClauseOwnerKind::Explicit) {
                 explicit_state_from_head(head).remove_current_undo_watch(solver);
@@ -1030,14 +1116,14 @@ pub(crate) fn clause_head_clone_attach(head: &ClauseHead, other: &mut Solver) ->
         ClauseOwnerKind::Explicit => {
             let state = explicit_state_from_head(head);
             let rep = ClauseRep::prepared(state.literals.as_slice(), head.info);
-            let (head_ptr, _constraint_ptr) = build_explicit_clause(&rep);
+            let (head_ptr, _constraint_ptr) = build_explicit_clause(other, &rep);
             unsafe { (*head_ptr).attach(other) };
             head_ptr
         }
         ClauseOwnerKind::Shared => {
             let state = shared_state_from_head(head);
             let (head_ptr, _constraint_ptr) =
-                build_shared_clause_from_ptr(state.shared, head.info, &head.head, true);
+                build_shared_clause_from_ptr(other, state.shared, head.info, &head.head, true);
             unsafe { (*head_ptr).attach(other) };
             head_ptr
         }
@@ -1093,6 +1179,7 @@ pub(crate) fn clause_head_strengthen(
         state.contracted = false;
         state.extend_on_backtrack = false;
     }
+    state.preserve_retained_allocation(old_full_len);
     if literal == !solver.tag_literal() {
         state.head.info.set_tagged(false);
     }
@@ -1725,13 +1812,13 @@ impl ClauseCreator {
         if lits.is_empty() {
             return ClauseStatus::Empty;
         }
-        let mut temp = [lit_false; 3];
-        let prepared = Self::prepare_span(
+        let mut prepared_lits = LitVec::new();
+        prepared_lits.assign_from_slice(lits);
+        let prepared = Self::prepare_vec(
             solver,
-            lits,
-            ClauseInfo::default(),
+            &mut prepared_lits,
             CLAUSE_FLAG_NONE,
-            &mut temp,
+            ClauseInfo::default(),
         );
         Self::status_prepared(solver, &prepared)
     }
@@ -1830,13 +1917,13 @@ impl ClauseCreator {
         ty: ConstraintType,
     ) -> ClauseCreationResult {
         assert!(!solver.has_conflict());
-        let mut temp = [lit_false; 3];
-        let prepared = Self::prepare_span(
+        let mut prepared_lits = LitVec::new();
+        prepared_lits.assign_from_slice(clause.literals());
+        let prepared = Self::prepare_vec(
             solver,
-            clause.literals(),
-            ClauseInfo::new(ty),
+            &mut prepared_lits,
             CLAUSE_FLAG_NONE,
-            &mut temp,
+            ClauseInfo::new(ty),
         );
         let status = Self::status_prepared(solver, &prepared);
         let implicit_limit =
@@ -1857,7 +1944,13 @@ impl ClauseCreator {
         }
         let mut result = ClauseCreationResult::new(ptr::null_mut(), status);
         if prepared.size > implicit_limit {
-            result.local = Self::new_unshared(solver, clause, &temp[..2], prepared.info);
+            result.local = if prepared.size > EXPLICIT_CLAUSE_MAX_SHORT_LEN
+                && should_physically_share(solver, ty)
+            {
+                Self::new_integrated_shared(solver, clause, prepared.literals(), prepared.info)
+            } else {
+                Self::new_unshared(solver, clause, prepared.literals(), prepared.info)
+            };
         } else if !has_flag(flags, CLAUSE_NO_ADD) {
             let _ = solver.add(&prepared, true);
             if prepared.info.learnt() {
@@ -2045,7 +2138,7 @@ impl ClauseCreator {
         flags: CreateFlag,
     ) -> *mut ClauseHead {
         let ordered = reorder_for_watch_mode(solver, clause, flags);
-        let (head_ptr, constraint_ptr) = build_explicit_clause(&ordered);
+        let (head_ptr, constraint_ptr) = build_explicit_clause(solver, &ordered);
         unsafe { (*head_ptr).attach(solver) };
         if !has_flag(flags, CLAUSE_NO_ADD) {
             solver.add_constraint(constraint_ptr);
@@ -2071,7 +2164,7 @@ impl ClauseCreator {
         let (head_ptr, constraint_ptr) = if second_false && clause.size >= compress_limit {
             build_contracted_explicit_clause(solver, clause, 2, true)
         } else {
-            build_explicit_clause(clause)
+            build_explicit_clause(solver, clause)
         };
         unsafe { (*head_ptr).attach(solver) };
         if !has_flag(flags, CLAUSE_NO_ADD) {
@@ -2090,9 +2183,38 @@ impl ClauseCreator {
         watched: &[Literal],
         info: ClauseInfo,
     ) -> *mut ClauseHead {
-        let shared = clone_shared_literals(clause);
-        let (head_ptr, _constraint_ptr) =
-            build_shared_clause_from_ptr(shared, info, watched, false);
+        let mut temp = LitVec::new();
+        temp.reserve(clause.size() as usize);
+        temp.assign_from_slice(&watched[..watched.len().min(2)]);
+        for &literal in clause.literals() {
+            if Self::watch_order(solver, literal) > 0 && !temp.as_slice().contains(&literal) {
+                temp.push_back(literal);
+            }
+        }
+        let rep = ClauseRep::prepared(temp.as_slice(), info);
+        let (head_ptr, _constraint_ptr) = build_explicit_clause(solver, &rep);
+        unsafe { (*head_ptr).attach(solver) };
+        head_ptr
+    }
+
+    fn new_integrated_shared(
+        solver: &mut Solver,
+        clause: &SharedLiterals,
+        watched: &[Literal],
+        info: ClauseInfo,
+    ) -> *mut ClauseHead {
+        let shared = Box::into_raw(Box::new(SharedLiterals::new_shareable(
+            clause.literals(),
+            info.constraint_type(),
+            1,
+        )));
+        let (head_ptr, _constraint_ptr) = build_shared_clause_from_ptr(
+            solver,
+            shared,
+            info,
+            &watched[..watched.len().min(3)],
+            false,
+        );
         unsafe { (*head_ptr).attach(solver) };
         head_ptr
     }

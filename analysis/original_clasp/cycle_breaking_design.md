@@ -13,6 +13,7 @@ Goal: keep behavior parity while avoiding cyclic Rust module dependencies that w
 - **Detail**: `StatisticObject` supports `InlineValue(f64)` to represent derived scalar statistics without allocating/boxing temporaries just to satisfy type-erasure.
 - **Constraint**: `clasp::statistics` must not depend on solver/runtime types.
 - **Compatibility**: `clasp::solver_types` may re-export `StatisticObject`/`StatisticType` to keep the current public API stable during the transition.
+- **Implementation note**: `clasp::statistics` now stays as the stable public facade while the internals are split into `src/clasp/statistics/object.rs` for the type-erased object model and `src/clasp/statistics/store.rs` for `StatsVisitor` plus the writable/external `ClaspStatistics` store.
 
 As of Bundle A refactor, `clasp::solver_types` re-exports `StatisticObject`/`StatisticType` from `clasp::statistics` and implements `StatisticMap` for `CoreStats`, `JumpStats`, `ExtendedStats`, and `SolverStats`.
 
@@ -32,8 +33,10 @@ As of Bundle A refactor, `clasp::solver_types` re-exports `StatisticObject`/`Sta
 
 - **Why**: The upstream Bundle A files are a single SCC in practice, but they are too large to port honestly into single Rust files without recreating the same cycle pressure. The upstream units also mix several different responsibilities: statistics, assignment/reason packing, watch storage, clause runtime, solver search state, and shared runtime services.
 - **Design**: Keep the public Rust module names aligned with upstream concepts (`clasp::solver_types`, `clasp::clause`, `clasp::solver`, `clasp::shared_context`), but split the implementation into smaller support modules under `src/clasp/` as needed.
-- **Planned split**:
+
+- **Implemented split**:
 	- `clasp::solver_types`: statistics aggregates, reason/data stores, `ValueSet`, `Assignment`, watch types, `ImpliedLiteral`, `ImpliedList`, and `ClauseHead` support types.
+	  The public module now delegates to `src/clasp/solver_types/stats.rs` for `CoreStats`/`JumpStats`/`ExtendedStats`/`SolverStats` and to `src/clasp/solver_types/runtime.rs` for the assignment, reason-store, watch, implied-literal, and `SolverSet` runtime helpers.
 	- `clasp::clause`: `SharedLiterals`, `ClauseCreator`, explicit clause runtime (`Clause`), and loop-formula/shared-clause adapters when needed.
 	- `clasp::solver`: assignment/watch kernel, propagation queue, trail/backtrack/root-level handling, clause/constraint attachment, conflict storage, and solver-owned runtime state.
 	- `clasp::shared_context`: `VarInfo`, short implication graph, problem/shared statistics plumbing, solver ownership/attachment, and the subset of context runtime directly required by Bundle A.

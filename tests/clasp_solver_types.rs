@@ -1,7 +1,8 @@
 use rust_clasp::clasp::constraint::ConstraintType;
 use rust_clasp::clasp::constraint::{ClauseHead, Constraint};
 use rust_clasp::clasp::solver_types::{
-    ClauseWatch, CoreStats, ExtendedStats, GenericWatch, JumpStats, SolverStats, StatisticType,
+    ClauseWatch, CoreStats, ExtendedStats, GenericWatch, JumpStats, SolverSet, SolverStats,
+    StatisticType,
 };
 
 #[test]
@@ -72,6 +73,21 @@ fn watch_helper_predicates_match_pointer_identity() {
     let constraint_match = GenericWatch::eq_constraint(constraint_a);
     assert!(constraint_match.matches(&GenericWatch::new(constraint_a, 7)));
     assert!(!constraint_match.matches(&GenericWatch::new(constraint_b, 7)));
+}
+
+#[test]
+fn solver_set_alias_matches_upstream_bitset_surface() {
+    let mut set = SolverSet::new();
+
+    assert_eq!(SolverSet::MAX_COUNT, 64);
+    assert!(set.add(1));
+    assert!(set.add(63));
+    assert!(set.contains(1));
+    assert!(set.contains(63));
+    assert_eq!(set.count(), 2);
+    assert!(set.remove(1));
+    assert!(!set.contains(1));
+    assert_eq!(set.rep(), 1u64 << 63);
 }
 
 #[test]

@@ -6,6 +6,10 @@
 //! instead of the cycle-heavy implementation file.
 
 use crate::clasp::literal::{Literal, ValT, value_free};
+use crate::clasp::shared_context::VarInfo;
+use crate::clasp::solver_strategies::{SearchStrategy, UpdateMode};
+use crate::clasp::solver_types::ValueSet;
+use crate::potassco::enums::EnumTag;
 
 pub use crate::clasp::constraint::{
     Antecedent, CCMinRecursive, DecisionHeuristic, PostPropagator, PostPropagatorDyn, SelectFirst,
@@ -34,12 +38,51 @@ impl UndoMode {
 }
 
 impl Solver {
+    pub fn search_mode(&self) -> SearchStrategy {
+        match self.strategies().search {
+            value if value == SearchStrategy::NoLearning as u32 => SearchStrategy::NoLearning,
+            _ => SearchStrategy::UseLearning,
+        }
+    }
+
+    pub fn update_mode(&self) -> UpdateMode {
+        UpdateMode::from_underlying(self.strategies().up_mode as u8)
+            .unwrap_or(UpdateMode::UpdateOnPropagate)
+    }
+
+    pub fn compress_limit(&self) -> u32 {
+        match self.strategies().compress {
+            0 => u32::MAX,
+            value => value,
+        }
+    }
+
+    pub fn restart_on_model(&self) -> bool {
+        self.strategies().restart_on_model != 0
+    }
+
+    pub fn var_info(&self, var: u32) -> VarInfo {
+        self.shared_context()
+            .filter(|shared| shared.valid_var(var))
+            .map(|shared| shared.var_info(var))
+            .unwrap_or_default()
+    }
+
+    pub fn is_master(&self) -> bool {
+        self.shared_context()
+            .is_some_and(|shared| core::ptr::eq(self, shared.master_ref()))
+    }
+
     pub fn num_aux_vars(&self) -> u32 {
         self.num_vars().saturating_sub(self.num_problem_vars())
     }
 
     pub fn num_free_vars(&self) -> u32 {
         self.assignment().free().saturating_sub(1)
+    }
+
+    pub fn pref(&self, var: u32) -> ValueSet {
+        self.assignment().pref(var)
     }
 
     pub fn set_backtrack_level_with_mode(&mut self, level: u32, mode: UndoMode) {

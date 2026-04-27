@@ -281,11 +281,15 @@ fn new_contracted_clause_keeps_hidden_tail_in_reason_but_not_active_size() {
         lits.push(pos_lit(var));
     }
     let rep = ClauseRep::create(&lits, ClauseInfo::new(ConstraintType::Conflict));
-    let head = unsafe { &mut *new_contracted_clause(&mut solver, &rep, 3, false) };
+    let head = unsafe { &mut *new_contracted_clause(&mut solver, &rep, 3, true) };
     solver.add_learnt_constraint(head.constraint_ptr(), rep.size, ConstraintType::Conflict);
 
     assert!(head.size() < lits.len() as u32);
-    assert_eq!(head.to_lits(), lits);
+    let clause_lits = head.to_lits();
+    assert_eq!(clause_lits.len(), lits.len());
+    for lit in &lits {
+        assert!(clause_lits.contains(lit));
+    }
 
     assert!(solver.assume(neg_lit(1)));
     assert!(solver.propagate());
@@ -299,6 +303,297 @@ fn new_contracted_clause_keeps_hidden_tail_in_reason_but_not_active_size() {
     assert_eq!(reason.len(), lits.len() - 1);
 
     head.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn clause_contracted_accessor_matches_explicit_and_shared_runtime_state() {
+    let mut solver = test_solver(6);
+    let lits = [
+        pos_lit(1),
+        pos_lit(2),
+        pos_lit(3),
+        pos_lit(4),
+        pos_lit(5),
+        pos_lit(6),
+    ];
+    for var in 4..=6 {
+        assert!(solver.assume(neg_lit(var)));
+    }
+
+    let rep = ClauseRep::create(&lits, ClauseInfo::new(ConstraintType::Conflict));
+    let head = unsafe { &mut *new_contracted_clause(&mut solver, &rep, 3, false) };
+    assert!(head.contracted());
+    assert!(!head.is_small());
+    assert!(!head.strengthened());
+    head.destroy(Some(&mut solver), true);
+
+    let mut solver = test_solver(4);
+    let explicit = create_explicit_clause(
+        &mut solver,
+        &[pos_lit(1), pos_lit(2), pos_lit(3), pos_lit(4)],
+        ClauseInfo::new(ConstraintType::Static),
+    );
+    let explicit = unsafe { &mut *explicit };
+    assert!(!explicit.contracted());
+    assert!(explicit.is_small());
+    assert_eq!(explicit.compute_alloc_size(), 32);
+    explicit.destroy(Some(&mut solver), true);
+
+    let mut solver = test_solver(4);
+    let shared = unsafe {
+        &mut *new_shared_clause(
+            &mut solver,
+            &[pos_lit(1), pos_lit(2), pos_lit(3), pos_lit(4)],
+            ClauseInfo::new(ConstraintType::Static),
+        )
+    };
+    assert!(!shared.contracted());
+    assert!(shared.is_small());
+    assert!(!shared.strengthened());
+    shared.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn explicit_large_clause_keeps_non_small_storage_after_shrinking_to_five_literals() {
+    let mut solver = test_solver(6);
+    let head = unsafe {
+        &mut *create_explicit_clause(
+            &mut solver,
+            &[
+                pos_lit(1),
+                pos_lit(2),
+                pos_lit(3),
+                pos_lit(4),
+                pos_lit(5),
+                pos_lit(6),
+            ],
+            ClauseInfo::new(ConstraintType::Static),
+        )
+    };
+
+    let alloc_before = head.compute_alloc_size();
+    assert!(!head.is_small());
+    assert!(!head.strengthened());
+
+    let result = head.strengthen(&mut solver, pos_lit(6), false);
+    assert!(result.lit_removed);
+    assert!(!result.remove_clause);
+    assert_eq!(head.size(), 5);
+    assert!(!head.is_small());
+    assert!(!head.strengthened());
+    assert!(head.compute_alloc_size() < alloc_before);
+    assert_ne!(head.compute_alloc_size(), 32);
+
+    head.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn contracted_learnt_clause_strengthening_preserves_retained_allocation_metadata() {
+    let mut solver = test_solver(12);
+    let mut clause = LitVec::new();
+    clause.push_back(pos_lit(1));
+    for var in 2..=12 {
+        assert!(solver.assume(neg_lit(var)));
+        clause.push_back(pos_lit(var));
+    }
+
+    solver.strategies_mut().compress = 4;
+    let head = unsafe {
+        &mut *ClauseCreator::create(
+            &mut solver,
+            &mut clause,
+            0,
+            ClauseInfo::new(ConstraintType::Conflict),
+        )
+        .local
+    };
+
+    let alloc_before = head.compute_alloc_size();
+    assert!(head.contracted());
+    assert!(!head.is_small());
+    assert!(!head.strengthened());
+
+    assert!(head.strengthen(&mut solver, pos_lit(12), true).lit_removed);
+    assert!(head.strengthened());
+    assert_eq!(head.compute_alloc_size(), alloc_before);
+
+    solver.undo_until(solver.level(9).saturating_sub(1));
+    assert!(head.size() > 3);
+
+    let removed = [
+        pos_lit(2),
+        pos_lit(6),
+        pos_lit(9),
+        pos_lit(8),
+        pos_lit(5),
+        pos_lit(4),
+        pos_lit(3),
+    ];
+    for lit in removed {
+        assert!(head.strengthen(&mut solver, lit, true).lit_removed);
+    }
+    let clause_lits = head.to_lits();
+    assert!(head.size() <= 4);
+    for lit in removed {
+        assert!(!clause_lits.contains(&lit));
+    }
+    assert!(!head.is_small());
+    assert!(head.strengthened());
+    assert_eq!(head.compute_alloc_size(), alloc_before);
+
+    head.destroy(Some(&mut solver), true);
+}
+
+#[test]
+fn local_learnt_clause_memory_accounting_tracks_explicit_and_shared_lifetimes() {
+    let mut solver = test_solver(8);
+
+    let explicit = create_explicit_clause(
+        &mut solver,
+        &[
+            pos_lit(1),
+            pos_lit(2),
+            pos_lit(3),
+            pos_lit(4),
+            pos_lit(5),
+            pos_lit(6),
+        ],
+        ClauseInfo::new(ConstraintType::Conflict),
+    );
+    let explicit_bytes = unsafe { u64::from((*explicit).compute_alloc_size()) };
+    assert_eq!(solver.learnt_bytes(), explicit_bytes);
+
+    let shared = new_shared_clause(
+        &mut solver,
+        &[pos_lit(1), pos_lit(2), pos_lit(3), pos_lit(4)],
+        ClauseInfo::new(ConstraintType::Conflict),
+    );
+    assert_eq!(solver.learnt_bytes(), explicit_bytes + 32);
+
+    unsafe {
+        (*shared).destroy(Some(&mut solver), true);
+    }
+    assert_eq!(solver.learnt_bytes(), explicit_bytes);
+
+    unsafe {
+        (*explicit).destroy(Some(&mut solver), true);
+    }
+    assert_eq!(solver.learnt_bytes(), 0);
+}
+
+#[test]
+fn integrate_long_unshared_clause_uses_explicit_storage_and_explicit_allocation_size() {
+    let mut solver = test_solver(6);
+    let shared = SharedLiterals::new(
+        &[
+            pos_lit(1),
+            pos_lit(2),
+            pos_lit(3),
+            pos_lit(4),
+            pos_lit(5),
+            pos_lit(6),
+        ],
+        ConstraintType::Conflict,
+    );
+
+    let result = ClauseCreator::integrate(&mut solver, &shared, CLAUSE_NO_ADD);
+    assert!(result.ok());
+    assert!(!result.local.is_null());
+
+    let head = unsafe { &mut *result.local };
+    assert!(!head.is_small());
+    assert_eq!(solver.learnt_bytes(), u64::from(head.compute_alloc_size()));
+    assert!(head.compute_alloc_size() > 32);
+
+    head.destroy(Some(&mut solver), true);
+    assert_eq!(solver.learnt_bytes(), 0);
+}
+
+#[test]
+fn integrate_long_shared_clause_uses_local_shared_surrogate_when_physical_share_is_enabled() {
+    let mut ctx = SharedContext::new();
+    ctx.set_physical_share_learnts(true);
+    for _ in 0..6 {
+        let _ = ctx.add_var();
+    }
+    let solver_ptr = ctx.start_add_constraints() as *mut Solver;
+    let _ = ctx.end_init();
+    let solver = unsafe { &mut *solver_ptr };
+
+    let shared = SharedLiterals::new(
+        &[
+            pos_lit(1),
+            pos_lit(2),
+            pos_lit(3),
+            pos_lit(4),
+            pos_lit(5),
+            pos_lit(6),
+        ],
+        ConstraintType::Conflict,
+    );
+
+    let result = ClauseCreator::integrate(solver, &shared, CLAUSE_NO_ADD);
+    assert!(result.ok());
+    assert!(!result.local.is_null());
+
+    let head = unsafe { &mut *result.local };
+    assert_eq!(head.size(), 6);
+    assert!(head.is_small());
+    assert_eq!(head.compute_alloc_size(), 32);
+    assert_eq!(solver.learnt_bytes(), 32);
+
+    head.destroy(Some(solver), true);
+    assert_eq!(solver.learnt_bytes(), 0);
+}
+
+#[test]
+fn clone_attach_preserves_integrated_shared_local_clause_runtime() {
+    let mut ctx = SharedContext::new();
+    ctx.set_physical_share_learnts(true);
+    for _ in 0..6 {
+        let _ = ctx.add_var();
+    }
+    let solver_ptr = ctx.start_add_constraints() as *mut Solver;
+    let _ = ctx.end_init();
+    let solver = unsafe { &mut *solver_ptr };
+
+    let shared = SharedLiterals::new(
+        &[
+            pos_lit(1),
+            pos_lit(2),
+            neg_lit(3),
+            neg_lit(4),
+            neg_lit(5),
+            neg_lit(6),
+        ],
+        ConstraintType::Conflict,
+    );
+    let local = ClauseCreator::integrate(solver, &shared, CLAUSE_NO_ADD).local;
+    let clause = unsafe { &mut *local };
+
+    let mut other = test_solver(6);
+    let clone = unsafe { &mut *clause.clone_attach(&mut other) };
+    assert_eq!(clone.to_lits(), clause.to_lits());
+    assert_eq!(clone.size(), 6);
+    assert!(clone.is_small());
+    assert_eq!(clone.compute_alloc_size(), 32);
+    assert_eq!(other.num_clause_watches(!pos_lit(1)), 1);
+    assert_eq!(other.num_clause_watches(!pos_lit(2)), 1);
+
+    assert!(other.assume(neg_lit(1)));
+    assert!(other.propagate());
+    assert!(other.assume(pos_lit(4)));
+    assert!(other.propagate());
+    assert!(other.assume(pos_lit(5)));
+    assert!(other.propagate());
+    assert!(other.assume(pos_lit(6)));
+    assert!(other.propagate());
+    assert!(other.assume(neg_lit(2)));
+    assert!(other.propagate());
+    assert!(other.is_true(neg_lit(3)));
+
+    clone.destroy(Some(&mut other), true);
+    clause.destroy(Some(solver), true);
 }
 
 #[test]

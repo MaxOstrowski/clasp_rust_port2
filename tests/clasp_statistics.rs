@@ -351,11 +351,20 @@ fn compatibility_wrappers_preserve_statistics_surface_behavior() {
     assert_eq!(lhs.type_id(), rhs_same_type.type_id());
     assert!(lhs.eq_type_id(&rhs_same_type));
     assert_eq!(inline.type_id(), StatisticObjectTypeId::InlineValue);
+    assert_eq!(lhs.r#type(), StatisticsType::Value);
     assert!(!lhs.eq_type_id(&rhs_other_type));
+    assert_eq!(lhs.object(), core::ptr::from_ref(&value_a).cast::<()>());
+    assert_eq!(
+        rhs_same_type.object(),
+        core::ptr::from_ref(&value_b).cast::<()>()
+    );
+    assert!(inline.object().is_null());
 
     let array = PairStats([2, 9]);
     let array_obj = StatisticObject::array(&array);
+    assert_eq!(array_obj.r#type(), StatisticsType::Array);
     assert_eq!(array_obj.at_index(1).value(), 9.0);
+    assert_eq!(array_obj.object(), core::ptr::from_ref(&array).cast::<()>());
 
     struct ExternalVisitor {
         seen: u32,
@@ -388,4 +397,17 @@ fn compatibility_wrappers_preserve_statistics_surface_behavior() {
     assert!(!stats.visitExternal("missing", &mut visitor));
     assert_eq!(visitor.seen, 1);
     assert_eq!(visitor.value, 7.0);
+}
+
+#[test]
+fn clasp_statistics_type_wrapper_matches_upstream_surface() {
+    let fixed = 7u64;
+    let mut stats = ClaspStatistics::new();
+    let root = stats.root();
+    let mutable = stats.add(root, "mutable", StatisticsType::Value);
+    let external = stats.addObject(root, "fixed", StatisticObject::from_value(&fixed), false);
+
+    assert_eq!(stats.r#type(root), StatisticsType::Map);
+    assert_eq!(stats.r#type(mutable), StatisticsType::Value);
+    assert_eq!(stats.r#type(external), StatisticsType::Value);
 }

@@ -804,6 +804,10 @@ impl SharedContext {
     }
 
     pub fn start_add_constraints(&mut self) -> &mut Solver {
+        self.start_add_constraints_with_guess(100)
+    }
+
+    pub fn start_add_constraints_with_guess(&mut self, _constraint_guess: u32) -> &mut Solver {
         self.refresh_solver_links();
         self.frozen = false;
         let mut expected_size = (self.num_vars() + 1) << 1;
@@ -819,6 +823,10 @@ impl SharedContext {
     }
 
     pub fn end_init(&mut self) -> bool {
+        self.end_init_with_attach_all(false)
+    }
+
+    pub fn end_init_with_attach_all(&mut self, attach_all: bool) -> bool {
         self.refresh_solver_links();
         if self.step_literal == lit_false {
             self.require_step_var();
@@ -832,7 +840,17 @@ impl SharedContext {
         self.stats.constraints.ternary = self.btig.num_ternary();
         self.btig.mark_shared(false);
         self.frozen = true;
-        self.master.end_init()
+        let ok = self.master.end_init();
+        if !ok || !attach_all {
+            return ok;
+        }
+        let solver_count = self.num_solvers();
+        for solver_id in 1..solver_count {
+            if !self.attach(solver_id) {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn num_binary(&self) -> u32 {
@@ -901,6 +919,19 @@ impl SharedContext {
         self.share_problem
     }
 
+    pub fn set_physical_share_problem(&mut self, enabled: bool) {
+        self.share_problem = enabled;
+    }
+
+    pub fn set_physical_share_learnts(&mut self, enabled: bool) {
+        self.share_learnts = enabled;
+    }
+
+    pub fn set_physical_share_modes(&mut self, problem: bool, learnts: bool) {
+        self.share_problem = problem;
+        self.share_learnts = learnts;
+    }
+
     pub fn physical_share(&self, constraint_type: ConstraintType) -> bool {
         if matches!(constraint_type, ConstraintType::Static) {
             self.share_problem
@@ -964,6 +995,27 @@ impl SharedContext {
         ok
     }
 
+    /// Compatibility shim for the upstream `attach(Solver&)` overload.
+    ///
+    /// This wrapper is unsafe because Rust cannot safely express taking a
+    /// mutable borrow of the context while simultaneously referencing a solver
+    /// owned by that same context.
+    ///
+    /// # Safety
+    ///
+    /// `solver` must be either null or a valid pointer to a `Solver` that is
+    /// still owned by this `SharedContext` for the duration of the call.
+    pub unsafe fn attach_solver(&mut self, solver: *mut Solver) -> bool {
+        if solver.is_null() {
+            return false;
+        }
+        let solver = unsafe { &*solver };
+        let belongs_to_self = solver.shared_context().is_some_and(|shared| {
+            std::ptr::eq(shared as *const SharedContext, self as *const SharedContext)
+        });
+        belongs_to_self && self.attach(solver.id())
+    }
+
     pub fn detach(&mut self, solver_id: u32, _reset: bool) {
         if solver_id == 0 {
             return;
@@ -971,6 +1023,27 @@ impl SharedContext {
         self.refresh_solver_links();
         if let Some(solver) = self.solver(solver_id) {
             solver.detach_local_runtime();
+        }
+    }
+
+    /// Compatibility shim for the upstream `detach(Solver&, bool)` overload.
+    ///
+    /// This wrapper is unsafe for the same aliasing reason as
+    /// [`SharedContext::attach_solver`].
+    ///
+    /// # Safety
+    ///
+    /// `solver` must be either null or a valid pointer to a `Solver` that is
+    /// still owned by this `SharedContext` for the duration of the call.
+    pub unsafe fn detach_solver(&mut self, solver: *mut Solver, reset: bool) {
+        if solver.is_null() {
+            return;
+        }
+        let solver = unsafe { &*solver };
+        if solver.shared_context().is_some_and(|shared| {
+            std::ptr::eq(shared as *const SharedContext, self as *const SharedContext)
+        }) {
+            self.detach(solver.id(), reset);
         }
     }
 

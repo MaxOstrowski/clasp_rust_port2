@@ -162,6 +162,22 @@ impl ClauseHead {
         crate::clasp::clause::clause_head_size(self)
     }
 
+    pub fn is_small(&self) -> bool {
+        crate::clasp::clause::clause_head_is_small(self)
+    }
+
+    pub fn contracted(&self) -> bool {
+        crate::clasp::clause::clause_head_contracted(self)
+    }
+
+    pub fn strengthened(&self) -> bool {
+        crate::clasp::clause::clause_head_strengthened(self)
+    }
+
+    pub fn compute_alloc_size(&self) -> u32 {
+        crate::clasp::clause::clause_head_compute_alloc_size(self)
+    }
+
     pub fn to_lits(&self) -> Vec<Literal> {
         crate::clasp::clause::clause_head_to_lits(self)
     }
@@ -287,6 +303,7 @@ pub struct Solver {
     undo_watches: Vec<Vec<*mut Constraint>>,
     constraints: Vec<*mut Constraint>,
     learnts: Vec<*mut Constraint>,
+    learnt_bytes: u64,
     post_propagators: PropagatorList,
     posts_active: bool,
     heuristic: Box<dyn DecisionHeuristic>,
@@ -356,6 +373,7 @@ impl Solver {
             undo_watches: vec![Vec::new()],
             constraints: Vec::new(),
             learnts: Vec::new(),
+            learnt_bytes: 0,
             post_propagators: PropagatorList::default(),
             posts_active: false,
             heuristic: Box::<SelectFirst>::default(),
@@ -813,6 +831,20 @@ impl Solver {
         &mut self.stats
     }
 
+    pub fn learnt_bytes(&self) -> u64 {
+        self.learnt_bytes
+    }
+
+    pub fn add_learnt_bytes(&mut self, bytes: u32) {
+        self.learnt_bytes = self.learnt_bytes.saturating_add(u64::from(bytes));
+    }
+
+    pub fn free_learnt_bytes(&mut self, bytes: u64) {
+        self.learnt_bytes = self
+            .learnt_bytes
+            .saturating_sub(bytes.min(self.learnt_bytes));
+    }
+
     pub fn strategies(&self) -> &SolverStrategies {
         &self.strategies
     }
@@ -1192,12 +1224,37 @@ impl Solver {
         if !self.pop_root_level(0) || !self.simplify() || !self.propagate() {
             return false;
         }
+        self.stats.add_path(path.len());
         for &literal in path {
             if !self.push_root(literal) {
                 return false;
             }
         }
+        self.cc_info.set_activity(1);
         true
+    }
+
+    pub fn copy_guiding_path(&self, out: &mut LitVec) {
+        let mut first_aux = self.root_level.saturating_add(1);
+        out.clear();
+
+        for level in 1..=self.root_level {
+            let decision = self.decision(level);
+            if !self.aux_var(decision.var()) {
+                out.push_back(decision);
+            } else if level < first_aux {
+                first_aux = level;
+            }
+        }
+
+        for implied in &self.implied_lits {
+            if implied.level <= self.root_level
+                && (implied.ante.ante().is_null() || implied.level < first_aux)
+                && !self.aux_var(implied.lit.var())
+            {
+                out.push_back(implied.lit);
+            }
+        }
     }
 
     fn unit_propagate(&mut self) -> bool {
@@ -2051,7 +2108,7 @@ impl Solver {
     }
 
     fn reduce_reached(&self, limits: &SearchLimits<'_>) -> bool {
-        self.num_learnt_constraints() > limits.learnts
+        self.num_learnt_constraints() > limits.learnts || self.learnt_bytes > limits.memory
     }
 
     fn restart_reached(&self, limits: &SearchLimits<'_>, local_used: u64) -> bool {
