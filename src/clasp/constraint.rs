@@ -9,7 +9,8 @@ use crate::clasp::clause::{
     ClauseRep, SharedLiterals,
 };
 use crate::clasp::literal::{
-    LitVec, Literal, ValT, lit_false, value_false, value_free, value_true,
+    LitVec, Literal, ValT, WeightLitVec, WeightLiteral, lit_false, value_false, value_free,
+    value_true, weight_max,
 };
 use crate::clasp::pod_vector::{VectorLike, shrink_vec_to};
 use crate::clasp::shared_context::SharedContext;
@@ -276,6 +277,16 @@ pub trait DecisionHeuristic {
 
     fn update_var(&mut self, _solver: &mut Solver, _var: u32, _num: u32) {}
 
+    fn simplify(&mut self, _solver: &Solver, _new_facts: &[Literal]) {}
+
+    fn undo(&mut self, _solver: &Solver, _undo: &[Literal]) {}
+
+    fn update_reason(&mut self, _solver: &Solver, _lits: &[Literal], _resolve_lit: Literal) {}
+
+    fn bump(&mut self, _solver: &Solver, _lits: &[WeightLiteral], _adj: f64) -> bool {
+        false
+    }
+
     fn select_literal(&self, _solver: &Solver, var: u32, _idx: u32) -> Literal {
         Literal::new(var, false)
     }
@@ -366,7 +377,33 @@ impl Default for Solver {
     }
 }
 
+impl Drop for Solver {
+    fn drop(&mut self) {
+        self.free_mem();
+    }
+}
+
 impl Solver {
+    fn free_mem(&mut self) {
+        for constraint_ptr in core::mem::take(&mut self.constraints) {
+            unsafe {
+                Constraint::destroy_raw(constraint_ptr, None, false);
+            }
+        }
+        for constraint_ptr in core::mem::take(&mut self.learnts) {
+            unsafe {
+                Constraint::destroy_raw(constraint_ptr, None, false);
+            }
+        }
+        self.post_propagators.clear();
+        if let Some(enum_constraint) = self.enum_constraint.take() {
+            unsafe {
+                Constraint::destroy_raw(enum_constraint, None, false);
+            }
+        }
+        self.learnt_bytes = 0;
+    }
+
     /// Returns the frozen state of a decision level.
     pub fn frozen_level(&self, level: u32) -> bool {
         self.level_freeze
@@ -619,6 +656,14 @@ impl Solver {
         self.shared = NonNull::new(shared);
     }
 
+    pub fn reset(&mut self) {
+        let mut fresh = Self::new();
+        fresh.shared = self.shared;
+        fresh.id = self.id;
+        core::mem::swap(self, &mut fresh);
+        self.strategies.id = self.id;
+    }
+
     pub fn shared_context(&self) -> Option<&SharedContext> {
         self.shared.map(|ptr| unsafe { ptr.as_ref() })
     }
@@ -783,10 +828,17 @@ impl Solver {
     pub fn pop_root_level(&mut self, levels: u32) -> bool {
         self.clear_stop_conflict();
         let new_root = self.root_level.saturating_sub(levels.min(self.root_level));
+        if levels != 0 {
+            self.cc_info.set_activity(1);
+        }
+        let tag_active = self.tag_literal.var() != 0 && self.is_true(self.tag_literal);
         self.root_level = new_root;
         self.backtrack_level = new_root;
         self.implied_lits.front = 0;
         self.undo_until(new_root);
+        if tag_active && !self.is_true(self.tag_literal) {
+            self.remove_conditional();
+        }
         !self.has_conflict
     }
 
@@ -802,10 +854,17 @@ impl Solver {
                 }
             }
         }
+        if levels != 0 {
+            self.cc_info.set_activity(1);
+        }
+        let tag_active = self.tag_literal.var() != 0 && self.is_true(self.tag_literal);
         self.root_level = new_root;
         self.backtrack_level = new_root;
         self.implied_lits.front = 0;
         self.undo_until(new_root);
+        if tag_active && !self.is_true(self.tag_literal) {
+            self.remove_conditional();
+        }
         !self.has_conflict
     }
 
@@ -968,7 +1027,7 @@ impl Solver {
         self.last_simplify = self.num_assigned_vars();
         self.assignment.trail.reserve(shared_num_vars as usize + 2);
         self.reserve_watch_capacity(((shared_num_vars + 2) << 1) as usize);
-        self.assignment.ensure_var(shared_num_vars + 1);
+        self.assignment.ensure_var(shared_num_vars);
         self.update_vars(shared_num_vars);
         self.constraints.reserve((num_cons_guess / 2) as usize);
         self.level_starts.reserve(25);
@@ -1033,6 +1092,9 @@ impl Solver {
     }
 
     pub fn end_init(&mut self) -> bool {
+        if self.has_conflict() {
+            return false;
+        }
         let heuristic = self.heuristic.as_mut() as *mut dyn DecisionHeuristic;
         unsafe {
             (*heuristic).end_init(self);
@@ -1080,20 +1142,14 @@ impl Solver {
     }
 
     pub fn update_vars(&mut self, new_num_vars: u32) {
-        self.num_vars = self.num_vars.min(new_num_vars);
-        self.num_problem_vars = self.num_problem_vars.min(new_num_vars);
-        self.assignment
-            .truncate_vars(self.num_vars.max(self.num_problem_vars));
-        self.watches
-            .truncate((((self.num_vars + 1) << 1) as usize).max(2));
-        if self.tag_literal.var() > self.num_vars {
-            self.tag_literal = Literal::default();
+        if self.num_vars > new_num_vars {
+            let _ = self.pop_vars(self.num_vars - new_num_vars, false);
+        } else {
+            self.assignment.ensure_var(new_num_vars);
+            self.reserve_watch_capacity((((new_num_vars + 1) << 1) as usize).max(2));
+            self.num_vars = self.num_vars.max(new_num_vars);
         }
-        for decision in &mut self.decisions {
-            if decision.var() > self.num_vars {
-                *decision = Literal::default();
-            }
-        }
+        self.num_problem_vars = self.num_problem_vars.max(new_num_vars).min(self.num_vars);
     }
 
     pub fn decision(&self, level: u32) -> Literal {
@@ -1443,6 +1499,7 @@ impl Solver {
         if self.is_true(literal) {
             return true;
         }
+        self.stats.core.choices += 1;
         let next_level = self.decision_level + 1;
         self.set_decision_level(next_level);
         self.set_level_start(next_level, self.num_assigned_vars());
@@ -1568,6 +1625,7 @@ impl Solver {
         if !self.assume(literal) {
             return false;
         }
+        self.stats.core.choices = self.stats.core.choices.saturating_sub(1);
         self.push_root_level(1);
         self.propagate()
     }
@@ -1708,6 +1766,7 @@ impl Solver {
         if self.queue_size() > 0 && !self.propagate() {
             return false;
         }
+        let old = self.last_simplify as usize;
         let root_literals: Vec<Literal> = self
             .assignment
             .trail
@@ -1727,6 +1786,15 @@ impl Solver {
             }
         }
         self.last_simplify = self.num_assigned_vars();
+        if self.decision_level == 0 {
+            let start = old.min(self.last_simplify as usize);
+            let end = self.last_simplify as usize;
+            let solver_ptr = self as *const Solver;
+            let heuristic = self.heuristic.as_mut() as *mut dyn DecisionHeuristic;
+            unsafe {
+                (*heuristic).simplify(&*solver_ptr, &self.assignment.trail.as_slice()[start..end]);
+            }
+        }
         true
     }
 
@@ -1772,6 +1840,7 @@ impl Solver {
         if !self.assume(literal) {
             return false;
         }
+        self.stats.core.choices = self.stats.core.choices.saturating_sub(1);
         let probe_level = self.decision_level();
         self.freeze_level(probe_level);
         if self.propagate_until(propagator, None) != value_false {
@@ -1809,6 +1878,12 @@ impl Solver {
             }
             let first = self.level_start(current) as usize;
             if self.num_assigned_vars() as usize > first {
+                let undo = self.assignment.trail.as_slice()[first..].to_vec();
+                let solver_ptr = self as *const Solver;
+                let heuristic = self.heuristic.as_mut() as *mut dyn DecisionHeuristic;
+                unsafe {
+                    (*heuristic).undo(&*solver_ptr, &undo);
+                }
                 self.assignment.undo_trail(first, false);
             }
             self.decisions[current as usize] = Literal::default();
@@ -1878,6 +1953,56 @@ impl Solver {
             }
         }
         levels.len() as u32
+    }
+
+    #[allow(dead_code)]
+    fn in_degree(&mut self, out: &mut WeightLitVec) -> u32 {
+        if self.decision_level() == 0 {
+            return 1;
+        }
+        assert!(!self.has_conflict());
+        out.clear();
+        out.reserve(((self.num_assigned_vars() - self.level_start(1)) / 10) as usize);
+        let mut max_in = 1_u32;
+        let stop = self.level_start(1) as usize;
+        let trail = self.assignment.trail.as_slice().to_vec();
+        let mut temp = LitVec::new();
+        for &lit in trail[stop..].iter().rev() {
+            let level = self.assignment.level(lit.var());
+            let antecedent = *self.assignment.reason(lit.var());
+            if !antecedent.is_null() && antecedent.type_() != Antecedent::BINARY {
+                let mut in_degree = 0_u32;
+                let mut reason = antecedent;
+                reason.reason(self, lit, &mut temp);
+                for &reason_lit in temp.as_slice() {
+                    in_degree += u32::from(self.level(reason_lit.var()) != level);
+                }
+                if in_degree != 0 {
+                    out.push_back(WeightLiteral {
+                        lit,
+                        weight: in_degree.min(weight_max as u32) as i32,
+                    });
+                    max_in = max_in.max(in_degree);
+                }
+                temp.clear();
+            }
+        }
+        max_in
+    }
+
+    #[allow(dead_code)]
+    fn counter_bump_vars(&mut self, bump: u32) {
+        let mut bump_act = WeightLitVec::new();
+        let max_in = self.in_degree(&mut bump_act);
+        let solver_ptr = self as *const Solver;
+        let heuristic = self.heuristic.as_mut() as *mut dyn DecisionHeuristic;
+        unsafe {
+            (*heuristic).bump(
+                &*solver_ptr,
+                bump_act.as_slice(),
+                bump as f64 / f64::from(max_in),
+            );
+        }
     }
 
     pub fn add_constraint(&mut self, constraint: *mut Constraint) {
@@ -2390,6 +2515,11 @@ impl Solver {
         self.cc_lits.push_back(pivot);
         loop {
             let current_reason = self.conflict_lits.as_slice().to_vec();
+            let solver_ptr = self as *const Solver;
+            let heuristic = self.heuristic.as_mut() as *mut dyn DecisionHeuristic;
+            unsafe {
+                (*heuristic).update_reason(&*solver_ptr, &current_reason, pivot);
+            }
             for literal in current_reason {
                 let clause_level = self.level(literal.var());
                 if !self.seen_var(literal.var()) {
@@ -2460,6 +2590,11 @@ impl Solver {
                 let mut reason = LitVec::new();
                 let mut antecedent = antecedent;
                 antecedent.reason(self, !self.cc_lits[1], &mut reason);
+                let solver_ptr = self as *const Solver;
+                let heuristic = self.heuristic.as_mut() as *mut dyn DecisionHeuristic;
+                unsafe {
+                    (*heuristic).update_reason(&*solver_ptr, reason.as_slice(), self.cc_lits[1]);
+                }
                 for literal in reason.as_slice().iter().copied() {
                     if !self.seen_var(literal.var()) {
                         self.mark_level(self.level(literal.var()));
@@ -2919,18 +3054,14 @@ impl Solver {
         }
         if randf <= 0.0 || self.rng.drand() >= randf {
             let solver_ptr = self as *mut Solver;
-            let chose = unsafe { (*solver_ptr).heuristic.select(&mut *solver_ptr) };
-            self.stats.core.choices += u64::from(chose);
-            return chose;
+            return unsafe { (*solver_ptr).heuristic.select(&mut *solver_ptr) };
         }
         let max_var = self.num_vars() + 1;
         let mut var = self.rng.irand(max_var).max(1);
         loop {
             if self.value(var) == value_free {
                 let choice = self.heuristic.select_literal(self, var, 0);
-                let chose = self.assume(choice);
-                self.stats.core.choices += u64::from(chose);
-                return chose;
+                return self.assume(choice);
             }
             var += 1;
             if var == max_var {
@@ -2960,7 +3091,13 @@ impl Solver {
             return false;
         }
         let post_list = &mut self.post_propagators as *mut PropagatorList;
-        unsafe { (*post_list).is_model(self) }
+        if !unsafe { (*post_list).is_model(self) } {
+            return false;
+        }
+        let Some(mut constraint_ptr) = self.enumeration_constraint().and_then(NonNull::new) else {
+            return true;
+        };
+        unsafe { constraint_ptr.as_mut().valid(self) }
     }
 
     fn reduce_linear(&mut self, mut max_remove: u32, cmp: CmpScore) -> DBInfo {
@@ -3260,7 +3397,9 @@ impl Constraint {
 
     pub fn attach_to_solver(&mut self, solver: &mut Solver) {
         if let Some(mut head) = self.clause() {
-            unsafe { head.as_mut().attach(solver) };
+            unsafe {
+                head.as_mut().attach(solver);
+            }
         }
     }
 

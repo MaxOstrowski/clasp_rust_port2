@@ -2321,7 +2321,7 @@ impl SharedContext {
         let master_ptr = self.master() as *mut Solver;
         let mut seen = Vec::new();
         let mut rewrites = Vec::new();
-        let num_vars = unsafe { (*master_ptr).assignment().num_vars() };
+        let num_vars = self.num_vars();
         for var in 1..num_vars {
             if unsafe { (*master_ptr).assignment().value(var) } != value_free {
                 continue;

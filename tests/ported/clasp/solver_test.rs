@@ -126,6 +126,9 @@ struct HeuristicInitTrace {
     detached: u32,
     config_params: Vec<u32>,
     updates: Vec<(u32, u32)>,
+    simplified: Vec<Vec<i32>>,
+    undone: Vec<Vec<i32>>,
+    reasons: Vec<(Vec<i32>, i32)>,
 }
 
 struct InitTrackingHeuristic {
@@ -152,6 +155,35 @@ impl DecisionHeuristic for InitTrackingHeuristic {
 
     fn update_var(&mut self, _solver: &mut Solver, var: u32, num: u32) {
         self.trace.borrow_mut().updates.push((var, num));
+    }
+
+    fn simplify(&mut self, _solver: &Solver, new_facts: &[Literal]) {
+        self.trace.borrow_mut().simplified.push(
+            new_facts
+                .iter()
+                .copied()
+                .map(rust_clasp::clasp::literal::to_int)
+                .collect(),
+        );
+    }
+
+    fn undo(&mut self, _solver: &Solver, undo: &[Literal]) {
+        self.trace.borrow_mut().undone.push(
+            undo.iter()
+                .copied()
+                .map(rust_clasp::clasp::literal::to_int)
+                .collect(),
+        );
+    }
+
+    fn update_reason(&mut self, _solver: &Solver, lits: &[Literal], resolve_lit: Literal) {
+        self.trace.borrow_mut().reasons.push((
+            lits.iter()
+                .copied()
+                .map(rust_clasp::clasp::literal::to_int)
+                .collect(),
+            rust_clasp::clasp::literal::to_int(resolve_lit),
+        ));
     }
 
     fn select_literal(&self, _solver: &Solver, var: u32, _idx: u32) -> Literal {
@@ -864,6 +896,22 @@ fn solver_init_calls_heuristic_hooks_and_applies_sign_fix_preferences() {
 }
 
 #[test]
+fn solver_end_init_short_circuits_when_conflict_is_already_present() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(2);
+    let trace = Rc::new(RefCell::new(HeuristicInitTrace::default()));
+    solver.set_heuristic(InitTrackingHeuristic {
+        trace: Rc::clone(&trace),
+        negative_sign: false,
+    });
+    solver.set_has_conflict(true);
+
+    assert!(!solver.end_init());
+    assert_eq!(trace.borrow().end_inits, 0);
+    assert_eq!(solver.pref(1).get(ValueSet::user_value), value_free);
+}
+
+#[test]
 fn solver_reset_config_removes_reserved_look_post_and_detaches_previous_heuristic() {
     let mut solver = Solver::new();
     let trace = Rc::new(RefCell::new(HeuristicInitTrace::default()));
@@ -888,6 +936,56 @@ fn solver_reset_config_removes_reserved_look_post_and_detaches_previous_heuristi
 
     assert_eq!(solver.strategies().has_config, 0);
     assert!(solver.get_post(priority_reserved_look).is_none());
+}
+
+#[test]
+fn solver_reset_restores_fresh_solver_state_and_destroys_owned_runtime_objects() {
+    let mut ctx = SharedContext::default();
+    let _ = ctx.add_var();
+    let solver = ctx.start_add_constraints();
+    solver.set_id(7);
+    solver.set_num_vars(3);
+    solver.set_num_problem_vars(2);
+    solver.strategies_mut().has_config = 1;
+    solver.add_learnt_bytes(19);
+    solver.set_heuristic(InitTrackingHeuristic {
+        trace: Rc::new(RefCell::new(HeuristicInitTrace::default())),
+        negative_sign: true,
+    });
+
+    let static_trace = Rc::new(RefCell::new(LearntTrace::default()));
+    let learnt_trace = Rc::new(RefCell::new(LearntTrace::default()));
+    let enum_trace = Rc::new(RefCell::new(LearntTrace::default()));
+    solver.add_constraint(learnt_constraint(Rc::clone(&static_trace), false, 2, 3));
+    solver.add_learnt_constraint(
+        learnt_constraint(Rc::clone(&learnt_trace), false, 4, 5),
+        2,
+        ConstraintType::Conflict,
+    );
+    solver.set_enumeration_constraint(Some(learnt_constraint(Rc::clone(&enum_trace), false, 6, 7)));
+    let post_trace = Rc::new(RefCell::new(PostTrace::default()));
+    assert!(add_tracking_post(
+        solver,
+        Rc::clone(&post_trace),
+        priority_class_general,
+        false,
+    ));
+
+    solver.reset();
+
+    assert_eq!(static_trace.borrow().destroyed, 1);
+    assert_eq!(learnt_trace.borrow().destroyed, 1);
+    assert_eq!(enum_trace.borrow().destroyed, 1);
+    assert_eq!(solver.id(), 7);
+    assert!(solver.shared_context().is_some());
+    assert_eq!(solver.num_vars(), 0);
+    assert_eq!(solver.num_problem_vars(), 0);
+    assert_eq!(solver.learnt_bytes(), 0);
+    assert_eq!(solver.num_constraints(), 0);
+    assert!(solver.enumeration_constraint().is_none());
+    assert!(solver.get_post(priority_class_general).is_none());
+    assert_eq!(solver.strategies().has_config, 0);
+    assert_eq!(solver.pref(1).get(ValueSet::user_value), value_free);
 }
 
 #[test]
@@ -979,6 +1077,31 @@ fn solver_pop_aux_var_removes_tail_auxiliary_variables_and_reports_heuristic_upd
 }
 
 #[test]
+fn solver_update_vars_matches_shared_problem_var_growth_and_shrink() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(1);
+    solver.set_num_problem_vars(1);
+    let first_aux = solver.push_aux_var();
+    let second_aux = solver.push_aux_var();
+    solver.set_tag_literal(pos_lit(second_aux));
+
+    solver.update_vars(2);
+
+    assert_eq!(first_aux, 2);
+    assert_eq!(solver.num_vars(), 2);
+    assert_eq!(solver.num_problem_vars(), 2);
+    assert_eq!(solver.tag_literal(), Literal::default());
+    assert!(!solver.valid_var(3));
+
+    solver.update_vars(4);
+
+    assert_eq!(solver.num_vars(), 4);
+    assert_eq!(solver.num_problem_vars(), 4);
+    assert!(solver.valid_var(4));
+    assert!(solver.get_watch(pos_lit(4), 0).is_none());
+}
+
+#[test]
 fn solver_end_step_forgets_signs_and_heuristics_and_removes_reserved_look_post() {
     let mut ctx = SharedContext::default();
     let atom = ctx.add_var();
@@ -1065,7 +1188,28 @@ fn solver_test_probe_undoes_successful_probe_levels_and_notifies_post_propagator
     assert!(solver.test(pos_lit(1), post));
     assert_eq!(solver.decision_level(), 0);
     assert!(!solver.frozen_level(1));
+    assert_eq!(solver.stats().core.choices, 0);
     assert_eq!(trace.borrow().undos, 1);
+}
+
+#[test]
+fn solver_invokes_heuristic_simplify_and_undo_hooks() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(2);
+    solver.set_num_problem_vars(2);
+    let trace = Rc::new(RefCell::new(HeuristicInitTrace::default()));
+    solver.set_heuristic(InitTrackingHeuristic {
+        trace: Rc::clone(&trace),
+        negative_sign: false,
+    });
+
+    assert!(solver.force(pos_lit(1), Antecedent::new()));
+    assert!(solver.simplify());
+    assert_eq!(trace.borrow().simplified, vec![vec![1]]);
+
+    assert!(solver.assume(pos_lit(2)));
+    assert!(solver.backtrack(0));
+    assert_eq!(trace.borrow().undone, vec![vec![2]]);
 }
 
 #[test]
@@ -1589,6 +1733,7 @@ fn solver_push_root_and_stop_conflict_cover_current_control_surface() {
     assert!(solver.push_root(pos_lit(3)));
     assert_eq!(solver.root_level(), 2);
     assert_eq!(solver.decision_level(), 2);
+    assert_eq!(solver.stats().core.choices, 2);
     assert!(solver.is_true(pos_lit(1)));
     assert!(solver.is_true(pos_lit(3)));
     assert_eq!(solver.value(2), value_free);
@@ -1672,6 +1817,37 @@ fn solver_remove_conditional_deletes_tagged_learnt_clause() {
     assert_eq!(solver.num_learnt_constraints(), 1);
 
     solver.remove_conditional();
+    assert_eq!(solver.num_learnt_constraints(), 0);
+}
+
+#[test]
+fn solver_pop_root_level_removes_tagged_learnts_when_tag_literal_stops_holding() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+    let b = ctx.add_var();
+    let c = ctx.add_var();
+
+    let _ = ctx.start_add_constraints();
+    assert!(ctx.end_init());
+
+    let solver = ctx.master();
+    let tag = pos_lit(solver.push_tag_var(true));
+    let mut creator = ClauseCreator::new(Some(solver));
+    assert!(
+        creator
+            .start(ConstraintType::Conflict)
+            .add(pos_lit(a))
+            .add(pos_lit(b))
+            .add(pos_lit(c))
+            .add(!tag)
+            .end_with_defaults()
+            .ok()
+    );
+    assert_eq!(solver.num_learnt_constraints(), 1);
+
+    assert!(solver.pop_root_level(1));
+
+    assert_eq!(solver.root_level(), 0);
     assert_eq!(solver.num_learnt_constraints(), 0);
 }
 
