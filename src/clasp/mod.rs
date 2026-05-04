@@ -1,3 +1,4 @@
+pub mod asp_preprocessor;
 pub mod cb_enumerator;
 pub mod clasp_facade;
 pub mod claspfwd;

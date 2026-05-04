@@ -5,9 +5,10 @@
 //! upstream-facing solver types so downstream code can depend on `clasp::solver`
 //! instead of the cycle-heavy implementation file.
 
+use crate::clasp::asp_preprocessor::SatPreprocessor;
 use crate::clasp::literal::{Literal, ValT, value_free};
 use crate::clasp::shared_context::VarInfo;
-use crate::clasp::solver_strategies::{SearchStrategy, UpdateMode};
+use crate::clasp::solver_strategies::{Configuration, SearchStrategy, SolveParams, UpdateMode};
 use crate::clasp::solver_types::ValueSet;
 use crate::potassco::enums::EnumTag;
 
@@ -38,6 +39,15 @@ impl UndoMode {
 }
 
 impl Solver {
+    pub fn sat_prepro(&self) -> Option<&SatPreprocessor> {
+        self.shared_context().and_then(|shared| shared.sat_prepro())
+    }
+
+    pub fn search_config(&self) -> Option<SolveParams> {
+        self.shared_context()
+            .map(|shared| *shared.configuration().search(self.id()))
+    }
+
     pub fn search_mode(&self) -> SearchStrategy {
         match self.strategies().search {
             value if value == SearchStrategy::NoLearning as u32 => SearchStrategy::NoLearning,

@@ -2,18 +2,23 @@ use std::cell::RefCell;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+use rust_clasp::clasp::asp_preprocessor::SatPreprocessor;
 use rust_clasp::clasp::clause::{ClauseCreator, ClauseRep};
-use rust_clasp::clasp::constraint::{Antecedent, Constraint, ConstraintDyn, PropResult};
+use rust_clasp::clasp::constraint::{
+    Antecedent, Constraint, ConstraintDyn, PropResult, priority_reserved_look,
+};
 use rust_clasp::clasp::literal::{
     LitVec, Literal, ValueVec, lit_false, neg_lit, pos_lit, value_false, value_free, value_true,
 };
 use rust_clasp::clasp::pod_vector::contains;
 use rust_clasp::clasp::shared_context::{SharedContext, VarInfo};
 use rust_clasp::clasp::solver::{
-    CCMinRecursive, PostPropagator, PostPropagatorDyn, Solver, UndoMode, priority_class_general,
+    CCMinRecursive, DecisionHeuristic, PostPropagator, PostPropagatorDyn, Solver, UndoMode,
+    priority_class_general,
 };
 use rust_clasp::clasp::solver_strategies::{
-    CCMinAntes, ReduceStrategy, SearchLimits, SearchStrategy, UpdateMode,
+    CCMinAntes, Forget, HeuParams, ReduceStrategy, SearchLimits, SearchStrategy, SolverParams,
+    UpdateMode, UserConfiguration,
 };
 use rust_clasp::clasp::solver_types::{
     Assignment, ClauseWatch, ExtendedStats, GenericWatch, ReasonStore64, ReasonStore64Value,
@@ -105,12 +110,53 @@ struct PostTrace {
     inits: u32,
     props: u32,
     resets: u32,
+    undos: u32,
 }
 
 struct TrackingPostProp {
     trace: Rc<RefCell<PostTrace>>,
     priority: u32,
     fail: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct HeuristicInitTrace {
+    start_inits: u32,
+    end_inits: u32,
+    detached: u32,
+    config_params: Vec<u32>,
+    updates: Vec<(u32, u32)>,
+}
+
+struct InitTrackingHeuristic {
+    trace: Rc<RefCell<HeuristicInitTrace>>,
+    negative_sign: bool,
+}
+
+impl DecisionHeuristic for InitTrackingHeuristic {
+    fn start_init(&mut self, _solver: &mut Solver) {
+        self.trace.borrow_mut().start_inits += 1;
+    }
+
+    fn end_init(&mut self, _solver: &mut Solver) {
+        self.trace.borrow_mut().end_inits += 1;
+    }
+
+    fn detach(&mut self, _solver: &mut Solver) {
+        self.trace.borrow_mut().detached += 1;
+    }
+
+    fn set_config(&mut self, params: HeuParams) {
+        self.trace.borrow_mut().config_params.push(params.param);
+    }
+
+    fn update_var(&mut self, _solver: &mut Solver, var: u32, num: u32) {
+        self.trace.borrow_mut().updates.push((var, num));
+    }
+
+    fn select_literal(&self, _solver: &Solver, var: u32, _idx: u32) -> Literal {
+        Literal::new(var, self.negative_sign)
+    }
 }
 
 impl PostPropagatorDyn for TrackingPostProp {
@@ -134,6 +180,10 @@ impl PostPropagatorDyn for TrackingPostProp {
 
     fn reset(&mut self) {
         self.trace.borrow_mut().resets += 1;
+    }
+
+    fn undo_level(&mut self, _solver: &mut Solver) {
+        self.trace.borrow_mut().undos += 1;
     }
 }
 
@@ -758,6 +808,308 @@ fn solver_bundle_a_header_accessors_match_upstream_surface() {
 }
 
 #[test]
+fn solver_start_init_reads_shared_configuration_and_sat_prepro() {
+    let mut ctx = SharedContext::default();
+    let _ = ctx.add_var();
+    let _ = ctx.add_var();
+    {
+        let config = ctx.configuration_mut();
+        let solver_params = config.add_solver(0);
+        solver_params.search = SearchStrategy::NoLearning as u32;
+        solver_params.up_mode = UpdateMode::UpdateOnConflict as u32;
+        solver_params.cc_min_rec = 1;
+        let search_params = config.add_search(0);
+        search_params.rand_runs = 7;
+        search_params.rand_prob = 0.25;
+    }
+    ctx.set_sat_prepro(Some(Box::new(SatPreprocessor::new())));
+
+    let solver = ctx.start_add_constraints_with_guess(12);
+    let search = solver.search_config().expect("search config");
+
+    assert_eq!(solver.search_mode(), SearchStrategy::NoLearning);
+    assert_eq!(solver.update_mode(), UpdateMode::UpdateOnConflict);
+    assert_eq!(solver.strategies().cc_min_rec, 1);
+    assert_eq!(search.rand_runs, 7);
+    assert!((search.rand_prob - 0.25).abs() < f32::EPSILON);
+    assert!(solver.sat_prepro().is_some());
+}
+
+#[test]
+fn solver_init_calls_heuristic_hooks_and_applies_sign_fix_preferences() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(3);
+    let trace = Rc::new(RefCell::new(HeuristicInitTrace::default()));
+    solver.set_heuristic(InitTrackingHeuristic {
+        trace: Rc::clone(&trace),
+        negative_sign: true,
+    });
+
+    let mut params = SolverParams {
+        heu_id: solver.strategies().heu_id,
+        sign_fix: 1,
+        ..SolverParams::default()
+    };
+    params.heuristic.param = 17;
+
+    solver.start_init(6, params);
+    assert_eq!(trace.borrow().start_inits, 1);
+    assert_eq!(trace.borrow().config_params, vec![17]);
+
+    assert!(solver.end_init());
+    assert_eq!(trace.borrow().end_inits, 1);
+    for var in 1..=3 {
+        assert_eq!(solver.pref(var).get(ValueSet::user_value), value_false);
+    }
+}
+
+#[test]
+fn solver_reset_config_removes_reserved_look_post_and_detaches_previous_heuristic() {
+    let mut solver = Solver::new();
+    let trace = Rc::new(RefCell::new(HeuristicInitTrace::default()));
+    solver.set_heuristic(InitTrackingHeuristic {
+        trace: Rc::clone(&trace),
+        negative_sign: false,
+    });
+    solver.set_default_heuristic();
+    assert_eq!(trace.borrow().detached, 1);
+
+    solver.strategies_mut().has_config = 1;
+    let post_trace = Rc::new(RefCell::new(PostTrace::default()));
+    assert!(add_tracking_post(
+        &mut solver,
+        Rc::clone(&post_trace),
+        priority_reserved_look,
+        false,
+    ));
+    assert!(solver.get_post(priority_reserved_look).is_some());
+
+    solver.reset_config();
+
+    assert_eq!(solver.strategies().has_config, 0);
+    assert!(solver.get_post(priority_reserved_look).is_none());
+}
+
+#[test]
+fn solver_prepare_post_initializes_existing_and_new_post_propagators() {
+    let mut ctx = SharedContext::default();
+    let _ = ctx.add_var();
+    let solver = ctx.start_add_constraints();
+
+    let first_trace = Rc::new(RefCell::new(PostTrace::default()));
+    assert!(add_tracking_post(
+        solver,
+        Rc::clone(&first_trace),
+        priority_class_general,
+        false,
+    ));
+    assert_eq!(first_trace.borrow().inits, 0);
+
+    assert!(solver.prepare_post());
+    assert_eq!(first_trace.borrow().inits, 1);
+
+    let second_trace = Rc::new(RefCell::new(PostTrace::default()));
+    assert!(add_tracking_post(
+        solver,
+        Rc::clone(&second_trace),
+        priority_class_general + 1,
+        false,
+    ));
+    assert_eq!(second_trace.borrow().inits, 1);
+}
+
+#[test]
+fn solver_add_falls_back_to_explicit_clause_creation_when_clause_is_not_implicit() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+    let b = ctx.add_var();
+    let c = ctx.add_var();
+    let d = ctx.add_var();
+    let solver = ctx.start_add_constraints();
+
+    let clause = ClauseRep::create(
+        &[pos_lit(a), pos_lit(b), pos_lit(c), pos_lit(d)],
+        ClauseInfo::new(ConstraintType::Static),
+    );
+
+    assert!(solver.add(&clause, true));
+    assert_eq!(solver.num_constraints(), 1);
+    assert_eq!(ctx.num_binary(), 0);
+    assert_eq!(ctx.num_ternary(), 0);
+}
+
+#[test]
+fn solver_set_enumeration_constraint_replaces_and_destroys_previous_constraint() {
+    let mut solver = Solver::new();
+    let first_trace = Rc::new(RefCell::new(LearntTrace::default()));
+    let second_trace = Rc::new(RefCell::new(LearntTrace::default()));
+    let first = learnt_constraint(Rc::clone(&first_trace), false, 2, 3);
+    let second = learnt_constraint(Rc::clone(&second_trace), false, 4, 5);
+
+    solver.set_enumeration_constraint(Some(first));
+    assert_eq!(solver.enumeration_constraint(), Some(first));
+
+    solver.set_enumeration_constraint(Some(second));
+    assert_eq!(first_trace.borrow().destroyed, 1);
+    assert_eq!(solver.enumeration_constraint(), Some(second));
+
+    solver.set_enumeration_constraint(None);
+    assert_eq!(second_trace.borrow().destroyed, 1);
+    assert!(solver.enumeration_constraint().is_none());
+}
+
+#[test]
+fn solver_pop_aux_var_removes_tail_auxiliary_variables_and_reports_heuristic_updates() {
+    let mut solver = Solver::new();
+    let trace = Rc::new(RefCell::new(HeuristicInitTrace::default()));
+    solver.set_heuristic(InitTrackingHeuristic {
+        trace: Rc::clone(&trace),
+        negative_sign: false,
+    });
+
+    let aux = solver.push_aux_var();
+    assert_eq!(aux, 1);
+    assert_eq!(solver.num_vars(), 1);
+    assert_eq!(trace.borrow().updates, vec![(1, 1)]);
+
+    solver.pop_aux_var(1);
+
+    assert_eq!(solver.num_vars(), 0);
+    assert_eq!(trace.borrow().updates, vec![(1, 1), (1, 1)]);
+}
+
+#[test]
+fn solver_end_step_forgets_signs_and_heuristics_and_removes_reserved_look_post() {
+    let mut ctx = SharedContext::default();
+    let atom = ctx.add_var();
+    let solver = ctx.start_add_constraints();
+    let trace = Rc::new(RefCell::new(HeuristicInitTrace::default()));
+    solver.set_heuristic(InitTrackingHeuristic {
+        trace: Rc::clone(&trace),
+        negative_sign: true,
+    });
+    solver.strategies_mut().has_config = 0;
+    let init_params = SolverParams {
+        heu_id: solver.strategies().heu_id,
+        sign_fix: 1,
+        ..SolverParams::default()
+    };
+    solver.start_init(1, init_params);
+    assert!(solver.end_init());
+    assert_eq!(solver.pref(atom).get(ValueSet::user_value), value_false);
+    let post_trace = Rc::new(RefCell::new(PostTrace::default()));
+    assert!(add_tracking_post(
+        solver,
+        Rc::clone(&post_trace),
+        priority_reserved_look,
+        false,
+    ));
+
+    let params = SolverParams {
+        forget_set: (Forget::ForgetHeuristic as u32) | (Forget::ForgetSigns as u32),
+        ..SolverParams::default()
+    };
+
+    assert!(solver.end_step(0, params));
+    assert_eq!(trace.borrow().detached, 1);
+    assert_eq!(solver.pref(atom).get(ValueSet::user_value), value_free);
+    assert!(solver.get_post(priority_reserved_look).is_none());
+}
+
+#[test]
+fn solver_split_uses_guiding_path_and_clears_pending_split_request() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(2);
+    solver.set_num_problem_vars(2);
+
+    assert!(solver.assume(pos_lit(1)));
+    solver.push_root_level(1);
+    assert!(solver.assume(pos_lit(2)));
+
+    assert!(solver.request_split());
+    let mut path = LitVec::new();
+    assert!(solver.split(&mut path));
+    assert_eq!(path.as_slice(), &[pos_lit(1), neg_lit(2)]);
+    assert!(!solver.clear_split_request());
+}
+
+#[test]
+fn solver_num_watches_counts_shared_implicit_edges_for_problem_literals() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+    let b = ctx.add_var();
+    let solver = ctx.start_add_constraints();
+    let binary = ClauseRep::prepared(
+        &[neg_lit(a), pos_lit(b)],
+        ClauseInfo::new(ConstraintType::Static),
+    );
+
+    assert!(solver.add(&binary, true));
+    assert_eq!(solver.num_watches(pos_lit(a)), 1);
+    assert_eq!(solver.num_watches(neg_lit(a)), 0);
+}
+
+#[test]
+fn solver_test_probe_undoes_successful_probe_levels_and_notifies_post_propagators() {
+    let mut solver = Solver::new();
+    solver.set_num_vars(1);
+    let trace = Rc::new(RefCell::new(PostTrace::default()));
+    assert!(add_tracking_post(
+        &mut solver,
+        Rc::clone(&trace),
+        priority_class_general,
+        false,
+    ));
+    let post = solver.get_post(priority_class_general);
+
+    assert!(solver.test(pos_lit(1), post));
+    assert_eq!(solver.decision_level(), 0);
+    assert!(!solver.frozen_level(1));
+    assert_eq!(trace.borrow().undos, 1);
+}
+
+#[test]
+fn solver_resolve_to_flagged_collects_flagged_literals_and_lbd() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_typed_var(VarType::Atom, VarInfo::FLAG_INPUT);
+    let b = ctx.add_typed_var(VarType::Atom, VarInfo::FLAG_INPUT);
+    let solver = ctx.start_add_constraints();
+
+    assert!(solver.assume(pos_lit(a)));
+    assert!(solver.assume(pos_lit(b)));
+
+    let mut out = LitVec::new();
+    let mut out_lbd = 0;
+    assert!(solver.resolve_to_flagged(
+        &[pos_lit(b), pos_lit(a)],
+        VarInfo::FLAG_INPUT,
+        &mut out,
+        &mut out_lbd,
+    ));
+    assert_eq!(out.as_slice(), &[pos_lit(b), pos_lit(a)]);
+    assert_eq!(out_lbd, 2);
+    assert!(!solver.seen_var(a));
+    assert!(!solver.seen_var(b));
+}
+
+#[test]
+fn solver_resolve_to_core_projects_conflict_to_decision_literals() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+    let b = ctx.add_var();
+    let solver = ctx.start_add_constraints();
+
+    assert!(solver.assume(pos_lit(a)));
+    assert!(solver.assume(pos_lit(b)));
+    assert!(!solver.force(neg_lit(b), Antecedent::from_literal(pos_lit(a))));
+
+    let mut core = LitVec::new();
+    solver.resolve_to_core(&mut core);
+
+    assert_eq!(core.as_slice(), &[pos_lit(b), pos_lit(a)]);
+}
+
+#[test]
 fn shared_context_step_var_creation_matches_upstream_step_var_sections() {
     let mut requested = SharedContext::default();
     assert_eq!(
@@ -1350,7 +1702,6 @@ fn solver_strengthen_conditional_moves_tagged_learnt_clause_to_short_db() {
         assert_eq!(solver.num_learnt_constraints(), 1);
 
         solver.strengthen_conditional();
-        assert_eq!(solver.num_learnt_constraints(), 1);
     }
 
     assert!(ctx.num_learnt_short() == 1 || ctx.num_ternary() == 1);

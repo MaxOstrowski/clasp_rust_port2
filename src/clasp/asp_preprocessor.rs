@@ -1,1 +1,10 @@
-//! Port target for original_clasp/clasp/asp_preprocessor.h, original_clasp/src/asp_preprocessor.cpp.
+//! Minimal Rust boundary for `SatPreprocessor` used by the solver/shared-context setup path.
+
+#[derive(Debug, Default)]
+pub struct SatPreprocessor;
+
+impl SatPreprocessor {
+    pub const fn new() -> Self {
+        Self
+    }
+}

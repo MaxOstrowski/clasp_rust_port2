@@ -6,10 +6,12 @@
 //! a short-implication graph, and a concrete `SharedContext` owning the master
 //! solver.
 
+use crate::clasp::asp_preprocessor::SatPreprocessor;
 use crate::clasp::cli::clasp_cli_options::context_params::ShortSimpMode;
 use crate::clasp::constraint::{Antecedent, ConstraintType};
 use crate::clasp::literal::{Literal, VarType, lit_false, lit_true, true_value, value_free};
 use crate::clasp::solver::Solver;
+use crate::clasp::solver_strategies::{BasicSatConfig, Configuration};
 use crate::clasp::statistics::{StatisticMap, StatisticObject};
 use crate::potassco::bits::{
     store_clear_mask, store_set_mask, store_toggle_bit, test_any, test_mask,
@@ -551,6 +553,8 @@ pub struct SharedContext {
     stats: ProblemStats,
     var_info: Vec<VarInfo>,
     btig: ShortImplicationsGraph,
+    config: BasicSatConfig,
+    sat_prepro: Option<Box<SatPreprocessor>>,
     master: Box<Solver>,
     // Attached solvers must keep a stable address because helper objects like
     // ClauseCreator cache raw solver pointers across later SharedContext calls.
@@ -568,6 +572,8 @@ impl Default for SharedContext {
             stats: ProblemStats::default(),
             var_info: vec![VarInfo::default()],
             btig: ShortImplicationsGraph::default(),
+            config: BasicSatConfig::new(),
+            sat_prepro: None,
             master: Box::new(Solver::new()),
             solvers: Vec::new(),
             step_literal: lit_true,
@@ -591,6 +597,37 @@ impl SharedContext {
 
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn configuration(&self) -> &BasicSatConfig {
+        &self.config
+    }
+
+    pub fn configuration_mut(&mut self) -> &mut BasicSatConfig {
+        &mut self.config
+    }
+
+    pub fn set_configuration(&mut self, mut config: BasicSatConfig) {
+        let solver_count = self.num_solvers().max(1);
+        let search_count = config.num_search().max(1);
+        config.resize(solver_count, search_count);
+        self.config = config;
+    }
+
+    pub fn sat_prepro(&self) -> Option<&SatPreprocessor> {
+        self.sat_prepro.as_deref()
+    }
+
+    pub fn sat_prepro_mut(&mut self) -> Option<&mut SatPreprocessor> {
+        self.sat_prepro.as_deref_mut()
+    }
+
+    pub fn set_sat_prepro(&mut self, sat_prepro: Option<Box<SatPreprocessor>>) {
+        self.sat_prepro = sat_prepro;
+    }
+
+    pub fn seed_solvers(&self) -> bool {
+        self.config.context().seed != 0
     }
 
     pub fn stats(&self) -> &ProblemStats {
@@ -776,7 +813,14 @@ impl SharedContext {
         id == 0 || (id as usize) <= self.solvers.len()
     }
 
+    pub fn concurrency(&self) -> u32 {
+        self.num_solvers()
+    }
+
     pub fn push_solver(&mut self) -> &mut Solver {
+        let solver_count = self.num_solvers() + 1;
+        let search_count = self.config.num_search().max(1);
+        self.config.resize(solver_count, search_count);
         let mut solver = Box::new(Solver::new());
         solver.set_id(self.num_solvers());
         solver.set_shared_context(self as *mut SharedContext);
@@ -807,7 +851,7 @@ impl SharedContext {
         self.start_add_constraints_with_guess(100)
     }
 
-    pub fn start_add_constraints_with_guess(&mut self, _constraint_guess: u32) -> &mut Solver {
+    pub fn start_add_constraints_with_guess(&mut self, constraint_guess: u32) -> &mut Solver {
         self.refresh_solver_links();
         self.frozen = false;
         let mut expected_size = (self.num_vars() + 1) << 1;
@@ -815,10 +859,8 @@ impl SharedContext {
             expected_size += 2;
         }
         self.btig.resize(expected_size);
-        self.master.begin_init();
-        self.master.acquire_problem_var(self.num_vars());
-        self.master
-            .reserve_watch_capacity(((self.num_vars() + 1) << 1) as usize);
+        let params = *self.config.solver(self.master.id());
+        self.master.start_init(constraint_guess, params);
         &mut self.master
     }
 
@@ -1084,6 +1126,10 @@ impl SharedContext {
 
     pub(crate) fn implication_graph_mut(&mut self) -> &mut ShortImplicationsGraph {
         &mut self.btig
+    }
+
+    pub(crate) fn add_post_for_solver(&mut self, _solver_id: u32) -> bool {
+        self.ok()
     }
 
     fn refresh_solver_links(&mut self) {
