@@ -2,11 +2,16 @@
 //! and the solver-independent parts of `original_clasp/src/minimize_constraint.cpp`.
 
 use crate::clasp::literal::{
-    WeightLiteral, WeightT, Wsum_t, is_sentinel, lit_true, weight_sum_max,
+    Literal, WeightLiteral, WeightT, Wsum_t, is_sentinel, lit_true, value_free, weight_max,
+    weight_min, weight_sum_max,
 };
 use crate::clasp::mt::{ThreadSafe, memory_order_relaxed};
+use crate::clasp::shared_context::SharedContext;
+use crate::clasp::solver::Solver;
 use crate::clasp::solver_strategies::LowerBound;
 use crate::clasp::util::misc_types::RefCount;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,7 +22,7 @@ pub enum MinimizeMode {
     EnumOpt = 3,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct LevelWeight {
     pub level: u32,
     pub next: bool,
@@ -52,15 +57,36 @@ pub struct SharedMinimizeData {
 impl SharedMinimizeData {
     pub fn from_parts(
         adjust: Vec<Wsum_t>,
+        weights: Vec<LevelWeight>,
+        prios: Vec<WeightT>,
+        lits: Vec<WeightLiteral>,
+        mode: MinimizeMode,
+    ) -> Self {
+        let sparse = !weights.is_empty();
+        Self::from_parts_impl(adjust, weights, prios, lits, mode, sparse)
+    }
+
+    pub(crate) fn from_builder_parts(
+        adjust: Vec<Wsum_t>,
+        weights: Vec<LevelWeight>,
+        prios: Vec<WeightT>,
+        lits: Vec<WeightLiteral>,
+        mode: MinimizeMode,
+        sparse: bool,
+    ) -> Self {
+        Self::from_parts_impl(adjust, weights, prios, lits, mode, sparse)
+    }
+
+    fn from_parts_impl(
+        adjust: Vec<Wsum_t>,
         mut weights: Vec<LevelWeight>,
         prios: Vec<WeightT>,
         mut lits: Vec<WeightLiteral>,
         mode: MinimizeMode,
+        sparse: bool,
     ) -> Self {
         let num_rules = adjust.len();
-        let sentinel_weight = if weights.is_empty() {
-            0
-        } else {
+        let sentinel_weight = if sparse {
             let sentinel_weight = weights.len() as WeightT;
             weights.push(LevelWeight::new(
                 num_rules.saturating_sub(1) as u32,
@@ -68,6 +94,8 @@ impl SharedMinimizeData {
                 false,
             ));
             sentinel_weight
+        } else {
+            0
         };
         if let Some(last) = lits.last_mut().filter(|last| is_sentinel(last.lit)) {
             last.weight = sentinel_weight;
@@ -475,5 +503,334 @@ impl<'a> IntoIterator for &'a SharedMinimizeData {
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MLit {
+    lit: Literal,
+    prio: WeightT,
+    weight: WeightT,
+}
+
+#[derive(Debug, Default)]
+pub struct MinimizeBuilder {
+    lits: Vec<MLit>,
+}
+
+impl MinimizeBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn clear(&mut self) {
+        self.lits.clear();
+    }
+
+    pub fn empty(&self) -> bool {
+        self.lits.is_empty()
+    }
+
+    pub fn add_literal(&mut self, prio: WeightT, lit: WeightLiteral) -> &mut Self {
+        self.lits.push(MLit {
+            lit: lit.lit,
+            prio,
+            weight: lit.weight,
+        });
+        self
+    }
+
+    pub fn add_adjust(&mut self, prio: WeightT, adjust: WeightT) -> &mut Self {
+        self.add_literal(
+            prio,
+            WeightLiteral {
+                lit: lit_true,
+                weight: adjust,
+            },
+        )
+    }
+
+    pub fn add_shared(&mut self, con: &SharedMinimizeData) -> &mut Self {
+        if con.num_rules() == 1 {
+            let prio = con.prios.first().copied().unwrap_or(0);
+            for &lit in con {
+                self.add_literal(prio, lit);
+            }
+        } else {
+            for &lit in con {
+                let mut weight = lit.weight as usize;
+                loop {
+                    let level_weight = &con.weights[weight];
+                    let prio = con
+                        .prios
+                        .get(level_weight.level as usize)
+                        .copied()
+                        .unwrap_or(-(level_weight.level as WeightT));
+                    self.add_literal(
+                        prio,
+                        WeightLiteral {
+                            lit: lit.lit,
+                            weight: level_weight.weight,
+                        },
+                    );
+                    if !level_weight.next {
+                        break;
+                    }
+                    weight += 1;
+                }
+            }
+        }
+        for (index, &adjust) in con.adjust_slice().iter().enumerate() {
+            if adjust == 0 {
+                continue;
+            }
+            let prio = con.prios.get(index).copied().unwrap_or(-(index as WeightT));
+            let mut remaining = adjust;
+            while remaining < i64::from(weight_min) {
+                self.add_adjust(prio, weight_min);
+                remaining -= i64::from(weight_min);
+            }
+            while remaining > i64::from(weight_max) {
+                self.add_adjust(prio, weight_max);
+                remaining -= i64::from(weight_max);
+            }
+            self.add_adjust(prio, remaining as WeightT);
+        }
+        self
+    }
+
+    pub fn build(&mut self, ctx: &mut SharedContext) -> Option<Box<SharedMinimizeData>> {
+        assert!(
+            !ctx.frozen(),
+            "cannot build minimize data for a frozen context"
+        );
+        let ok = {
+            if !ctx.ok() {
+                false
+            } else {
+                let num_vars = ctx.num_vars();
+                let solver = ctx.master();
+                solver.acquire_problem_var(num_vars);
+                solver.propagate()
+            }
+        };
+        if !ok || self.empty() {
+            self.clear();
+            return None;
+        }
+
+        let mut prios = Vec::new();
+        let mut adjust = Vec::new();
+        let mut weights = Vec::new();
+        self.prepare_levels(ctx.master_ref(), &mut adjust, &mut prios);
+        if prios.len() > 1 {
+            self.merge_levels(&mut adjust, &mut weights);
+        } else if prios.is_empty() {
+            prios.push(0);
+            adjust.push(0);
+        }
+        let sparse = prios.len() > 1;
+        let product = self.create_shared(ctx, adjust, prios, sparse.then_some(weights));
+        self.clear();
+        Some(Box::new(product))
+    }
+
+    fn prepare_levels(
+        &mut self,
+        solver: &Solver,
+        adjust_out: &mut Vec<Wsum_t>,
+        prios_out: &mut Vec<WeightT>,
+    ) {
+        self.lits.sort_by(|lhs, rhs| {
+            rhs.prio
+                .cmp(&lhs.prio)
+                .then_with(|| lhs.lit.cmp(&rhs.lit))
+                .then_with(|| rhs.weight.cmp(&lhs.weight))
+        });
+        prios_out.clear();
+        adjust_out.clear();
+
+        let mut out = Vec::with_capacity(self.lits.len());
+        let mut index = 0usize;
+        while index < self.lits.len() {
+            let prio = self.lits[index].prio;
+            let mut removed = 0i64;
+            while index < self.lits.len() && self.lits[index].prio == prio {
+                let mut lit = self.lits[index].lit;
+                let mut weight = i64::from(self.lits[index].weight);
+                let mut next = index + 1;
+                while next < self.lits.len()
+                    && self.lits[next].prio == prio
+                    && self.lits[next].lit.var() == lit.var()
+                {
+                    if self.lits[next].lit == lit {
+                        weight += i64::from(self.lits[next].weight);
+                    } else {
+                        weight -= i64::from(self.lits[next].weight);
+                        removed += i64::from(self.lits[next].weight);
+                    }
+                    next += 1;
+                }
+                if weight < 0 {
+                    removed += weight;
+                    lit = !lit;
+                    weight = -weight;
+                }
+                if weight != 0 && solver.value(lit.var()) == value_free {
+                    assert!(
+                        (i64::from(weight_min)..=i64::from(weight_max)).contains(&weight),
+                        "MinimizeBuilder: weight too large"
+                    );
+                    out.push(MLit {
+                        lit,
+                        prio: prios_out.len() as WeightT,
+                        weight: weight as WeightT,
+                    });
+                } else if solver.is_true(lit) {
+                    removed += weight;
+                }
+                index = next;
+            }
+            prios_out.push(prio);
+            adjust_out.push(removed);
+        }
+        self.lits = out;
+    }
+
+    fn merge_levels(&mut self, adjust: &mut [Wsum_t], weights_out: &mut Vec<LevelWeight>) {
+        self.lits.sort_by(|lhs, rhs| {
+            lhs.lit
+                .var()
+                .cmp(&rhs.lit.var())
+                .then_with(|| lhs.prio.cmp(&rhs.prio))
+                .then_with(|| rhs.weight.cmp(&lhs.weight))
+        });
+        let mut out = Vec::with_capacity(self.lits.len());
+        weights_out.clear();
+        let mut index = 0usize;
+        while index < self.lits.len() {
+            let first = self.lits[index];
+            let weight_pos = weights_out.len() as WeightT;
+            weights_out.push(LevelWeight::new(first.prio as u32, first.weight, false));
+            index += 1;
+            while index < self.lits.len() && self.lits[index].lit.var() == first.lit.var() {
+                let current = self.lits[index];
+                let current_level = current.prio as u32;
+                if let Some(last) = weights_out.last_mut() {
+                    last.next = true;
+                }
+                let mut weight = current.weight;
+                if current.lit.sign() != first.lit.sign() {
+                    adjust[current_level as usize] += i64::from(current.weight);
+                    weight = -current.weight;
+                }
+                weights_out.push(LevelWeight::new(current_level, weight, false));
+                index += 1;
+            }
+            out.push(MLit {
+                lit: first.lit,
+                prio: first.prio,
+                weight: weight_pos,
+            });
+        }
+        self.lits = out;
+    }
+
+    fn create_shared(
+        &mut self,
+        ctx: &mut SharedContext,
+        adjust: Vec<Wsum_t>,
+        prios: Vec<WeightT>,
+        weights: Option<Vec<LevelWeight>>,
+    ) -> SharedMinimizeData {
+        self.lits
+            .sort_by(|lhs, rhs| Self::compare_weight(weights.as_deref(), lhs, rhs));
+        let mut out_lits = Vec::with_capacity(self.lits.len());
+        let mut out_weights = Vec::new();
+        let mut index_by_chain: HashMap<Vec<LevelWeight>, WeightT> = HashMap::new();
+        for lit in &self.lits {
+            ctx.set_frozen(lit.lit.var(), true);
+            let weight = if let Some(weight_table) = weights.as_deref() {
+                let chain = Self::collect_chain(weight_table, lit.weight as usize);
+                if let Some(&index) = index_by_chain.get(&chain) {
+                    index
+                } else {
+                    let index = out_weights.len() as WeightT;
+                    out_weights.extend(chain.iter().copied());
+                    index_by_chain.insert(chain, index);
+                    index
+                }
+            } else {
+                lit.weight
+            };
+            out_lits.push(WeightLiteral {
+                lit: lit.lit,
+                weight,
+            });
+        }
+        SharedMinimizeData::from_builder_parts(
+            adjust,
+            out_weights,
+            prios,
+            out_lits,
+            MinimizeMode::Optimize,
+            weights.is_some(),
+        )
+    }
+
+    fn collect_chain(weights: &[LevelWeight], start: usize) -> Vec<LevelWeight> {
+        let mut chain = Vec::new();
+        let mut index = start;
+        loop {
+            let weight = weights[index];
+            chain.push(weight);
+            if !weight.next {
+                break;
+            }
+            index += 1;
+        }
+        chain
+    }
+
+    fn compare_weight(weights: Option<&[LevelWeight]>, lhs: &MLit, rhs: &MLit) -> Ordering {
+        let left = Self::comes_before(weights, lhs, rhs);
+        let right = Self::comes_before(weights, rhs, lhs);
+        match (left, right) {
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            _ => Ordering::Equal,
+        }
+    }
+
+    fn comes_before(weights: Option<&[LevelWeight]>, lhs: &MLit, rhs: &MLit) -> bool {
+        let Some(weights) = weights else {
+            return lhs.weight > rhs.weight;
+        };
+        let mut lhs_pos = lhs.weight as usize;
+        let mut rhs_pos = rhs.weight as usize;
+        loop {
+            let lhs_weight = &weights[lhs_pos];
+            let rhs_weight = &weights[rhs_pos];
+            if lhs_weight.level != rhs_weight.level {
+                return if lhs_weight.level < rhs_weight.level {
+                    lhs_weight.weight > 0
+                } else {
+                    rhs_weight.weight < 0
+                };
+            }
+            if lhs_weight.weight != rhs_weight.weight {
+                return lhs_weight.weight > rhs_weight.weight;
+            }
+            if !lhs_weight.next {
+                return rhs_weight.next && weights[rhs_pos + 1].weight < 0;
+            }
+            if !rhs_weight.next {
+                lhs_pos += 1;
+                break;
+            }
+            lhs_pos += 1;
+            rhs_pos += 1;
+        }
+        weights[lhs_pos].weight > 0
     }
 }

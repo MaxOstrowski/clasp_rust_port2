@@ -13,6 +13,8 @@ use crate::clasp::cli::clasp_cli_options::{
 };
 use crate::clasp::constraint::{Antecedent, ConstraintType};
 use crate::clasp::literal::{Literal, VarType, lit_false, lit_true, true_value, value_free};
+use crate::clasp::literal::{WeightLiteral, WeightT};
+use crate::clasp::minimize_constraint::{MinimizeBuilder, SharedMinimizeData};
 use crate::clasp::solver::Solver;
 use crate::clasp::solver_strategies::{
     BasicSatConfig, Configuration, Model, ModelHandler, ShortMode,
@@ -752,12 +754,44 @@ impl ShortImplicationsGraph {
 }
 
 #[derive(Debug)]
+struct SharedContextMinimize {
+    builder: MinimizeBuilder,
+    product: Option<Box<SharedMinimizeData>>,
+}
+
+impl Default for SharedContextMinimize {
+    fn default() -> Self {
+        Self {
+            builder: MinimizeBuilder::new(),
+            product: None,
+        }
+    }
+}
+
+impl SharedContextMinimize {
+    fn add(&mut self, prio: WeightT, lit: WeightLiteral) {
+        let _ = self.builder.add_literal(prio, lit);
+    }
+
+    fn get(&mut self, ctx: &mut SharedContext) {
+        if self.builder.empty() {
+            return;
+        }
+        if let Some(product) = self.product.take() {
+            let _ = self.builder.add_shared(&product);
+        }
+        self.product = self.builder.build(ctx);
+    }
+}
+
+#[derive(Debug)]
 pub struct SharedContext {
     stats: ProblemStats,
     var_info: Vec<VarInfo>,
     btig: ShortImplicationsGraph,
     config: BasicSatConfig,
     sat_prepro: Option<Box<SatPreprocessor>>,
+    mini: Option<SharedContextMinimize>,
     master: Box<Solver>,
     // Attached solvers must keep a stable address because helper objects like
     // ClauseCreator cache raw solver pointers across later SharedContext calls.
@@ -781,6 +815,7 @@ impl Default for SharedContext {
             btig: ShortImplicationsGraph::default(),
             config: BasicSatConfig::new(),
             sat_prepro: None,
+            mini: None,
             master: Box::new(Solver::new()),
             solvers: Vec::new(),
             step_literal: lit_true,
@@ -901,6 +936,31 @@ impl SharedContext {
 
     pub fn sat_prepro_mut(&mut self) -> Option<&mut SatPreprocessor> {
         self.sat_prepro.as_deref_mut()
+    }
+
+    pub fn add_minimize(&mut self, lit: WeightLiteral, prio: WeightT) {
+        self.mini
+            .get_or_insert_with(SharedContextMinimize::default)
+            .add(prio, lit);
+    }
+
+    pub fn has_minimize(&self) -> bool {
+        self.mini.is_some()
+    }
+
+    pub fn minimize(&mut self) -> Option<&SharedMinimizeData> {
+        let mut mini = self.mini.take()?;
+        mini.get(self);
+        self.mini = Some(mini);
+        self.mini.as_ref().and_then(|mini| mini.product.as_deref())
+    }
+
+    pub fn minimize_no_create(&self) -> Option<&SharedMinimizeData> {
+        self.mini.as_ref().and_then(|mini| mini.product.as_deref())
+    }
+
+    pub fn remove_minimize(&mut self) {
+        self.mini = None;
     }
 
     pub fn set_event_handler(&mut self, handler: Option<EventHandler>) {

@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use rust_clasp::clasp::cli::clasp_cli_options::context_params::ShortSimpMode;
 use rust_clasp::clasp::constraint::ConstraintType;
-use rust_clasp::clasp::literal::{Literal, neg_lit, pos_lit};
+use rust_clasp::clasp::literal::{Literal, WeightLiteral, neg_lit, pos_lit};
 use rust_clasp::clasp::shared_context::{EventHandler, EventObserver, LogEvent, SharedContext};
 use rust_clasp::clasp::solver_strategies::{ShortMode, UserConfiguration};
 use rust_clasp::clasp::util::misc_types::{
@@ -375,4 +375,87 @@ fn shared_context_reset_restores_default_state() {
     assert_eq!(ctx.num_vars(), 0);
     assert_eq!(ctx.concurrency(), 1);
     assert!(!ctx.preserve_models());
+}
+
+#[test]
+fn shared_context_minimize_is_lazily_materialized_and_can_be_removed() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+    let b = ctx.add_var();
+
+    ctx.add_minimize(
+        WeightLiteral {
+            lit: pos_lit(a),
+            weight: 1,
+        },
+        0,
+    );
+    ctx.add_minimize(
+        WeightLiteral {
+            lit: pos_lit(b),
+            weight: 2,
+        },
+        0,
+    );
+
+    assert!(ctx.has_minimize());
+    assert!(ctx.minimize_no_create().is_none());
+
+    let first_ptr = {
+        let data = ctx.minimize().expect("minimize data");
+        let lits = data.iter().copied().collect::<Vec<_>>();
+        assert_eq!(
+            lits,
+            vec![
+                WeightLiteral {
+                    lit: pos_lit(b),
+                    weight: 2,
+                },
+                WeightLiteral {
+                    lit: pos_lit(a),
+                    weight: 1,
+                },
+            ]
+        );
+        data as *const _
+    };
+
+    assert_eq!(
+        ctx.minimize_no_create().map(|data| data as *const _),
+        Some(first_ptr)
+    );
+
+    ctx.remove_minimize();
+    assert!(!ctx.has_minimize());
+    assert!(ctx.minimize_no_create().is_none());
+}
+
+#[test]
+fn shared_context_minimize_rebuilds_existing_product_when_new_terms_are_added() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+
+    ctx.add_minimize(
+        WeightLiteral {
+            lit: pos_lit(a),
+            weight: 1,
+        },
+        1,
+    );
+    let first = ctx.minimize().expect("initial minimize data");
+    assert_eq!(first.num_rules(), 1);
+
+    ctx.add_minimize(
+        WeightLiteral {
+            lit: pos_lit(a),
+            weight: 2,
+        },
+        0,
+    );
+    let rebuilt = ctx.minimize().expect("rebuilt minimize data");
+    assert_eq!(rebuilt.num_rules(), 2);
+    assert_eq!(rebuilt.adjust(0), 0);
+    assert_eq!(rebuilt.adjust(1), 0);
+    assert_eq!(rebuilt.weight_at_level(rebuilt.literals()[0], 0), 1);
+    assert_eq!(rebuilt.weight_at_level(rebuilt.literals()[0], 1), 2);
 }
