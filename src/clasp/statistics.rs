@@ -9,7 +9,7 @@ mod store;
 #[doc(hidden)]
 pub use object::Vtab;
 pub use object::{
-    StatisticArray, StatisticMap, StatisticObject, StatisticObjectTypeId, StatisticType,
-    StatisticValue,
+    StatisticArray, StatisticArrayElements, StatisticMap, StatisticObject, StatisticObjectTypeId,
+    StatisticType, StatisticValue,
 };
 pub use store::{ClaspStatistics, Operation, StatsVisitor};

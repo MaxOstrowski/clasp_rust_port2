@@ -78,6 +78,20 @@ impl AbstractProgram for RecordingProgram {
 }
 
 #[test]
+fn rule_default_constructor_matches_upstream_layout() {
+    let rule = Rule::default();
+
+    assert_eq!(rule.ht, HeadType::Disjunctive);
+    assert_eq!(rule.head, &[]);
+    assert_eq!(rule.bt, BodyType::Normal);
+    assert_eq!(rule.cond, &[]);
+    assert_eq!(rule.agg.bound, 0);
+    assert_eq!(rule.agg.lits, &[] as &[WeightLit]);
+    assert!(rule.is_normal());
+    assert!(!rule.is_sum());
+}
+
+#[test]
 fn rule_named_constructors_match_upstream_layout() {
     let head = [1, 2];
     let cond = [3, -4];
@@ -96,6 +110,131 @@ fn rule_named_constructors_match_upstream_layout() {
     assert_eq!(sum.agg.bound, 7);
     assert_eq!(sum.agg.lits, &weighted);
     assert!(sum.is_sum());
+}
+
+#[test]
+fn rule_assignment_preserves_source_layout() {
+    let head = [7, 8];
+    let weighted = [
+        WeightLit { lit: -2, weight: 3 },
+        WeightLit { lit: 4, weight: 5 },
+    ];
+    let source = Rule::sum_with_bound(HeadType::Choice, &head, 9, &weighted);
+
+    let mut assigned = Rule::default();
+    assert_eq!(assigned, Rule::default());
+    assigned = source;
+
+    assert_eq!(assigned, source);
+    assert_eq!(assigned.ht, HeadType::Choice);
+    assert_eq!(assigned.head, &head);
+    assert_eq!(assigned.bt, BodyType::Sum);
+    assert_eq!(assigned.agg.bound, 9);
+    assert_eq!(assigned.agg.lits, &weighted);
+}
+
+#[test]
+fn sum_assignment_preserves_literals_and_bound() {
+    let weighted = [
+        WeightLit { lit: 1, weight: 2 },
+        WeightLit { lit: -3, weight: 4 },
+    ];
+    let source = rust_clasp::potassco::rule_utils::Sum {
+        lits: &weighted,
+        bound: 6,
+    };
+
+    let mut assigned = rust_clasp::potassco::rule_utils::Sum::default();
+    assert_eq!(assigned, rust_clasp::potassco::rule_utils::Sum::default());
+    assigned = source;
+
+    assert_eq!(assigned, source);
+    assert_eq!(assigned.lits, &weighted);
+    assert_eq!(assigned.bound, 6);
+}
+
+#[test]
+fn builder_default_constructor_and_frozen_state_match_upstream() {
+    let mut rb = RuleBuilder::default();
+
+    assert_eq!(rb.head(), &[]);
+    assert_eq!(rb.head_type(), HeadType::Disjunctive);
+    assert!(!rb.is_minimize());
+    assert_eq!(rb.body_type(), BodyType::Normal);
+    assert_eq!(rb.body(), &[]);
+    assert_eq!(rb.bound(), -1);
+    assert_eq!(rb.sum().bound, -1);
+    assert_eq!(rb.sum().lits, &[] as &[WeightLit]);
+    assert!(!rb.frozen());
+
+    rb.start().add_head(1);
+    assert!(!rb.frozen());
+
+    rb.end(None);
+    assert!(rb.frozen());
+
+    rb.start().add_head(2);
+    assert!(!rb.frozen());
+    assert_eq!(rb.head(), &[2]);
+    assert_eq!(rb.body(), &[]);
+}
+
+#[test]
+fn builder_swap_exchanges_active_rule_state() {
+    let mut left = RuleBuilder::default();
+    left.start().add_head(1).add_goal(2);
+
+    let mut right = RuleBuilder::default();
+    right
+        .start_with_type(HeadType::Choice)
+        .add_head(7)
+        .start_sum(4)
+        .add_goal_with_weight(-3, 2);
+
+    left.swap(&mut right);
+
+    assert_eq!(left.head_type(), HeadType::Choice);
+    assert_eq!(left.head(), &[7]);
+    assert_eq!(left.body_type(), BodyType::Sum);
+    assert_eq!(left.bound(), 4);
+    assert_eq!(left.sum_lits(), &[WeightLit { lit: -3, weight: 2 }]);
+
+    assert_eq!(right.head_type(), HeadType::Disjunctive);
+    assert_eq!(right.head(), &[1]);
+    assert_eq!(right.body_type(), BodyType::Normal);
+    assert_eq!(right.body(), &[2]);
+}
+
+#[test]
+fn builder_clone_from_replaces_existing_state_like_copy_assignment() {
+    let mut source = RuleBuilder::default();
+    source
+        .start_with_type(HeadType::Choice)
+        .add_head(1)
+        .start_sum(3)
+        .add_goal_with_weight(2, 1)
+        .add_goal_with_weight(-4, 2);
+
+    let mut assigned = RuleBuilder::default();
+    assigned.start().add_head(9).add_goal(10).end(None);
+
+    assigned.clone_from(&source);
+
+    assert_eq!(assigned.head_type(), HeadType::Choice);
+    assert_eq!(assigned.head(), &[1]);
+    assert_eq!(assigned.body_type(), BodyType::Sum);
+    assert_eq!(assigned.bound(), 3);
+    assert_eq!(
+        assigned.sum_lits(),
+        &[
+            WeightLit { lit: 2, weight: 1 },
+            WeightLit { lit: -4, weight: 2 }
+        ]
+    );
+
+    source.add_goal(6);
+    assert_eq!(assigned.sum_lits().len(), 2);
+    assert_eq!(source.sum_lits().len(), 3);
 }
 
 #[test]
@@ -230,6 +369,7 @@ fn builder_supports_weaken_minimize_and_clearing() {
         .add_goal(5)
         .end(None);
     assert!(rb.is_minimize());
+    assert_eq!(rb.head_type(), HeadType::Minimize);
     assert_eq!(rb.bound(), 1);
     assert_eq!(
         rb.sum_lits(),

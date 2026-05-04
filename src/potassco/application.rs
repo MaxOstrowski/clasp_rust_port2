@@ -190,10 +190,13 @@ impl ApplicationBase {
     }
 }
 
+#[derive(Copy, Clone)]
 struct CurrentApp {
-    object: *const (),
+    app: *mut dyn Application,
+    object: *mut (),
     state: *const ApplicationBase,
-    process_signal: unsafe fn(*const (), i32),
+    process_signal: unsafe fn(*mut (), i32),
+    flush: unsafe fn(*mut ()),
 }
 
 unsafe impl Send for CurrentApp {}
@@ -203,19 +206,28 @@ fn current_app_slot() -> &'static Mutex<Option<CurrentApp>> {
     &SLOT
 }
 
-unsafe fn process_signal_for<T: Application>(object: *const (), sig: i32) {
+unsafe fn process_signal_for<T: Application>(object: *mut (), sig: i32) {
     let app = unsafe { &*(object as *const T) };
     app.process_signal(sig);
 }
 
-fn init_instance<T: Application>(app: &T) {
+unsafe fn flush_for<T: Application>(object: *mut ()) {
+    let app = unsafe { &mut *(object as *mut T) };
+    app.flush();
+}
+
+fn init_instance<T: Application>(app: &mut T) {
+    let app_ptr = app as *mut T as *mut dyn Application;
+    let app_ptr: *mut dyn Application = unsafe { std::mem::transmute(app_ptr) };
     let mut slot = current_app_slot()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     *slot = Some(CurrentApp {
-        object: app as *const T as *const (),
+        app: app_ptr,
+        object: app as *mut T as *mut (),
         state: app.base() as *const ApplicationBase,
         process_signal: process_signal_for::<T>,
+        flush: flush_for::<T>,
     });
 }
 
@@ -237,6 +249,20 @@ fn alarm_handler(sig: i32) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(current) = slot.as_ref() {
         unsafe { (current.process_signal)(current.object, sig) };
+    }
+}
+
+fn flush_instance(app: &ApplicationBase) {
+    let current = {
+        let slot = current_app_slot()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slot.as_ref().copied()
+    };
+    if let Some(current) = current {
+        if std::ptr::eq(current.state, app as *const ApplicationBase) {
+            unsafe { (current.flush)(current.object) };
+        }
     }
 }
 
@@ -263,7 +289,7 @@ impl<A: Application> fmt::Display for Prefix<'_, A> {
     }
 }
 
-pub trait Application: Sized {
+pub trait Application {
     fn base(&self) -> &ApplicationBase;
 
     fn get_name(&self) -> &str;
@@ -308,7 +334,15 @@ pub trait Application: Sized {
     }
     fn flush(&mut self);
 
-    fn main(&mut self, args: &[&str]) -> i32 {
+    fn fast_exit(&self, exit_code: i32) -> ! {
+        flush_instance(self.base());
+        std::process::exit(exit_code);
+    }
+
+    fn main(&mut self, args: &[&str]) -> i32
+    where
+        Self: Sized,
+    {
         init_instance::<Self>(self);
         self.base().reset_for_run();
         self.base().running.store(true, Ordering::SeqCst);
@@ -359,13 +393,20 @@ pub trait Application: Sized {
             self.handle_exception(payload);
         }
 
+        if self.base().fast_exit.load(Ordering::SeqCst) {
+            self.fast_exit(self.get_exit_code());
+        }
+
         self.flush();
         self.base().running.store(false, Ordering::SeqCst);
         reset_instance(self.base());
         self.get_exit_code()
     }
 
-    fn main_from_argv(&mut self, argc: i32, argv: Option<&[&str]>) -> i32 {
+    fn main_from_argv(&mut self, argc: i32, argv: Option<&[&str]>) -> i32
+    where
+        Self: Sized,
+    {
         assert!(argc >= 0, "invalid arg count");
         assert!(argc == 0 || argv.is_some(), "invalid arg vector");
         let argc = argc as usize;
@@ -415,7 +456,10 @@ pub trait Application: Sized {
         level: MessageType,
         msg: impl Into<String>,
         exception: bool,
-    ) -> Prefix<'_, Self> {
+    ) -> Prefix<'_, Self>
+    where
+        Self: Sized,
+    {
         Prefix {
             app: self,
             msg: msg.into(),
@@ -424,15 +468,24 @@ pub trait Application: Sized {
         }
     }
 
-    fn error(&self, msg: impl Into<String>) -> Prefix<'_, Self> {
+    fn error(&self, msg: impl Into<String>) -> Prefix<'_, Self>
+    where
+        Self: Sized,
+    {
         self.message(MessageType::Error, msg, false)
     }
 
-    fn warn(&self, msg: impl Into<String>) -> Prefix<'_, Self> {
+    fn warn(&self, msg: impl Into<String>) -> Prefix<'_, Self>
+    where
+        Self: Sized,
+    {
         self.message(MessageType::Warning, msg, false)
     }
 
-    fn info(&self, msg: impl Into<String>) -> Prefix<'_, Self> {
+    fn info(&self, msg: impl Into<String>) -> Prefix<'_, Self>
+    where
+        Self: Sized,
+    {
         self.message(MessageType::Info, msg, false)
     }
 
@@ -855,6 +908,17 @@ pub trait Application: Sized {
                 false
             }
         }
+    }
+}
+
+impl dyn Application {
+    #[must_use]
+    pub fn get_instance() -> Option<*mut dyn Application> {
+        current_app_slot()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|current| current.app)
     }
 }
 

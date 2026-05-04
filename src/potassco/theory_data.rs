@@ -368,14 +368,15 @@ impl TheoryData {
 
     pub fn add_element(&mut self, element_id: Id, terms: IdSpan<'_>, condition: Id) {
         let index = element_id as usize;
-        if index >= self.elements.len() {
-            self.elements.resize(index + 1, None);
-        } else if self.elements[index].is_some() {
+        if self.has_element(element_id) {
             potassco_check_pre!(
                 !self.is_new_element(element_id),
                 "Redefinition of theory element '{}'",
                 element_id
             );
+        } else {
+            let desired_len = self.terms.len().max(index + 1);
+            self.elements.resize(desired_len, None);
         }
         let condition = if condition == 0 {
             None
@@ -386,13 +387,15 @@ impl TheoryData {
     }
 
     pub fn set_condition(&mut self, element_id: Id, new_cond: Id) {
-        let element = self
-            .elements
-            .get_mut(element_id as usize)
-            .and_then(Option::as_mut)
-            .expect("element existence checked by get_element");
-        potassco_check_pre!(element.condition() == Self::COND_DEFERRED);
-        element.set_condition(new_cond);
+        let condition = match self.get_element(element_id) {
+            Ok(element) => element.condition(),
+            Err(error) => std::panic::panic_any(error),
+        };
+        potassco_check_pre!(condition == Self::COND_DEFERRED);
+        self.elements[element_id as usize]
+            .as_mut()
+            .expect("element existence validated above")
+            .set_condition(new_cond);
     }
 
     pub fn add_term_number(&mut self, term_id: Id, number: i32) {
@@ -419,9 +422,7 @@ impl TheoryData {
 
     #[must_use]
     pub fn empty(&self) -> bool {
-        self.terms.iter().all(Option::is_none)
-            && self.elements.iter().all(Option::is_none)
-            && self.atoms.is_empty()
+        self.terms.is_empty() && self.elements.is_empty() && self.atoms.is_empty()
     }
 
     #[must_use]

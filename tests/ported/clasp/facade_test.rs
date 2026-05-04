@@ -23,6 +23,7 @@ fn clingo_assignment_matches_upstream_assignment_basics() {
     let assignment = ClingoAssignment::new(&solver);
 
     assert_eq!(assignment.solver_id(), 7);
+    assert_eq!(assignment.solver().id(), 7);
     assert_eq!(assignment.size(), 1);
     assert_eq!(assignment.trail_size(), 1);
     assert_eq!(assignment.trail_begin(0), 0);

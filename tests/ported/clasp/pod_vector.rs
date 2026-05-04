@@ -83,6 +83,29 @@ fn pod_queue_behaves_like_fifo_with_rewind() {
 }
 
 #[test]
+fn pod_queue_clone_and_assignment_preserve_queue_state() {
+    let mut source = PodQueue::default();
+    source.push(11u32);
+    source.push(22);
+    source.push(33);
+    source.pop();
+
+    let copied = source.clone();
+    assert_eq!(copied.q_front, 1);
+    assert_eq!(copied.vec.as_slice(), &[11, 22, 33]);
+    assert_eq!(*copied.front(), 22);
+    assert_eq!(*copied.back(), 33);
+
+    let mut assigned = PodQueue::default();
+    assigned.push(99);
+    assigned = source.clone();
+    assert_eq!(assigned.q_front, 1);
+    assert_eq!(assigned.vec.as_slice(), &[11, 22, 33]);
+    assert_eq!(*assigned.front(), 22);
+    assert_eq!(*assigned.back(), 33);
+}
+
+#[test]
 fn pod_vector_selector_destruct_clears_underlying_storage() {
     let mut vector = PodVectorT::from_slice(&[4u32, 5, 6]);
     PodVector::<u32>::destruct(&mut vector);

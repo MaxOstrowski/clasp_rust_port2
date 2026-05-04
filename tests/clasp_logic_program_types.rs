@@ -1,8 +1,9 @@
 use std::panic;
 
+use rust_clasp::clasp::claspfwd::Configuration;
 use rust_clasp::clasp::literal::{neg_lit, pos_lit, value_false, value_free, value_true};
 use rust_clasp::clasp::logic_program_types::{
-    AtomState, EdgeType, NodeType, PrgEdge, PrgNode, SmallEdgeList, SmallEdgeListTag,
+    AtomState, EdgeType, NodeType, NonHcfSet, PrgEdge, PrgNode, SmallEdgeList, SmallEdgeListTag,
     value_weak_true,
 };
 
@@ -89,7 +90,7 @@ fn prg_edge_encodes_node_type_and_edge_semantics() {
 fn atom_state_tracks_head_body_and_rule_markers() {
     let head = PrgEdge::new(3, NodeType::Atom, EdgeType::Choice);
     let disj = PrgEdge::new(5, NodeType::Disj, EdgeType::Normal);
-    let mut state = AtomState::default();
+    let mut state = AtomState::new();
 
     state.add_to_head(2);
     state.add_to_head_edge(head);
@@ -119,7 +120,7 @@ fn atom_state_tracks_head_body_and_rule_markers() {
     state.clear_rule_atoms(&[3_u32, 5_u32]);
     assert!(!state.in_head(disj));
 
-    let mut other = AtomState::default();
+    let mut other = AtomState::new();
     other.add_to_body(pos_lit(1));
     state.swap(&mut other);
     assert!(state.in_body(pos_lit(1)));
@@ -171,4 +172,70 @@ fn small_edge_list_preserves_small_and_large_storage_behaviour() {
     small_tag = unsafe { small.shrink_to(small_tag, small_ptr.wrapping_add(1)) };
     assert_eq!(small_tag, SmallEdgeListTag::S1);
     assert_eq!(small.span(small_tag), &[e1]);
+}
+
+#[test]
+fn non_hcf_set_constructor_starts_empty_with_null_config() {
+    let set = NonHcfSet::new();
+
+    assert!(set.is_empty());
+    assert_eq!(set.len(), 0);
+    assert!(set.config.is_null());
+}
+
+#[test]
+fn non_hcf_set_add_keeps_sorted_unique_members() {
+    let mut set = NonHcfSet::new();
+
+    set.add(9);
+    set.add(3);
+    set.add(7);
+    set.add(3);
+
+    assert_eq!(set.as_slice(), &[3, 7, 9]);
+}
+
+#[test]
+fn non_hcf_set_find_uses_the_sorted_membership_set() {
+    let mut set = NonHcfSet::new();
+    set.add(2);
+    set.add(5);
+    set.add(8);
+
+    assert!(set.find(2));
+    assert!(set.find(5));
+    assert!(set.find(8));
+    assert!(!set.find(3));
+    assert!(!set.find(9));
+}
+
+#[test]
+fn non_hcf_set_clone_from_matches_copy_assignment_state() {
+    let config = std::ptr::NonNull::<Configuration>::dangling().as_ptr();
+    let mut source = NonHcfSet::new();
+    source.add(4);
+    source.add(6);
+    source.config = config;
+
+    let mut target = NonHcfSet::new();
+    target.add(9);
+    target.clone_from(&source);
+
+    assert_eq!(target.as_slice(), &[4, 6]);
+    assert_eq!(target.config, config);
+}
+
+#[test]
+fn non_hcf_set_view_matches_upstream_drop_semantics() {
+    let mut set = NonHcfSet::new();
+    set.add(1);
+    set.add(4);
+    set.add(7);
+
+    assert_eq!(set.view(0), &[1, 4, 7]);
+    assert_eq!(set.view(1), &[4, 7]);
+    assert_eq!(set.view(3), &[]);
+
+    let panic_result = panic::catch_unwind(|| set.view(4));
+    assert!(panic_result.is_err());
 }

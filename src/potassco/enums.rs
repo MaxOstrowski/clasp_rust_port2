@@ -32,6 +32,37 @@ macro_rules! impl_underlying_value {
 
 impl_underlying_value!(i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, usize);
 
+pub mod detail {
+    use super::EnumTag;
+    use core::marker::PhantomData;
+
+    pub struct EnumMeta<E: EnumTag>(PhantomData<fn() -> E>);
+
+    impl<E: EnumTag> EnumMeta<E> {
+        pub fn min() -> E::Repr {
+            E::min_value()
+        }
+
+        pub fn max() -> E::Repr {
+            E::max_value()
+        }
+
+        pub fn count() -> usize {
+            E::count()
+        }
+
+        pub fn valid(value: E::Repr) -> bool {
+            E::metadata().is_some_and(|meta| meta.valid(value))
+        }
+
+        pub fn name(value: E) -> &'static str {
+            E::metadata()
+                .and_then(|meta| meta.name(value))
+                .unwrap_or("")
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct DefaultEnum<E: EnumTag> {
     first: E::Repr,
@@ -77,14 +108,47 @@ impl<E: EnumTag> DefaultEnum<E> {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct FixedString<const N: usize> {
+    pub data: [u8; N],
+    pub nul: u8,
+}
+
+impl<const N: usize> FixedString<N> {
+    pub fn new(value: &str) -> Self {
+        let mut data = [0; N];
+        data.copy_from_slice(&value.as_bytes()[..N]);
+        Self { data, nul: 0 }
+    }
+
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(&self.data).expect("fixed strings are built from UTF-8 input")
+    }
+
+    pub const fn size(&self) -> usize {
+        N
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct EnumEntries<E: EnumTag> {
     entries: &'static [(E, &'static str)],
 }
 
 impl<E: EnumTag> EnumEntries<E> {
-    pub const fn new(entries: &'static [(E, &'static str)]) -> Self {
-        Self { entries }
+    pub fn new(entries: &'static [(E, &'static str)]) -> Self {
+        if entries
+            .windows(2)
+            .all(|pair| pair[0].0.to_underlying() <= pair[1].0.to_underlying())
+        {
+            Self { entries }
+        } else {
+            let mut sorted = entries.to_vec();
+            sorted.sort_by_key(|(value, _)| value.to_underlying());
+            Self {
+                entries: Box::leak(sorted.into_boxed_slice()),
+            }
+        }
     }
 
     pub fn min(&self) -> E::Repr {
@@ -120,10 +184,12 @@ impl<E: EnumTag> EnumEntries<E> {
             .any(|&(entry, _)| entry.to_underlying() == value)
     }
 
+    pub fn find(&self, value: E) -> Option<&'static (E, &'static str)> {
+        self.entries.iter().find(|(entry, _)| *entry == value)
+    }
+
     pub fn name(&self, value: E) -> Option<&'static str> {
-        self.entries
-            .iter()
-            .find_map(|&(entry, name)| (entry == value).then_some(name))
+        self.find(value).map(|entry| entry.1)
     }
 
     pub const fn entries(&self) -> &'static [(E, &'static str)] {
@@ -214,7 +280,7 @@ pub trait HasEnumEntries: EnumTag {
     fn entries_metadata() -> EnumEntries<Self>;
 }
 
-pub const fn make_entries<E: EnumTag>(entries: &'static [(E, &'static str)]) -> EnumEntries<E> {
+pub fn make_entries<E: EnumTag>(entries: &'static [(E, &'static str)]) -> EnumEntries<E> {
     EnumEntries::new(entries)
 }
 

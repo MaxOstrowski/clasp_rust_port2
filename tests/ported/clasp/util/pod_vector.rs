@@ -1,4 +1,5 @@
 use rust_clasp::clasp::util::pod_vector::{OutOfRangeError, PodVector, erase, erase_if, swap};
+use std::mem::size_of;
 
 #[test]
 fn pod_vector_starts_empty() {
@@ -7,6 +8,34 @@ fn pod_vector_starts_empty() {
     assert_eq!(vector.capacity(), 0);
     assert!(vector.empty());
     assert!(vector.data().is_null());
+}
+
+#[test]
+fn pod_vector_begin_matches_data_pointer() {
+    let empty = PodVector::<u32>::new();
+    assert!(empty.begin().is_null());
+
+    let mut reserved = PodVector::<u32>::new();
+    reserved.reserve(4);
+    assert_eq!(reserved.begin(), reserved.data());
+
+    let vector = PodVector::from_slice(&[10u32, 20, 30]);
+    assert_eq!(vector.begin(), vector.data());
+    assert_eq!(unsafe { *vector.begin() }, 10);
+}
+
+#[test]
+fn pod_vector_end_matches_one_past_last_pointer() {
+    let empty = PodVector::<u32>::new();
+    assert!(empty.end().is_null());
+
+    let mut reserved = PodVector::<u32>::new();
+    reserved.reserve(4);
+    assert_eq!(reserved.end(), reserved.begin());
+
+    let vector = PodVector::from_slice(&[10u32, 20, 30]);
+    assert_eq!(unsafe { vector.end().offset_from(vector.begin()) }, 3);
+    assert_eq!(unsafe { *vector.end().sub(1) }, 30);
 }
 
 #[test]
@@ -22,6 +51,15 @@ fn pod_vector_supports_push_insert_and_erase() {
     assert_eq!(vector.erase(1), 1);
     assert_eq!(vector.erase_range(2..4), 2);
     assert_eq!(vector.as_slice(), &[0, 2, 4]);
+}
+
+#[test]
+fn pod_vector_assign_replaces_contents_from_an_iterator() {
+    let mut vector = PodVector::from_slice(&[1u32, 2, 3]);
+
+    vector.assign([7u32, 8, 9]);
+
+    assert_eq!(vector.as_slice(), &[7, 8, 9]);
 }
 
 #[test]
@@ -43,10 +81,95 @@ fn pod_vector_assign_resize_and_clone_match_slice_semantics() {
 }
 
 #[test]
+fn pod_vector_resize_uses_upstream_append_realloc_growth() {
+    let mut vector = PodVector::new();
+    vector.resize(1, 7u32);
+    assert_eq!(vector.as_slice(), &[7]);
+    assert_eq!(vector.capacity(), 4);
+
+    vector.resize(5, 9);
+    assert_eq!(vector.as_slice(), &[7, 9, 9, 9, 9]);
+    assert_eq!(vector.capacity(), 6);
+}
+
+#[test]
 fn pod_vector_at_reports_out_of_range() {
     let vector = PodVector::from_slice(&[10u32, 11]);
     assert_eq!(vector.at(1), Ok(&11));
     assert_eq!(vector.at(2), Err(OutOfRangeError));
+}
+
+#[test]
+fn pod_vector_front_back_and_index_follow_current_storage() {
+    let mut vector = PodVector::from_slice(&[10u32, 20, 30]);
+
+    assert_eq!(*vector.front(), 10);
+    assert_eq!(*vector.back(), 30);
+
+    vector[1] = 99;
+
+    assert_eq!(vector[1], 99);
+    assert_eq!(vector.as_slice(), &[10, 99, 30]);
+}
+
+#[test]
+fn pod_vector_clear_only_resets_logical_size() {
+    let mut vector = PodVector::from_slice(&[1u32, 2, 3]);
+    let capacity = vector.capacity();
+    let data = vector.data();
+
+    vector.clear();
+
+    assert_eq!(vector.size(), 0);
+    assert!(vector.empty());
+    assert_eq!(vector.capacity(), capacity);
+    assert_eq!(vector.data(), data);
+    assert_eq!(vector.begin(), vector.end());
+}
+
+#[test]
+fn pod_vector_insert_range_inserts_iterator_values_in_order() {
+    let mut vector = PodVector::from_slice(&[1u32, 4]);
+
+    assert_eq!(vector.insert_range(1, [2u32, 3]), 1);
+
+    assert_eq!(vector.as_slice(), &[1, 2, 3, 4]);
+}
+
+#[test]
+fn pod_vector_reserve_grows_capacity_without_changing_contents() {
+    let mut vector = PodVector::from_slice(&[1u32, 2, 3]);
+
+    vector.reserve(10);
+
+    assert_eq!(vector.as_slice(), &[1, 2, 3]);
+    assert_eq!(vector.size(), 3);
+    assert!(vector.capacity() >= 10);
+
+    let grown_capacity = vector.capacity();
+    vector.reserve(2);
+    assert_eq!(vector.capacity(), grown_capacity);
+}
+
+#[test]
+fn pod_vector_pop_back_discards_only_the_last_element() {
+    let mut vector = PodVector::from_slice(&[4u32, 5, 6]);
+    let capacity = vector.capacity();
+
+    vector.pop_back();
+
+    assert_eq!(vector.as_slice(), &[4, 5]);
+    assert_eq!(vector.capacity(), capacity);
+    assert_eq!(*vector.back(), 5);
+}
+
+#[test]
+fn pod_vector_max_size_scales_with_element_width() {
+    assert_eq!(PodVector::<u8>::new().max_size(), usize::MAX);
+    assert_eq!(
+        PodVector::<u32>::new().max_size(),
+        usize::MAX / size_of::<u32>()
+    );
 }
 
 #[test]

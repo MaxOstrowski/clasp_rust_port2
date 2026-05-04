@@ -102,3 +102,13 @@ fn process_and_thread_time_are_available_in_this_environment() {
     assert!(ProcessTime::get_time() >= 0.0);
     assert!(ThreadTime::get_time() >= 0.0);
 }
+
+#[test]
+fn real_time_get_time_is_finite_and_monotonic() {
+    let first = RealTime::get_time();
+    let second = RealTime::get_time();
+
+    assert!(first.is_finite());
+    assert!(second.is_finite());
+    assert!(second >= first);
+}

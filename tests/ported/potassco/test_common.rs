@@ -12,20 +12,37 @@ use rust_clasp::potassco_check_pre;
 
 pub type Vec<T> = std::vec::Vec<T>;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
+enum AtomicCondAtom {
+    Borrowed(*const Atom),
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct AtomicCond {
-    atom: Atom,
+    atom: AtomicCondAtom,
 }
 
 impl AtomicCond {
     #[must_use]
-    pub const fn new(atom: Atom) -> Self {
-        Self { atom }
+    pub fn new(atom: &Atom) -> Self {
+        Self {
+            atom: AtomicCondAtom::Borrowed(atom),
+        }
+    }
+
+    #[must_use]
+    fn atom(self) -> Atom {
+        match self.atom {
+            AtomicCondAtom::Borrowed(atom) => {
+                // Mirrors the upstream test helper, which stores a pointer to the source atom.
+                unsafe { *atom }
+            }
+        }
     }
 
     #[must_use]
     pub fn cond(self) -> [Lit; 1] {
-        [lit(self.atom)]
+        [lit(self.atom())]
     }
 }
 
@@ -37,18 +54,18 @@ impl From<AtomicCond> for Vec<Lit> {
 
 impl PartialEq<&[Lit]> for AtomicCond {
     fn eq(&self, other: &&[Lit]) -> bool {
-        *other == [lit(self.atom)]
+        *other == [lit(self.atom())]
     }
 }
 
 impl PartialEq<Vec<Lit>> for AtomicCond {
     fn eq(&self, other: &Vec<Lit>) -> bool {
-        other.as_slice() == [lit(self.atom)]
+        other.as_slice() == [lit(self.atom())]
     }
 }
 
 #[must_use]
-pub const fn to_cond(atom: Atom) -> AtomicCond {
+pub fn to_cond(atom: &Atom) -> AtomicCond {
     AtomicCond::new(atom)
 }
 
@@ -95,6 +112,8 @@ impl AbstractProgram for ReadObserver {
     fn begin_step(&mut self) {
         self.n_step += 1;
     }
+
+    fn end_step(&mut self) {}
 
     fn rule(&mut self, _head_type: HeadType, _head: &[Atom], _body: LitSpan<'_>) {
         panic!("ReadObserver requires a derived test observer to implement rule()")
@@ -164,13 +183,35 @@ where
 #[test]
 fn atomic_cond_behaves_like_a_single_literal_condition() {
     let atom = 17;
-    let cond = to_cond(atom);
+    let cond = to_cond(&atom);
 
     assert_eq!(cond.cond(), [17]);
     assert_eq!(Vec::<Lit>::from(cond), vec![17]);
     assert!(cond == &[17][..]);
     assert!(cond == vec![17]);
     assert!(cond != &[18][..]);
+}
+
+#[test]
+fn to_cond_observes_the_referenced_atom() {
+    let mut atom = Box::new(17);
+    let cond = to_cond(atom.as_ref());
+
+    *atom = 23;
+
+    assert_eq!(cond.cond(), [23]);
+    assert_eq!(Vec::<Lit>::from(cond), vec![23]);
+}
+
+#[test]
+fn atomic_cond_constructor_observes_the_referenced_atom() {
+    let mut atom = Box::new(17);
+    let cond = AtomicCond::new(atom.as_ref());
+
+    *atom = 23;
+
+    assert_eq!(cond.cond(), [23]);
+    assert_eq!(Vec::<Lit>::from(cond), vec![23]);
 }
 
 #[test]
@@ -201,12 +242,20 @@ fn helper_record_types_preserve_value_semantics() {
 #[test]
 fn read_observer_tracks_program_state_and_appends_atom_names() {
     let mut observer = ReadObserver::default();
+    let condition_atom = 4;
+    let edge_atom = 8;
 
     observer.init_program(true);
     observer.begin_step();
     observer.begin_step();
-    observer.heuristic(7, DomModifier::Level, -2, 9, &to_cond(4).cond());
-    observer.acyc_edge(3, 5, &to_cond(8).cond());
+    observer.heuristic(
+        7,
+        DomModifier::Level,
+        -2,
+        9,
+        &to_cond(&condition_atom).cond(),
+    );
+    observer.acyc_edge(3, 5, &to_cond(&edge_atom).cond());
     observer.output_atom(11, "foo");
     observer.output_atom(11, "bar");
 
@@ -247,4 +296,17 @@ fn read_observer_zero_atom_follows_upstream_precondition_flag() {
     observer.output_atom(0, "ok");
     observer.output_atom(0, "still-ok");
     assert_eq!(observer.atoms.get(&0), Some(&"ok;still-ok".to_owned()));
+}
+
+#[test]
+fn read_observer_end_step_is_a_no_op() {
+    let mut observer = ReadObserver::default();
+
+    observer.begin_step();
+    observer.end_step();
+
+    assert_eq!(observer.n_step, 1);
+    assert!(observer.edges.is_empty());
+    assert!(observer.heuristics.is_empty());
+    assert!(observer.atoms.is_empty());
 }

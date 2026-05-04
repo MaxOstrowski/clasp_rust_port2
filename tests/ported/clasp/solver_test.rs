@@ -4,25 +4,27 @@ use std::rc::Rc;
 
 use rust_clasp::clasp::asp_preprocessor::SatPreprocessor;
 use rust_clasp::clasp::clause::{CLAUSE_WATCH_FIRST, CLAUSE_WATCH_LEAST, ClauseCreator, ClauseRep};
+use rust_clasp::clasp::cli::clasp_cli_options::solver_strategies::SignHeu;
 use rust_clasp::clasp::constraint::{
     Antecedent, Constraint, ConstraintDyn, PropResult, priority_reserved_look,
 };
 use rust_clasp::clasp::literal::{
-    LitVec, Literal, ValueVec, lit_false, neg_lit, pos_lit, value_false, value_free, value_true,
+    LitVec, Literal, ValueVec, WeightLiteral, lit_false, neg_lit, pos_lit, value_false, value_free,
+    value_true,
 };
 use rust_clasp::clasp::pod_vector::contains;
 use rust_clasp::clasp::shared_context::{SharedContext, VarInfo};
 use rust_clasp::clasp::solver::{
-    CCMinRecursive, DecisionHeuristic, PostPropagator, PostPropagatorDyn, Solver, UndoMode,
-    priority_class_general,
+    CCMinRecursive, DecisionHeuristic, PostPropagator, PostPropagatorDyn, SelectFirst, Solver,
+    UndoMode, priority_class_general,
 };
 use rust_clasp::clasp::solver_strategies::{
     CCMinAntes, CCRepMode, Forget, HeuParams, ReduceStrategy, SearchLimits, SearchStrategy,
     SolverParams, UpdateMode, UserConfiguration,
 };
 use rust_clasp::clasp::solver_types::{
-    Assignment, ClauseWatch, ExtendedStats, GenericWatch, ReasonStore64, ReasonStore64Value,
-    ValueSet, WatchList, release_vec,
+    Assignment, ClauseWatch, ExtendedStats, GenericWatch, ImpliedList, ImpliedLiteral,
+    ReasonStore64, ReasonStore64Value, ValueSet, WatchList, release_vec,
 };
 use rust_clasp::clasp::util::indexed_priority_queue::IndexedPriorityQueue;
 use rust_clasp::clasp::{
@@ -136,6 +138,8 @@ struct InitTrackingHeuristic {
     negative_sign: bool,
 }
 
+struct DefaultDecisionHeuristic;
+
 impl DecisionHeuristic for InitTrackingHeuristic {
     fn start_init(&mut self, _solver: &mut Solver) {
         self.trace.borrow_mut().start_inits += 1;
@@ -186,10 +190,12 @@ impl DecisionHeuristic for InitTrackingHeuristic {
         ));
     }
 
-    fn select_literal(&self, _solver: &Solver, var: u32, _idx: u32) -> Literal {
+    fn select_literal(&self, _solver: &Solver, var: u32, _idx: i32) -> Literal {
         Literal::new(var, self.negative_sign)
     }
 }
+
+impl DecisionHeuristic for DefaultDecisionHeuristic {}
 
 impl PostPropagatorDyn for TrackingPostProp {
     fn priority(&self) -> u32 {
@@ -647,6 +653,88 @@ fn assignment_helpers_cover_assign_undo_seen_and_unit_behavior() {
 }
 
 #[test]
+fn implied_list_begin_end_match_upstream_iteration_endpoints() {
+    let p = pos_lit(1);
+    let entry = ImpliedLiteral::new(p, 2, Antecedent::from_literal(!p));
+    let mut implied = ImpliedList::default();
+    implied.add(2, entry);
+
+    let mut begin = implied.begin();
+    assert_eq!(begin.next(), Some(&entry));
+    assert_eq!(begin.next(), None);
+
+    let mut end = implied.end();
+    assert_eq!(end.next(), None);
+}
+
+#[test]
+fn implied_list_find_returns_matching_entry_only() {
+    let p = pos_lit(1);
+    let q = neg_lit(2);
+    let mut implied = ImpliedList::default();
+    implied.add(2, ImpliedLiteral::new(p, 2, Antecedent::from_literal(!p)));
+    implied.add(3, ImpliedLiteral::new(q, 3, Antecedent::from_literal(!q)));
+
+    let found = implied.find(q).expect("expected matching implied literal");
+    assert_eq!(found.lit, q);
+    assert_eq!(found.level, 3);
+    assert!(implied.find(pos_lit(3)).is_none());
+}
+
+#[test]
+fn implied_list_active_matches_level_and_front_rules() {
+    let p = pos_lit(1);
+    let mut implied = ImpliedList::default();
+    implied.add(3, ImpliedLiteral::new(p, 3, Antecedent::from_literal(!p)));
+
+    assert!(implied.active(2));
+    assert!(!implied.active(3));
+
+    implied.front = implied.len() as u32;
+    assert!(!implied.active(2));
+}
+
+#[test]
+fn implied_list_assign_replays_earlier_implied_literal_on_backtrack() {
+    let mut ctx = SharedContext::default();
+    let a = pos_lit(ctx.add_var());
+    let b = pos_lit(ctx.add_var());
+    let c = pos_lit(ctx.add_var());
+    let d = pos_lit(ctx.add_var());
+
+    let _ = ctx.start_add_constraints();
+    assert!(ctx.end_init());
+
+    let solver = ctx.master();
+    let implied = OwnedConstraint::new();
+
+    assert!(solver.assume(a));
+    assert!(solver.assume(b));
+    assert!(solver.assume(c));
+    solver.set_backtrack_level(solver.decision_level());
+    assert!(solver.force_at_level(!d, 2, Antecedent::from_constraint_ptr(implied.ptr())));
+    assert_eq!(solver.level(d.var()), 3);
+
+    solver.set_backtrack_level(0);
+    assert!(solver.backtrack(2));
+    assert!(solver.is_true(!d));
+    assert_eq!(solver.level(d.var()), 2);
+}
+
+#[test]
+fn implied_literal_copy_assignment_preserves_all_fields() {
+    let p = pos_lit(1);
+    let source = ImpliedLiteral::with_data(p, 4, Antecedent::from_literal(!p), 23);
+    let mut target = ImpliedLiteral::new(!p, 1, Antecedent::new());
+    assert_ne!(target, source);
+
+    target = source;
+
+    assert_eq!(target, source);
+    assert_eq!(target.ante.data(), 23);
+}
+
+#[test]
 fn shared_context_defaults_match_bundle_a_kernel_surface() {
     let mut ctx = SharedContext::default();
 
@@ -893,6 +981,59 @@ fn solver_init_calls_heuristic_hooks_and_applies_sign_fix_preferences() {
     for var in 1..=3 {
         assert_eq!(solver.pref(var).get(ValueSet::user_value), value_false);
     }
+}
+
+#[test]
+fn decision_heuristic_default_construction_keeps_bump_as_a_noop() {
+    let mut heuristic = DefaultDecisionHeuristic;
+    let mut solver = Solver::new();
+    solver.set_num_vars(1);
+
+    let before = heuristic.select_literal(&solver, 1, 0);
+    let weighted = [WeightLiteral {
+        lit: pos_lit(1),
+        weight: 3,
+    }];
+
+    assert!(!heuristic.bump(&solver, &weighted, 1.0));
+    assert_eq!(heuristic.select_literal(&solver, 1, 0), before);
+}
+
+#[test]
+fn decision_heuristic_select_literal_prefers_explicit_values_then_default_sign() {
+    let heuristic = SelectFirst;
+
+    let mut solver = Solver::new();
+    solver.set_num_vars(2);
+    solver.strategies_mut().sign_def = SignHeu::SignNeg as u32;
+
+    assert_eq!(heuristic.select_literal(&solver, 1, 0), neg_lit(1));
+    assert_eq!(heuristic.select_literal(&solver, 1, 1), pos_lit(1));
+
+    solver.assignment_mut().request_prefs();
+    solver
+        .assignment_mut()
+        .set_pref(1, ValueSet::pref_value, value_true);
+    solver
+        .assignment_mut()
+        .set_pref(2, ValueSet::user_value, value_false);
+
+    assert_eq!(heuristic.select_literal(&solver, 1, -1), pos_lit(1));
+    assert_eq!(heuristic.select_literal(&solver, 2, 1), neg_lit(2));
+
+    let mut ctx = SharedContext::default();
+    let atom = ctx.add_typed_var(VarType::Atom, VarInfo::FLAG_INPUT);
+    let body = ctx.add_typed_var(VarType::Body, 0);
+    let shared_solver = ctx.start_add_constraints();
+
+    assert_eq!(
+        heuristic.select_literal(shared_solver, atom, 0),
+        neg_lit(atom)
+    );
+    assert_eq!(
+        heuristic.select_literal(shared_solver, body, 0),
+        pos_lit(body)
+    );
 }
 
 #[test]

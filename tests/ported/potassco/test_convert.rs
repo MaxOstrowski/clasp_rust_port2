@@ -385,10 +385,11 @@ fn convert_external_edges_and_heuristics_match_upstream_behavior() {
     let mut edges = TestObserver::default();
     {
         let mut convert = SmodelsConvert::new(&mut edges, true);
+        let edge_cond_atom = 1;
         convert.init_program(false);
         convert.begin_step();
         convert.output_atom(1, "a");
-        convert.acyc_edge(0, 1, &to_cond(1).cond());
+        convert.acyc_edge(0, 1, &to_cond(&edge_cond_atom).cond());
         convert.acyc_edge(1, 0, &[1, 2, 3]);
         convert.end_step();
     }
@@ -401,12 +402,26 @@ fn convert_external_edges_and_heuristics_match_upstream_behavior() {
     let mut heuristics = TestObserver::default();
     {
         let mut convert = SmodelsConvert::new(&mut heuristics, true);
+        let heuristic_cond_atom = 2;
+        let heuristic_init_cond_atom = 3;
         convert.init_program(false);
         convert.begin_step();
         convert.output_atom(1, "a");
         convert.output_atom(2, "b");
-        convert.heuristic(1, DomModifier::Level, 10, 2, &to_cond(2).cond());
-        convert.heuristic(1, DomModifier::Init, 10, 2, &to_cond(3).cond());
+        convert.heuristic(
+            1,
+            DomModifier::Level,
+            10,
+            2,
+            &to_cond(&heuristic_cond_atom).cond(),
+        );
+        convert.heuristic(
+            1,
+            DomModifier::Init,
+            10,
+            2,
+            &to_cond(&heuristic_init_cond_atom).cond(),
+        );
         convert.end_step();
     }
     assert_eq!(heuristics.rules[&SmodelsType::Basic].len(), 1);
@@ -453,11 +468,24 @@ fn smodels_reader_converts_edge_and_heuristic_atoms_back_to_directives() {
     );
     assert_eq!(result, 0);
     assert_eq!(observer.base.edges.len(), 3);
-    assert_eq!(observer.base.edges[0].cond, to_cond(1).cond().to_vec());
-    assert_eq!(observer.base.edges[1].cond, to_cond(2).cond().to_vec());
-    assert_eq!(observer.base.edges[2].cond, to_cond(3).cond().to_vec());
+    let first_edge_cond = 1;
+    let second_edge_cond = 2;
+    let third_edge_cond = 3;
+    assert_eq!(
+        observer.base.edges[0].cond,
+        to_cond(&first_edge_cond).cond().to_vec()
+    );
+    assert_eq!(
+        observer.base.edges[1].cond,
+        to_cond(&second_edge_cond).cond().to_vec()
+    );
+    assert_eq!(
+        observer.base.edges[2].cond,
+        to_cond(&third_edge_cond).cond().to_vec()
+    );
 
     assert_eq!(observer.base.heuristics.len(), 2);
+    let first_heuristic_cond = 6;
     assert_eq!(
         observer.base.heuristics[0],
         Heuristic {
@@ -465,9 +493,10 @@ fn smodels_reader_converts_edge_and_heuristic_atoms_back_to_directives() {
             modifier: DomModifier::Sign,
             bias: -1,
             prio: 1,
-            cond: to_cond(6).cond().to_vec(),
+            cond: to_cond(&first_heuristic_cond).cond().to_vec(),
         }
     );
+    let second_heuristic_cond = 7;
     assert_eq!(
         observer.base.heuristics[1],
         Heuristic {
@@ -475,7 +504,7 @@ fn smodels_reader_converts_edge_and_heuristic_atoms_back_to_directives() {
             modifier: DomModifier::Factor,
             bias: 2,
             prio: 1,
-            cond: to_cond(7).cond().to_vec(),
+            cond: to_cond(&second_heuristic_cond).cond().to_vec(),
         }
     );
 }

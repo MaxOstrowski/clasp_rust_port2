@@ -4,6 +4,7 @@ pub mod aspif;
 pub mod aspif_text;
 pub mod basic_types;
 pub mod bits;
+pub mod catch2_fuzzing_null_ostream;
 pub mod clingo;
 pub mod convert;
 pub mod enums;

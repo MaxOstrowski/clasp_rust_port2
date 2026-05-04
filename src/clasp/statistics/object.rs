@@ -36,6 +36,13 @@ pub trait StatisticArray {
     fn at<'a>(&'a self, index: u32) -> StatisticObject<'a>;
 }
 
+pub trait StatisticArrayElements {
+    type Item;
+
+    fn size(&self) -> u32;
+    fn item(&self, index: u32) -> &Self::Item;
+}
+
 #[derive(Clone, Copy)]
 pub enum StatisticObject<'a> {
     InlineValue(f64),
@@ -48,15 +55,16 @@ pub enum StatisticObject<'a> {
     Erased {
         obj: *const (),
         vtab: &'static Vtab,
+        op_id: usize,
         _life: PhantomData<&'a ()>,
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum StatisticObjectTypeId {
     InlineValue,
     ValueRef { value_fn: usize, op_id: usize },
-    Erased { vtab: usize },
+    Erased { vtab: usize, op_id: usize },
 }
 
 impl Default for StatisticObject<'_> {
@@ -97,20 +105,42 @@ impl PartialEq for StatisticObject<'_> {
                 Self::Erased {
                     obj: lhs_obj,
                     vtab: lhs_vtab,
+                    op_id: lhs_op,
                     ..
                 },
                 Self::Erased {
                     obj: rhs_obj,
                     vtab: rhs_vtab,
+                    op_id: rhs_op,
                     ..
                 },
-            ) => lhs_obj == rhs_obj && std::ptr::eq(lhs_vtab, rhs_vtab),
+            ) => lhs_obj == rhs_obj && std::ptr::eq(lhs_vtab, rhs_vtab) && lhs_op == rhs_op,
             _ => false,
         }
     }
 }
 
 impl Eq for StatisticObject<'_> {}
+
+impl PartialOrd for StatisticObject<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for StatisticObject<'_> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        (self.object() as usize)
+            .cmp(&(other.object() as usize))
+            .then_with(|| self.type_id().cmp(&other.type_id()))
+            .then_with(|| match (*self, *other) {
+                (Self::InlineValue(lhs), Self::InlineValue(rhs)) => {
+                    lhs.to_bits().cmp(&rhs.to_bits())
+                }
+                _ => core::cmp::Ordering::Equal,
+            })
+    }
+}
 
 impl<'a> StatisticObject<'a> {
     pub const fn from_f64(value: f64) -> Self {
@@ -139,6 +169,7 @@ impl<'a> StatisticObject<'a> {
         Self::Erased {
             obj: core::ptr::from_ref(obj).cast::<()>(),
             vtab: Vtab::map::<T>(),
+            op_id: 0,
             _life: PhantomData,
         }
     }
@@ -147,6 +178,19 @@ impl<'a> StatisticObject<'a> {
         Self::Erased {
             obj: core::ptr::from_ref(obj).cast::<()>(),
             vtab: Vtab::array::<T>(),
+            op_id: 0,
+            _life: PhantomData,
+        }
+    }
+
+    pub fn array_with<T: StatisticArrayElements>(
+        obj: &'a T,
+        getter: for<'b> fn(&'b T::Item) -> StatisticObject<'b>,
+    ) -> Self {
+        Self::Erased {
+            obj: core::ptr::from_ref(obj).cast::<()>(),
+            vtab: Vtab::mapped_array::<T>(),
+            op_id: getter as usize,
             _life: PhantomData,
         }
     }
@@ -190,8 +234,10 @@ impl<'a> StatisticObject<'a> {
 
     pub fn index(&self, index: u32) -> StatisticObject<'a> {
         match self {
-            Self::Erased { obj, vtab, .. } if vtab.type_ == StatisticType::Array => unsafe {
-                let child = (vtab.at_arr)(*obj, index);
+            Self::Erased {
+                obj, vtab, op_id, ..
+            } if vtab.type_ == StatisticType::Array => unsafe {
+                let child = (vtab.at_arr)(*obj, index, *op_id);
                 mem::transmute::<StatisticObject<'static>, StatisticObject<'a>>(child)
             },
             _ => panic_type(StatisticType::Array, self.type_()),
@@ -240,9 +286,12 @@ impl<'a> StatisticObject<'a> {
                 value: value as usize,
                 op_id,
             },
-            Self::Erased { obj, vtab, .. } => super::store::ExternalObjectKey::Erased {
+            Self::Erased {
+                obj, vtab, op_id, ..
+            } => super::store::ExternalObjectKey::Erased {
                 obj: obj as usize,
                 vtab: vtab as *const Vtab as usize,
+                op_id,
             },
         }
     }
@@ -254,8 +303,9 @@ impl<'a> StatisticObject<'a> {
                 value_fn: value as usize,
                 op_id,
             },
-            Self::Erased { vtab, .. } => StatisticObjectTypeId::Erased {
+            Self::Erased { vtab, op_id, .. } => StatisticObjectTypeId::Erased {
                 vtab: vtab as *const Vtab as usize,
+                op_id,
             },
         }
     }
@@ -271,7 +321,7 @@ pub struct Vtab {
     size: unsafe fn(*const ()) -> u32,
     key: unsafe fn(*const (), u32) -> &'static str,
     at_map: unsafe fn(*const (), &str) -> StatisticObject<'static>,
-    at_arr: unsafe fn(*const (), u32) -> StatisticObject<'static>,
+    at_arr: unsafe fn(*const (), u32, usize) -> StatisticObject<'static>,
 }
 
 impl Vtab {
@@ -291,6 +341,10 @@ impl Vtab {
 
     fn array<T: StatisticArray>() -> &'static Self {
         &ArrayVtab::<T>::VTAB
+    }
+
+    fn mapped_array<T: StatisticArrayElements>() -> &'static Self {
+        &MappedArrayVtab::<T>::VTAB
     }
 }
 
@@ -325,8 +379,28 @@ unsafe fn v_arr_size<T: StatisticArray>(obj: *const ()) -> u32 {
     unsafe { (*(obj.cast::<T>())).size() }
 }
 
-unsafe fn v_arr_at<T: StatisticArray>(obj: *const (), index: u32) -> StatisticObject<'static> {
+unsafe fn v_arr_at<T: StatisticArray>(
+    obj: *const (),
+    index: u32,
+    _op_id: usize,
+) -> StatisticObject<'static> {
     let child = unsafe { (*(obj.cast::<T>())).at(index) };
+    unsafe { mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(child) }
+}
+
+type ArrayGetter<T> = for<'a> fn(&'a <T as StatisticArrayElements>::Item) -> StatisticObject<'a>;
+
+unsafe fn v_mapped_arr_size<T: StatisticArrayElements>(obj: *const ()) -> u32 {
+    unsafe { (*(obj.cast::<T>())).size() }
+}
+
+unsafe fn v_mapped_arr_at<T: StatisticArrayElements>(
+    obj: *const (),
+    index: u32,
+    op_id: usize,
+) -> StatisticObject<'static> {
+    let getter = unsafe { mem::transmute::<usize, ArrayGetter<T>>(op_id) };
+    let child = getter(unsafe { (*(obj.cast::<T>())).item(index) });
     unsafe { mem::transmute::<StatisticObject<'_>, StatisticObject<'static>>(child) }
 }
 
@@ -347,6 +421,16 @@ impl<T: StatisticArray> ArrayVtab<T> {
         let mut v = Vtab::new(StatisticType::Array);
         v.size = v_arr_size::<T>;
         v.at_arr = v_arr_at::<T>;
+        v
+    };
+}
+
+struct MappedArrayVtab<T>(PhantomData<T>);
+impl<T: StatisticArrayElements> MappedArrayVtab<T> {
+    const VTAB: Vtab = {
+        let mut v = Vtab::new(StatisticType::Array);
+        v.size = v_mapped_arr_size::<T>;
+        v.at_arr = v_mapped_arr_at::<T>;
         v
     };
 }
@@ -423,6 +507,6 @@ unsafe fn panic_at_map(_obj: *const (), _key: &str) -> StatisticObject<'static> 
     panic_type(StatisticType::Map, StatisticType::Value)
 }
 
-unsafe fn panic_at_arr(_obj: *const (), _index: u32) -> StatisticObject<'static> {
+unsafe fn panic_at_arr(_obj: *const (), _index: u32, _op_id: usize) -> StatisticObject<'static> {
     panic_type(StatisticType::Array, StatisticType::Value)
 }

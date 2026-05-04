@@ -12,6 +12,7 @@
 //! context, clause, and minimize-constraint infrastructure.
 
 use crate::clasp::literal::Var_t;
+use crate::clasp::shared_context::SharedContext;
 use crate::potassco::bits;
 use crate::potassco::utils::DynamicBitset;
 
@@ -153,8 +154,13 @@ impl ModelEnumerator {
         self.project.contains(var)
     }
 
-    pub fn add_project(&mut self, var: Var_t) -> bool {
+    pub fn add_project_var(&mut self, var: Var_t) -> bool {
         self.project.add(var)
+    }
+
+    pub fn add_project(&mut self, ctx: &mut SharedContext, var: Var_t) {
+        self.add_project_var(var);
+        ctx.set_frozen(var, true);
     }
 
     pub fn clear_project(&mut self) {

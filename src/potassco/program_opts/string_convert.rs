@@ -462,10 +462,10 @@ impl ParseChars for bool {
 
 impl ParseChars for char {
     fn from_chars_impl(input: &str, out: &mut Self) -> FromCharsResult {
-        let mut temp = 0u128;
-        let result = parse_unsigned_limit(input, &mut temp, u8::MAX as u128);
+        let mut temp = 0i128;
+        let result = parse_signed_limit(input, &mut temp, i8::MIN as i128, i8::MAX as i128);
         if parse::ok(result) {
-            if let Some(value) = char::from_u32(temp as u32) {
+            if let Some(value) = char::from_u32((temp as i8 as u8).into()) {
                 *out = value;
                 return result;
             }

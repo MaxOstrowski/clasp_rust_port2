@@ -1,4 +1,4 @@
-use rust_clasp::clasp::dependency_graph::{ExtDepGraph, ExtDepGraphError};
+use rust_clasp::clasp::dependency_graph::{CmpArc, ExtDepGraph, ExtDepGraphError};
 use rust_clasp::clasp::literal::{pos_lit, to_lit};
 
 #[test]
@@ -148,4 +148,60 @@ fn ext_dep_graph_finalize_is_idempotent_while_frozen() {
     assert_eq!(graph.finalize(), 1);
     assert_eq!(graph.edges(), 1);
     assert_eq!(graph.arc(0).lit(), pos_lit(4));
+}
+
+#[test]
+fn ext_dep_graph_begin_accessors_ignore_invalid_offsets() {
+    let mut graph = ExtDepGraph::new(3);
+    graph.add_edge(pos_lit(1), 0, 1).unwrap();
+    graph.finalize();
+
+    assert!(graph.fwd_begin(1).is_none());
+    assert!(graph.inv_begin(0).is_none());
+    assert!(graph.fwd_begin(2).is_none());
+    assert!(graph.inv_begin(2).is_none());
+}
+
+#[test]
+fn ext_dep_graph_arc_next_stays_within_same_tail_group() {
+    let mut graph = ExtDepGraph::new(3);
+    graph.add_edge(pos_lit(3), 1, 2).unwrap();
+    graph.add_edge(pos_lit(1), 0, 1).unwrap();
+    graph.add_edge(pos_lit(2), 0, 2).unwrap();
+    graph.finalize();
+
+    let arcs = graph.fwd_arcs_from(0);
+    assert_eq!(arcs.len(), 2);
+    assert_eq!(arcs[0].next(arcs, 0), Some(&arcs[1]));
+    assert_eq!(arcs[1].next(arcs, 1), None);
+    assert_eq!(arcs[0].next(arcs, 1), None);
+}
+
+#[test]
+fn ext_dep_graph_inv_next_tracks_continuation_bit() {
+    let mut graph = ExtDepGraph::new(3);
+    graph.add_edge(pos_lit(3), 2, 1).unwrap();
+    graph.add_edge(pos_lit(1), 0, 1).unwrap();
+    graph.add_edge(pos_lit(2), 0, 2).unwrap();
+    graph.finalize();
+
+    let inverse = graph.inv_arcs_to(1);
+    assert_eq!(inverse.len(), 2);
+    assert_eq!(inverse[0].next(inverse, 0), Some(&inverse[1]));
+    assert_eq!(inverse[1].next(inverse, 1), None);
+    assert_eq!(inverse[0].next(inverse, 1), None);
+}
+
+#[test]
+fn ext_dep_graph_cmp_arc_matches_cpp_ordering_rules() {
+    let by_tail = CmpArc::<0>::new();
+    let by_head = CmpArc::<1>::new();
+    let left = rust_clasp::clasp::dependency_graph::Arc::create(pos_lit(1), 0, 2);
+    let right = rust_clasp::clasp::dependency_graph::Arc::create(pos_lit(2), 1, 2);
+    let last = rust_clasp::clasp::dependency_graph::Arc::create(pos_lit(3), 1, 3);
+
+    assert!(by_tail.less_arc_node(&left, 1));
+    assert!(!by_tail.less_node_arc(1, &right));
+    assert!(by_tail.less_arc_arc(&left, &right));
+    assert!(by_head.less_arc_arc(&right, &last));
 }

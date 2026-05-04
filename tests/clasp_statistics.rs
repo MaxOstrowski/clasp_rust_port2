@@ -4,8 +4,8 @@ use rust_clasp::clasp::claspfwd::Asp;
 use rust_clasp::clasp::shared_context::ProblemStats;
 use rust_clasp::clasp::solver_types::SolverStats;
 use rust_clasp::clasp::statistics::{
-    ClaspStatistics, Operation, StatisticArray, StatisticObject, StatisticObjectTypeId,
-    StatsVisitor,
+    ClaspStatistics, Operation, StatisticArray, StatisticArrayElements, StatisticObject,
+    StatisticObjectTypeId, StatsVisitor,
 };
 use rust_clasp::potassco::clingo::StatisticsType;
 use rust_clasp::potassco::error::Error;
@@ -338,6 +338,28 @@ impl StatisticArray for PairStats {
     }
 }
 
+struct NamedValue {
+    value: u64,
+}
+
+struct NamedValueArray([NamedValue; 2]);
+
+impl StatisticArrayElements for NamedValueArray {
+    type Item = NamedValue;
+
+    fn size(&self) -> u32 {
+        self.0.len() as u32
+    }
+
+    fn item(&self, index: u32) -> &Self::Item {
+        &self.0[index as usize]
+    }
+}
+
+fn named_value_stat<'a>(item: &'a NamedValue) -> StatisticObject<'a> {
+    StatisticObject::from_value(&item.value)
+}
+
 #[test]
 fn compatibility_wrappers_preserve_statistics_surface_behavior() {
     let value_a = 7u64;
@@ -365,6 +387,16 @@ fn compatibility_wrappers_preserve_statistics_surface_behavior() {
     assert_eq!(array_obj.r#type(), StatisticsType::Array);
     assert_eq!(array_obj.at_index(1).value(), 9.0);
     assert_eq!(array_obj.object(), core::ptr::from_ref(&array).cast::<()>());
+
+    let mapped = NamedValueArray([NamedValue { value: 4 }, NamedValue { value: 8 }]);
+    let mapped_array = StatisticObject::array_with(&mapped, named_value_stat);
+    assert_eq!(mapped_array.r#type(), StatisticsType::Array);
+    assert_eq!(mapped_array.at_index(0).value(), 4.0);
+    assert_eq!(mapped_array.at_index(1).value(), 8.0);
+    assert_eq!(
+        mapped_array.object(),
+        core::ptr::from_ref(&mapped).cast::<()>()
+    );
 
     struct ExternalVisitor {
         seen: u32,
@@ -397,6 +429,42 @@ fn compatibility_wrappers_preserve_statistics_surface_behavior() {
     assert!(!stats.visitExternal("missing", &mut visitor));
     assert_eq!(visitor.seen, 1);
     assert_eq!(visitor.value, 7.0);
+}
+
+#[test]
+fn statistic_object_assignment_matches_upstream_reset_behavior() {
+    let def = StatisticObject::default();
+    let value = 32u64;
+    let mut stat = StatisticObject::from_value(&value);
+
+    assert_eq!(def.r#type(), StatisticsType::Value);
+    assert_eq!(def.value(), 0.0);
+    assert_eq!(stat.object(), core::ptr::from_ref(&value).cast::<()>());
+    assert!(!stat.eq_type_id(&def));
+    assert_eq!(stat.r#type(), StatisticsType::Value);
+    assert_eq!(stat.value(), 32.0);
+
+    stat = StatisticObject::default();
+
+    assert_eq!(stat.r#type(), StatisticsType::Value);
+    assert_eq!(stat.value(), 0.0);
+    assert!(stat.eq_type_id(&def));
+}
+
+#[test]
+fn statistic_object_order_matches_upstream_identity_comparison() {
+    let value_a = 5u64;
+    let value_b = 9u64;
+    let lhs = StatisticObject::from_value(&value_a);
+    let rhs = StatisticObject::from_value(&value_b);
+    let expected =
+        (lhs.object() as usize, lhs.type_id()).cmp(&(rhs.object() as usize, rhs.type_id()));
+
+    assert_eq!(lhs.cmp(&rhs), expected);
+
+    let inline_lhs = StatisticObject::from_f64(1.0);
+    let inline_rhs = StatisticObject::from_f64(2.0);
+    assert!(inline_lhs < inline_rhs);
 }
 
 #[test]

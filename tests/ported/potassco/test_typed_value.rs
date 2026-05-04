@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use rust_clasp::potassco::program_opts::{
-    IntrusiveRefCounted, IntrusiveSharedPtr, Option as ProgramOption, action, action_default,
-    action_with_option_default, flag, flag_with, flag_with_init, make_custom, make_shared, parse,
-    parse_with_option, store_false, store_to, store_to_init, store_to_with, value, values,
+    IntrusiveRefCounted, IntrusiveSharedPtr, Option as ProgramOption, ParseValues, Parser, action,
+    action_default, action_with_option_default, flag, flag_with, flag_with_init, make_custom,
+    make_shared, parse, parse_with_option, store_false, store_to, store_to_init, store_to_with,
+    value, values,
 };
 
 struct Foo {
@@ -233,6 +234,20 @@ enum Color {
     Red = 2,
     Green = 10,
     Blue = 20,
+}
+
+#[test]
+fn parse_values_constructor_and_parser_allow_convertible_output_types() {
+    let mut parser = ParseValues::new(vec![
+        ("Red".to_owned(), 2_i32),
+        ("Green".to_owned(), 10_i32),
+        ("Blue".to_owned(), 20_i32),
+    ]);
+    let mut widened = 0_i64;
+
+    assert!(parser.parse("GREEN", &mut widened));
+    assert_eq!(widened, 10_i64);
+    assert!(!parser.parse("Blu", &mut widened));
 }
 
 #[test]

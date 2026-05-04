@@ -5,7 +5,6 @@ use crate::potassco::basic_types::{
     AbstractProgram, Atom, AtomSpan, BodyType, HeadType, Lit, LitSpan, Weight, WeightLit,
     WeightLitSpan,
 };
-use crate::potassco::enums::{EnumTag, enum_max};
 use crate::potassco_check_pre;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -327,8 +326,7 @@ impl RuleBuilder {
     pub fn head_type(&self) -> HeadType {
         match self.head_kind {
             HeadKind::Rule(head_type) => head_type,
-            HeadKind::Minimize => HeadType::from_underlying(enum_max::<HeadType>() + 1)
-                .unwrap_or(HeadType::Disjunctive),
+            HeadKind::Minimize => HeadType::Minimize,
         }
     }
 

@@ -1,7 +1,9 @@
 //! Rust port of original_clasp/libpotassco/tests/test_application.cpp.
 
 use std::collections::BTreeMap;
+use std::env;
 use std::panic::panic_any;
+use std::process::Command;
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -26,6 +28,11 @@ fn style(msg: &str, ts: TextStyle) -> String {
 }
 
 fn alarm_test_guard() -> &'static Mutex<()> {
+    static GUARD: Mutex<()> = Mutex::new(());
+    &GUARD
+}
+
+fn application_test_guard() -> &'static Mutex<()> {
     static GUARD: Mutex<()> = Mutex::new(());
     &GUARD
 }
@@ -228,6 +235,7 @@ fn application_formatting_and_styles_match_upstream_behavior() {
 
 #[test]
 fn fail_and_stop_are_noops_when_not_running_and_raise_when_running() {
+    let _guard = application_test_guard().lock().unwrap();
     let app = MyApp::default();
     app.fail(79, "Something is not right!", "Info line 1\nInfo line 2");
     assert_eq!(app.get_exit_code(), 1);
@@ -260,6 +268,7 @@ fn fail_and_stop_are_noops_when_not_running_and_raise_when_running() {
 
 #[test]
 fn other_errors_are_formatted_like_upstream_messages() {
+    let _guard = application_test_guard().lock().unwrap();
     let mut app = MyApp::default();
     app.enable_colored_messages(true);
     app.do_run = Some(Box::new(|_| {
@@ -301,6 +310,7 @@ fn other_errors_are_formatted_like_upstream_messages() {
 
 #[test]
 fn help_version_and_argv_overload_work() {
+    let _guard = application_test_guard().lock().unwrap();
     let mut app = MyApp::default();
     assert_eq!(app.main(&["-h", "-V3", "--vers", "hallo"]), 0);
     assert_eq!(app.get_verbose(), 3);
@@ -336,7 +346,27 @@ fn help_version_and_argv_overload_work() {
 }
 
 #[test]
+fn get_instance_is_only_visible_while_the_application_is_running() {
+    let _guard = application_test_guard().lock().unwrap();
+    assert!(<dyn Application>::get_instance().is_none());
+
+    let mut app = MyApp {
+        do_run: Some(Box::new(|app| {
+            let instance = <dyn Application>::get_instance().unwrap();
+            let instance = unsafe { &*instance };
+            assert!(std::ptr::eq(instance.base(), app.base()));
+            0
+        })),
+        ..MyApp::default()
+    };
+
+    assert_eq!(app.main(&[]), 0);
+    assert!(<dyn Application>::get_instance().is_none());
+}
+
+#[test]
 fn invalid_help_argument_matches_upstream_messages() {
+    let _guard = application_test_guard().lock().unwrap();
     let mut app = MyApp::default();
     assert_eq!(app.main(&["-h3"]), 1);
     assert_eq!(
@@ -366,6 +396,7 @@ fn invalid_help_argument_matches_upstream_messages() {
 
 #[test]
 fn platform_alarm_and_application_alarm_work() {
+    let _app_guard = application_test_guard().lock().unwrap();
     let _guard = alarm_test_guard().lock().unwrap();
     let stop = alarm_stop();
     stop.store(0, Ordering::SeqCst);
@@ -446,4 +477,75 @@ fn platform_alarm_and_application_alarm_work() {
     assert_eq!(app.main(&["--time-limit=5"]), 0);
     assert_eq!(stop.load(Ordering::SeqCst), 14);
     assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn fast_exit_option_exits_immediately_after_flushing() {
+    let _guard = application_test_guard().lock().unwrap();
+    const HELPER_ENV: &str = "RUST_CLASP_APPLICATION_FAST_EXIT_HELPER";
+    const TEST_NAME: &str = "test_application::fast_exit_option_exits_immediately_after_flushing";
+    if env::var_os(HELPER_ENV).is_some() {
+        struct FastExitApp {
+            base: ApplicationBase,
+        }
+
+        impl Application for FastExitApp {
+            fn base(&self) -> &ApplicationBase {
+                &self.base
+            }
+
+            fn get_name(&self) -> &str {
+                "FastExitApp"
+            }
+
+            fn get_version(&self) -> &str {
+                "1.0"
+            }
+
+            fn init_options<'a>(&mut self, _root: &mut OptionContext<'a>) {}
+
+            fn validate_options<'a>(
+                &mut self,
+                _root: &OptionContext<'a>,
+                _parsed: &ParsedOptions,
+            ) -> Result<(), ProgramOptionsError> {
+                Ok(())
+            }
+
+            fn on_help(&mut self, _help: &str, _level: DescriptionLevel) {}
+
+            fn on_version(&mut self, _version: &str) {}
+
+            fn setup(&mut self) {}
+
+            fn run(&mut self) {
+                self.set_exit_code(37);
+            }
+
+            fn on_unhandled_exception(&mut self, _msg: &str) -> bool {
+                false
+            }
+
+            fn flush(&mut self) {
+                println!("fast-exit-flush");
+            }
+        }
+
+        let mut app = FastExitApp {
+            base: ApplicationBase::new(),
+        };
+        let _ = app.main(&["--fast-exit"]);
+        panic!("fast exit should have terminated the process");
+    }
+
+    let output = Command::new(env::current_exe().unwrap())
+        .args(["--exact", TEST_NAME, "--nocapture"])
+        .env(HELPER_ENV, "1")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(37));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("fast-exit-flush\n"));
+    assert!(output.stderr.is_empty());
 }

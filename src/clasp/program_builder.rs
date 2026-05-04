@@ -23,6 +23,17 @@ pub trait ProgramBuilder {
     fn get_assumptions(&self, out: &mut LitVec);
     fn get_weak_bounds(&self, out: &mut SumVec);
 
-    fn problem_type(&self) -> ProblemType;
+    fn do_type(&self) -> ProblemType;
+
+    fn problem_type(&self) -> ProblemType {
+        self.do_type()
+    }
+
     fn parser(&mut self) -> &mut (dyn ProgramParserApi + '_);
+
+    fn r#type(&self) -> ProblemType {
+        self.do_type()
+    }
+
+    fn do_get_weak_bounds(&self, _out: &mut SumVec) {}
 }

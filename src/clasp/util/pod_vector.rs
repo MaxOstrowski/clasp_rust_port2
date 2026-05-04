@@ -185,6 +185,20 @@ impl<T: Copy> PodVector<T> {
     }
 
     #[must_use]
+    pub fn begin(&self) -> *const T {
+        self.data()
+    }
+
+    #[must_use]
+    pub fn end(&self) -> *const T {
+        if self.len == 0 {
+            self.begin()
+        } else {
+            unsafe { self.base_ptr().add(self.len) }
+        }
+    }
+
+    #[must_use]
     pub fn data_mut(&mut self) -> *mut T {
         if self.capacity() == 0 {
             ptr::null_mut()
@@ -286,15 +300,13 @@ impl<T: Copy> PodVector<T> {
 
     pub fn resize(&mut self, new_size: usize, value: T) {
         if new_size > self.len {
+            let additional = new_size - self.len;
             if new_size > self.capacity() {
-                self.reserve(new_size);
+                self.append_realloc(additional, value);
+                return;
             }
             unsafe {
-                detail::fill(
-                    self.storage.as_mut_ptr().add(self.len),
-                    new_size - self.len,
-                    value,
-                );
+                detail::fill(self.storage.as_mut_ptr().add(self.len), additional, value);
             }
         }
         self.len = new_size;
@@ -317,8 +329,8 @@ impl<T: Copy> PodVector<T> {
 
     pub fn push_back(&mut self, value: T) {
         if self.len == self.capacity() {
-            let additional = self.grow_size(1);
-            self.reserve(additional);
+            self.append_realloc(1, value);
+            return;
         }
         unsafe {
             self.storage
@@ -417,6 +429,17 @@ impl<T: Copy> PodVector<T> {
             new_capacity = scaled;
         }
         new_capacity
+    }
+
+    fn append_realloc(&mut self, count: usize, value: T) {
+        let new_capacity = self.grow_size(count);
+        let mut next = Self::allocate(new_capacity);
+        unsafe {
+            ptr::copy_nonoverlapping(self.storage.as_ptr(), next.as_mut_ptr(), self.len);
+            detail::fill(next.as_mut_ptr().add(self.len), count, value);
+        }
+        self.storage = next;
+        self.len += count;
     }
 
     fn ensure_insert_capacity(&mut self, count: usize) {

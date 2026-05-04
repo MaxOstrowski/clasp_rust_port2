@@ -18,6 +18,7 @@ clasp/mt/thread.h: ported
     tests/clasp_mt_thread.rs
 clasp/util/left_right_sequence.h: ported
     src/clasp/util/left_right_sequence.rs
+    tests/ported/clasp/util/left_right_sequence.rs
 clasp/cli/clasp_cli_configs.inl: ported
     src/clasp/cli/clasp_cli_configs.rs
     tests/ported/clasp/clasp_cli_configs_test.rs
@@ -32,15 +33,20 @@ clasp/util/multi_queue.h: ported
     tests/clasp_util_multi_queue.rs
 clasp/util/timer.h: ported
     src/clasp/util/timer.rs
+    tests/ported/clasp/util/timer_test.rs
 libpotassco/potassco/program_opts/errors.h: ported
     src/potassco/program_opts/errors.rs
     tests/ported/potassco/test_options.rs
 libpotassco/potassco/graph.h: ported
     src/potassco/graph.rs
+    tests/ported/potassco/test_graph.rs
+    tests/ported_potassco_graph.rs
 clasp/pod_vector.h: ported
     src/clasp/pod_vector.rs
+    tests/ported/clasp/pod_vector.rs
 clasp/util/indexed_priority_queue.h: ported
     src/clasp/util/indexed_priority_queue.rs
+    tests/ported/clasp/util/indexed_priority_queue_test.rs
 libpotassco/potassco/enum.h: ported
     src/potassco/enums.rs
     tests/ported/potassco/test_enum.rs
@@ -74,19 +80,22 @@ libpotassco/potassco/basic_types.h: ported
     src/potassco/basic_types.rs
 libpotassco/potassco/utils.h: ported
     src/potassco/utils.rs
+    tests/ported/potassco/test_utils.rs
 libpotassco/potassco/program_opts/program_options.h: ported
     src/potassco/program_opts/program_options.rs
 clasp/asp_preprocessor.h: blocked by clasp/logic_program.h, clasp/logic_program_types.h, clasp/shared_context.h, src/logic_program.cpp, src/logic_program_types.cpp; rust stub only
     src/clasp/asp_preprocessor.rs
 libpotassco/potassco/program_opts/typed_value.h: ported
     src/potassco/program_opts/typed_value.rs
+    tests/ported/potassco/test_typed_value.rs
 clasp/constraint.h: ported
     src/clasp/constraint.rs
     tests/clasp_constraint.rs
     tests/ported/clasp/constraint_test.rs
     tests/ported/clasp/literal_test.rs
-clasp/program_builder.h: partially ported, ProgramBuilder boundary trait plus LitVec/SumVec aliases are ported; concrete builder runtime remains blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h
+clasp/program_builder.h: partially ported, ProgramBuilder boundary trait plus LitVec/SumVec aliases and the solver-independent ProgramBuilder::doGetWeakBounds/ProgramBuilder::doType/ProgramBuilder::type methods are ported; builder state, parser caching, and concrete builder runtime remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h
     src/clasp/program_builder.rs
+    tests/clasp_program_builder.rs
 libpotassco/potassco/clingo.h: ported
     src/potassco/clingo.rs
     tests/ported/potassco/test_clingo.rs
@@ -102,7 +111,7 @@ libpotassco/tests/test_common.h: ported
     tests/ported_potassco_test_common.rs
 libpotassco/potassco/rule_utils.h: ported
     src/potassco/rule_utils.rs
-libpotassco/potassco/format.h: ported
+libpotassco/potassco/format.h: partially ported, TextStyle::Spec::fromString, TextStyle::resetStr, and several BasicCharBufferT wrappers now match upstream more closely; appendSep plus a few remaining C-string and assignment semantics still lack full parity
     src/potassco/format.rs
     tests/ported/potassco/test_format.rs
 libpotassco/src/utils.cpp: ported
@@ -123,9 +132,10 @@ clasp/solver_types.h: partially ported, CoreStats/JumpStats/ExtendedStats/Solver
     src/clasp/clause.rs
     tests/ported/clasp/solver_test.rs
     tests/ported/clasp/clause_test.rs
-clasp/weight_constraint.h: blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h; upstream unit still needs unresolved solver watch/undo/heuristic APIs plus shared-context freeze/share support, rust stub only
+clasp/weight_constraint.h: partially ported, solver-independent WeightLitsRep helpers (sat/unsat/open/hasWeights/literals) are ported; the remaining WeightConstraint/WL/UndoInfo runtime is still blocked by clasp/solver_types.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h because it needs unresolved solver watch/undo/heuristic APIs plus shared-context freeze/share support
     src/clasp/weight_constraint.rs
-clasp/statistics.h: partially ported, solver-agnostic StatisticObject including object()/type() compatibility wrappers plus the split StatsVisitor and ClaspStatistics writable/external store over Potassco AbstractStatistics are ported; downstream facade/output/runtime traversal remains blocked by clasp/clasp_facade.h, clasp/cli/clasp_output.h, clasp/logic_program.h, and their unported users
+    tests/ported/clasp/weight_constraint_test.rs
+clasp/statistics.h: ported, the solver-agnostic StatisticObject surface including mapped-array construction and comparison plus the split StatsVisitor and ClaspStatistics writable/external store over Potassco AbstractStatistics are ported; downstream facade/output/runtime traversal that consumes these statistics remains blocked in clasp/clasp_facade.h, clasp/cli/clasp_output.h, clasp/logic_program.h, and their unported users
     src/clasp/statistics.rs
     src/clasp/statistics/object.rs
     src/clasp/statistics/store.rs
@@ -134,29 +144,33 @@ libpotassco/tests/test_error.cpp: ported
     tests/ported/potassco/test_error.rs
 libpotassco/src/theory_data.cpp: ported
     src/potassco/theory_data.rs
-clasp/parser.h: partially ported, detect_problem_type, ParserOptions bitmask handling, ProgramParser API, and ASP parser infrastructure with incremental parse/more semantics are ported; SAT/PB reader stack and logic-program adapters remain blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h
+clasp/parser.h: partially ported, detect_problem_type, ParserOptions bitmask handling, ProgramParser API, and ASP smodels/aspif parser infrastructure with incremental parse/more semantics are ported; SAT/PB reader stack and logic-program adapters remain blocked by clasp/program_builder.h, clasp/shared_context.h, clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h
     src/clasp/parser.rs
+    tests/ported/clasp/parser_test.rs
 libpotassco/potassco/aspif.h: ported
-    clasp/clause.h: partially ported, ClauseRep, SharedLiterals storage/refcount/simplify, ClauseCreator prepare/status/ignore plus end/create/integrate paths, and the explicit Clause/ClauseHead watched-literal runtime with reason/simplify/strengthen/cloneAttach/destroy are ported; shared-clause distribution, allocator-specific small-clause storage, sat-prepro/sharing hooks, and the remaining clause/shared-context integration remain blocked
+    src/potassco/aspif.rs
     tests/ported/potassco/test_aspif.rs
+    tests/ported_potassco_aspif.rs
 libpotassco/potassco/aspif_text.h: ported
     src/potassco/aspif_text.rs
+    tests/ported/potassco/test_text.rs
 libpotassco/potassco/convert.h: ported
     src/potassco/convert.rs
     tests/ported/potassco/test_convert.rs
     tests/ported_potassco_convert.rs
 libpotassco/potassco/smodels.h: ported
-    clasp/solver.h: partially ported, the Bundle A solver kernel subset is ported: SharedContext backlink access, Assignment-backed value/level/reason/data/trail/queue helpers, generic/clause watch management, undo watches, force/assume/conflict handling, short-implication plus generic-watch and explicit ClauseHead watch propagation, root/backtrack/clearAssumptions bookkeeping, the current SelectFirst/default literal-selection hook, tag-aux creation plus conditional learnt-clause remove/strengthen lifecycle, explicit constraint/learnt attachment, Bundle A search/restart control, solver-local model detection, and current learnt-db reduction over the explicit learnt constraint store; dynamic restart-block mutation, full heuristic/search control, enumeration/minimize-specific model validation, and multi-solver/distribution APIs remain blocked
+    src/potassco/smodels.rs
     tests/ported/potassco/test_smodels.rs
-        # BundleA conflict-helper cluster (freeze/unfreeze level, input_var, values, update_on_reason, update_on_minimize, resolve_to_flagged, resolve_to_core) now ported in src/clasp/constraint.rs
+    tests/ported_potassco_smodels.rs
 libpotassco/src/match_basic_types.cpp: ported
     src/potassco/match_basic_types.rs
     tests/ported/potassco/test_match_basic_types.rs
-clasp/logic_program_types.h: blocked by clasp/logic_program.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, src/logic_program_types.cpp; needs real LogicProgram node storage/accessors plus ClauseCreator and WeightConstraint-backed constraint emission, rust stub only
+clasp/logic_program_types.h: partially ported, with PrgNode/PrgEdge/AtomState/SmallEdgeList plus NonHcfSet in Rust; RuleTransform, SCC checking, and LogicProgram/solver/clause/weight-constraint integrated PrgAtom/PrgBody/PrgHead/PrgDisj methods remain blocked by clasp/logic_program.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, src/logic_program_types.cpp
     src/clasp/logic_program_types.rs
+    tests/clasp_logic_program_types.rs
 libpotassco/src/rule_utils.cpp: ported
     src/potassco/rule_utils.rs
-libpotassco/potassco/application.h: ported
+libpotassco/potassco/application.h: ported, revalidated getInstance and fastExit against original_clasp/libpotassco/src/application.cpp
     src/potassco/application.rs
     tests/ported/potassco/test_application.rs
     tests/ported_potassco_application.rs
@@ -183,8 +197,9 @@ clasp/shared_context.h: partially ported, ProblemStats, VarInfo, ShortImplicatio
     src/clasp/clause.rs
     tests/ported/clasp/solver_test.rs
     tests/ported/clasp/clause_test.rs
-clasp/solve_algorithms.h: blocked by clasp/shared_context.h, clasp/enumerator.h, clasp/solver.h; original BasicSolve/SolveAlgorithm need solver search/restart/reduce/assumption APIs, enumerator start/update/commit flows, and SharedContext master/attach/detach/report/endInit hooks that are still missing in Rust, rust stub only
+clasp/solve_algorithms.h: partially ported, SolveLimits, BasicSolveEvent, SolveAlgorithm::Path, and the trivial BasicSolveOptions/SequentialSolve default-state methods are ported; original BasicSolve/SolveAlgorithm runtime still needs solver search/restart/reduce/assumption APIs, enumerator start/update/commit flows, and SharedContext master/attach/detach/report/endInit hooks that are still missing in Rust
     src/clasp/solve_algorithms.rs
+    tests/clasp_solve_algorithms.rs
 clasp/clause.h: partially ported, ClauseRep, SharedLiterals storage/refcount/simplify, ClauseCreator prepare/status/ignore plus end/create/integrate paths, explicit and shared Clause/ClauseHead watched-literal runtime, explicit contracted-clause creation/backtrack restoration/strengthen-to-implicit-short behavior, explicit storage metadata accessors (`contracted`/`isSmall`/`strengthened`/`computeAllocSize`) with retained-allocation tracking across learnt contracted-strengthening, learnt-clause compression to contracted explicit clauses, solver learnt-byte accounting for local explicit/shared clauses, explicit fallback storage for integrated non-shared long clauses, and physically shared local long-clause surrogate integration plus shared-local cloneAttach parity for the current SharedContext `physical_share()` modes are ported; upstream allocator-backed `allocSmall()/freeSmall()` memory layout, shared-clause distribution, sat-prepro/sharing hooks, and the remaining clause/shared-context integration remain blocked
     src/clasp/clause.rs
     src/clasp/constraint.rs
@@ -210,6 +225,9 @@ libpotassco/src/aspif_text.cpp: ported
     src/potassco/aspif_text.rs
 libpotassco/tests/test_aspif.cpp: ported
         tests/ported/potassco/test_match_basic_types.rs
+examples/example.h: partially ported, printModel text rendering is ported; addSimpleProgram and example1/example2/example3/example4 remain blocked by missing logic-program and facade runtime
+    examples/ported/example.rs
+    tests/example_print_model.rs
         tests/ported/potassco/test_utils.rs
         tests/ported/potassco/test_bits.rs
         tests/ported/potassco/test_basic_types.rs
@@ -241,15 +259,17 @@ libpotassco/src/application.cpp: ported
 libpotassco/tests/test_application.cpp: ported
     tests/ported/potassco/test_application.rs
     tests/ported_potassco_application.rs
-clasp/enumerator.h: partially ported, solver-independent Model storage/value-state helpers, projected-output consequence counting, and modelType() text mapping are ported; Enumerator, EnumerationConstraint, SharedQueue, SharedContext/Solver integration, minimization flows, and witness visitation remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/minimize_constraint.h, clasp/clause.h, and src/enumerator.cpp
+clasp/enumerator.h: partially ported, solver-independent Model storage/value-state helpers, projected-output consequence counting, exact modelType() label/null mapping, and EnumOptions default construction plus consequences()/models()/optimize() are ported; Enumerator, EnumerationConstraint, SharedQueue, SharedContext/Solver integration, minimization flows, and witness visitation remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/minimize_constraint.h, clasp/clause.h, and src/enumerator.cpp
     src/clasp/enumerator.rs
+    tests/ported/clasp/enumerator_test.rs
 clasp/solver.h: partially ported, the Bundle A solver kernel subset is ported: SharedContext backlink access, Assignment-backed value/level/pref/reason/data/trail/queue helpers, generic/clause watch management, undo watches, force/assume/conflict handling, short-implication plus generic-watch and explicit ClauseHead watch propagation, root/backtrack/clearAssumptions bookkeeping, init-time and incremental post-propagator integration, simplify/estimateBCP/reverseArc helpers, implicit short-clause add, explicit constraint/learnt attachment, solver-local learnt-byte accounting and memory-limit reduce checks for local clause runtimes, attached-solver cloneDB for supported constraints, local detach cleanup for attached solver DBs, level marking, recursive ccMinimize support, the resolveConflict/analyzeConflict/finalizeConflictClause path with bounded backjump-level clamping plus implied-literal persistence across bounded backtracks, guiding-path export over root decisions plus flipped/logically-earlier implied literals, and Bundle A search/restart control with solver-local model detection and current learnt-db reduction over the explicit learnt constraint store; dynamic restart-block mutation, full heuristic/search control, split-off work APIs, enumeration/minimize-specific model validation, and multi-solver/distribution APIs remain blocked
     src/clasp/constraint.rs
     src/clasp/clause.rs
     src/clasp/shared_context.rs
     tests/ported/clasp/solver_test.rs
-clasp/mt/parallel_solve.h: blocked by clasp/shared_context.h, clasp/solve_algorithms.h, clasp/solver_types.h, clasp/solver.h, clasp/clause.h, clasp/enumerator.h, src/parallel_solve.cpp; original parallel solve still needs BasicSolve/SolveAlgorithm, Distributor/ClauseCreator flags/SolverSet, concrete SharedContext/Solver attach-detach-distributor-report flows, and enumerator parallel callbacks from the still-unported implementation, rust stub only
+clasp/mt/parallel_solve.h: partially ported, ParallelSolveOptions::defaultPortfolio, ParallelSolveOptions::fullPeerSet, ParallelSolveOptions::initPeerSet, ParallelSolveOptions::numSolver, ParallelSolveOptions::recommendedSolvers, ParallelSolveOptions::setSolvers, ParallelSolveOptions::supportedSolvers, ParallelSolveOptions::Distribution::Distribution, ParallelSolveOptions::Distribution::policy, and ParallelSolveOptions::GRestarts::GRestarts are ported; remaining runtime is blocked by clasp/shared_context.h, clasp/solve_algorithms.h, clasp/solver.h, clasp/clause.h, clasp/enumerator.h, src/parallel_solve.cpp
     src/clasp/mt/parallel_solve.rs
+    tests/clasp_mt_parallel_solve.rs
 libpotassco/app/lpconvert.cpp: ported
     src/potassco/app/lpconvert.rs
     tests/potassco_lpconvert.rs
@@ -260,7 +280,7 @@ libpotassco/src/reify.cpp: ported
 libpotassco/tests/test_reify.cpp: ported
     tests/ported/potassco/test_reify.rs
     tests/ported_potassco_reify.rs
-clasp/dependency_graph.h: partially ported, ExtDepGraph storage/finalize/update behavior is ported; PrgDepGraph and AcyclicityCheck remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/logic_program.h, src/logic_program.cpp, and src/shared_context.cpp
+clasp/dependency_graph.h: partially ported, ExtDepGraph storage/finalize/update behavior plus begin-accessor and Arc/Inv/CmpArc helper parity are ported; attach/detach, SolveTestEvent, PrgDepGraph, and AcyclicityCheck remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/logic_program.h, src/dependency_graph.cpp, src/logic_program.cpp, and src/shared_context.cpp
     src/clasp/dependency_graph.rs
     tests/clasp_dependency_graph.rs
 src/asp_preprocessor.cpp: blocked by clasp/logic_program.h, clasp/logic_program_types.h, clasp/shared_context.h, src/logic_program.cpp; rust stub only
@@ -270,19 +290,19 @@ tests/lpcompare.h: partially ported, compare/find helpers and external statistic
     tests/ported/clasp/lpcompare_test.rs
 clasp/cb_enumerator.h: partially ported, constructor/type-selection, enum-option mapping, exhaustive reporting, split/unsat semantics, and query-optimization fallback are ported; CBFinder, QueryFinder, shared constraint exchange, and solver/model integration remain blocked by clasp/enumerator.h, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, and src/cb_enumerator.cpp
     src/clasp/cb_enumerator.rs
-clasp/model_enumerators.h: partially ported, strategy/project option enums, setStrategy normalization, projection membership storage, and solver-independent init/support predicates are ported; projection discovery, domain-heuristic integration, and record/backtrack finder solver callbacks remain blocked by clasp/shared_context.h, clasp/enumerator.h, clasp/solver.h, clasp/minimize_constraint.h, clasp/clause.h, and src/model_enumerators.cpp
+clasp/model_enumerators.h: partially ported, strategy/project option enums, constructor/setup queries, addProject freezing, setStrategy normalization, projection membership storage, and solver-independent support predicates are ported; projection discovery, domain-heuristic integration, and full doInit/record/backtrack finder solver callbacks remain blocked by clasp/shared_context.h, clasp/enumerator.h, clasp/solver.h, clasp/minimize_constraint.h, clasp/clause.h, and src/model_enumerators.cpp
     src/clasp/model_enumerators.rs
     tests/clasp_model_enumerators.rs
-clasp/clingo.h: partially ported, ClingoAssignment's abstract-assignment adapter behavior is ported; ClingoPropagatorInit, ClingoPropagator, and ClingoHeuristic remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/constraint.h, clasp/weight_constraint.h, and src/clingo.cpp
+clasp/clingo.h: partially ported, ClingoAssignment constructor, solver accessor, and abstract-assignment adapter behavior are ported; ClingoPropagatorInit, ClingoPropagator, and ClingoHeuristic remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/constraint.h, clasp/weight_constraint.h, and src/clingo.cpp
     src/clasp/clingo.rs
     tests/ported/clasp/facade_test.rs
-clasp/heuristics.h: partially ported, solver-independent score containers, lazy-decay helpers, MOMS score formula, and Berkmin/VMTF/VSIDS config normalization are ported; solver-attached heuristic selection, activity updates, and domain-heuristic propagation remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/clause.h, and src/heuristics.cpp
+clasp/heuristics.h: partially ported, solver-independent score containers, lazy-decay helpers, Berkmin/VSIDS comparator helpers, domain priority/frame helpers, MOMS score formula, and Berkmin/VMTF/VSIDS config normalization are ported; solver-attached heuristic selection, activity updates, and domain-heuristic propagation remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/clause.h, and src/heuristics.cpp
     src/clasp/heuristics.rs
     tests/ported/clasp/decision_heuristic_test.rs
-clasp/lookahead.h: partially ported, VarScore, ScoreLook comparison/reset helpers, Lookahead parameter builder/state, and constructor mode/limit semantics are ported; propagate/test/init/undo and solver-integrated scoring remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/constraint.h, and src/lookahead.cpp
+clasp/lookahead.h: partially ported, VarScore, ScoreLook comparison/reset helpers, Lookahead parameter builder/state, constructor mode/limit semantics, and circular candidate-list helpers (LitNode construction plus head/node/append/clear/empty) are ported; propagate/test/init/undo and solver-integrated scoring remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/constraint.h, and src/lookahead.cpp
     src/clasp/lookahead.rs
     tests/clasp_lookahead.rs
-clasp/satelite.h: partially ported, occurrence lists, clause abstraction/strengthening, event constants, mark/find-unmarked helpers, trivial-resolvent detection, and subsumption primitives are ported; the full SatElite preprocessing loop remains blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, and src/shared_context.cpp
+clasp/satelite.h: partially ported, constructor/clone/cleanup lifecycle helpers, occurrence lists, clause abstraction/strengthening, event constants, mark/find-unmarked helpers, trivial-resolvent detection, and subsumption primitives are ported; the full SatElite preprocessing loop remains blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, and src/shared_context.cpp
     src/clasp/satelite.rs
     tests/clasp_satelite.rs
 src/clause.cpp: partially ported, SharedLiterals storage/refcount/simplify, ClauseCreator start/watch-order/prepare/status/ignore plus end/create/integrate, explicit and shared Clause/ClauseHead watched-literal runtime, explicit contracted-clause creation/backtrack restoration/strengthen-to-implicit-short behavior, explicit storage metadata accessors (`contracted`/`isSmall`/`strengthened`/`computeAllocSize`) with retained-allocation tracking across learnt contracted-strengthening, learnt-clause compression to contracted explicit clauses, and the supported LoopFormula reason/propagate/simplify/minimize subset are ported; shared-clause distribution, allocator-specific small-clause storage, sat-prepro/sharing hooks, and the remaining src/clause.cpp logic remain blocked
@@ -356,7 +376,7 @@ tests/rule_test.cpp: blocked by clasp/logic_program.h, clasp/solver.h, tests/lpc
     tests/ported/clasp/rule_test.rs
 src/cb_enumerator.cpp: partially ported, constructor/type-selection, enum-option mapping, exhaustive reporting, split/unsat semantics, and query-optimization fallback are ported; CBFinder, QueryFinder, shared constraint exchange, and solver/model integration remain blocked by clasp/enumerator.h, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, and the remaining src/cb_enumerator.cpp logic
     src/clasp/cb_enumerator.rs
-src/model_enumerators.cpp: partially ported, solver-independent setStrategy/support predicates and auto-init selection are ported and tested (including projection flag normalization and projection option bitfield truncation parity); missing are projection discovery and domRec initialization from SharedContext plus all RecordFinder/BacktrackFinder runtime paths, which remain blocked by clasp/enumerator.h, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, and clasp/minimize_constraint.h
+src/model_enumerators.cpp: partially ported, addProject freezing plus the solver-independent setStrategy/support predicates and auto-init selection are ported and tested (including projection flag normalization and projection option bitfield truncation parity); missing are projection discovery and domRec initialization from SharedContext plus all RecordFinder/BacktrackFinder runtime paths, which remain blocked by clasp/enumerator.h, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, and clasp/minimize_constraint.h
     src/clasp/model_enumerators.rs
 src/clingo.cpp: partially ported, ClingoAssignment adapter semantics are ported; ClingoPropagator, ClingoPropagatorInit, and ClingoHeuristic remain blocked by unresolved solver/shared-context/constraint integration from the remaining src/clingo.cpp logic
     src/clasp/clingo.rs

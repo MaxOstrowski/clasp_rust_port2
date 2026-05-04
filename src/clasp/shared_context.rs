@@ -1562,6 +1562,14 @@ impl SharedContext {
         self.mini = None;
     }
 
+    pub fn event_handler(&self) -> Option<&EventHandler> {
+        self.progress.as_ref()
+    }
+
+    pub fn report_mode(&self) -> ReportMode {
+        self.report_mode
+    }
+
     pub fn set_event_handler(&mut self, handler: Option<EventHandler>) {
         self.progress = handler;
     }
@@ -1639,6 +1647,10 @@ impl SharedContext {
         self.master_ref().decision_level() != 0
             || !self.master_ref().has_conflict()
             || self.master_ref().has_stop_conflict()
+    }
+
+    pub fn is_shared(&self) -> bool {
+        self.frozen() && self.concurrency() > 1
     }
 
     pub fn is_extended(&self) -> bool {
@@ -1720,6 +1732,14 @@ impl SharedContext {
             } else {
                 self.stats.vars.frozen -= 1;
             }
+        }
+    }
+
+    pub fn set(&mut self, var: u32, flag: u8, enabled: bool) {
+        assert!(self.valid_var(var));
+        let info = &mut self.var_info[var as usize];
+        if enabled != info.has(flag) {
+            info.toggle(flag);
         }
     }
 

@@ -360,6 +360,14 @@ fn runtime_error_accessors_split_message_and_details() {
 }
 
 #[test]
+fn runtime_error_accessors_handle_single_line_messages() {
+    let location = current_location!();
+    let error = RuntimeError::new(Errc::from_raw(4), location, "single line".to_owned());
+    assert_eq!(error.message(), "single line");
+    assert_eq!(error.details(), "");
+}
+
+#[test]
 fn scope_exit_runs_on_exit_and_during_unwind() {
     let called = Cell::new(false);
     {

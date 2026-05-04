@@ -70,6 +70,10 @@ impl<'a> AspifTextInput<'a> {
         }
     }
 
+    pub fn set_output(&mut self, out: &'a mut dyn AbstractProgram) {
+        self.out = Some(out);
+    }
+
     fn data_mut(&mut self) -> &mut InputData {
         self.data
             .as_mut()

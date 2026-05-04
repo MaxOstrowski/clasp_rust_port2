@@ -532,6 +532,27 @@ fn shared_context_add_stores_generic_constraint_in_master_db() {
 }
 
 #[test]
+fn shared_context_event_handler_exposes_current_handler() {
+    let mut ctx = SharedContext::default();
+    assert!(ctx.event_handler().is_none());
+
+    let handler = EventHandler::default();
+    ctx.set_event_handler(Some(handler));
+
+    assert!(ctx.event_handler().is_some());
+}
+
+#[test]
+fn shared_context_report_mode_reflects_configured_handler_mode() {
+    let mut ctx = SharedContext::default();
+    assert_eq!(ctx.report_mode(), ReportMode::Default);
+
+    ctx.set_event_handler_with_mode(Some(EventHandler::default()), ReportMode::Conflict);
+
+    assert_eq!(ctx.report_mode(), ReportMode::Conflict);
+}
+
+#[test]
 fn shared_context_reporting_dispatches_enter_warning_and_message_events() {
     let seen = Rc::new(RefCell::new(Vec::new()));
     let observer = LogTraceObserver {
@@ -588,6 +609,47 @@ fn shared_context_default_dom_pref_follows_domain_heuristic_configuration() {
     solver.heuristic.dom_pref = 23;
 
     assert_eq!(ctx.default_dom_pref(), 23);
+}
+
+#[test]
+fn shared_context_is_shared_requires_frozen_context_and_multiple_solvers() {
+    let mut ctx = SharedContext::default();
+    assert!(!ctx.is_shared());
+
+    let _ = ctx.push_solver();
+    assert!(!ctx.is_shared());
+
+    let _ = ctx.start_add_constraints();
+    assert!(ctx.end_init());
+    assert!(ctx.is_shared());
+}
+
+#[test]
+fn shared_context_set_toggles_requested_var_flag_only_on_change() {
+    let mut ctx = SharedContext::default();
+    let var = ctx.add_var();
+
+    assert!(ctx.var_info(var).input());
+    ctx.set(
+        var,
+        rust_clasp::clasp::shared_context::VarInfo::FLAG_INPUT,
+        false,
+    );
+    assert!(!ctx.var_info(var).input());
+
+    ctx.set(
+        var,
+        rust_clasp::clasp::shared_context::VarInfo::FLAG_INPUT,
+        false,
+    );
+    assert!(!ctx.var_info(var).input());
+
+    ctx.set(
+        var,
+        rust_clasp::clasp::shared_context::VarInfo::FLAG_INPUT,
+        true,
+    );
+    assert!(ctx.var_info(var).input());
 }
 
 #[test]

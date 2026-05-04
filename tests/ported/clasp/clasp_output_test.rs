@@ -1,8 +1,22 @@
 use libc::SIGALRM;
 use rust_clasp::clasp::cli::clasp_output::{
-    ColorStyleSpec, OutputSink, interrupted_string, signal_name, write_styled,
+    ColorStyleSpec, OutputSink, OutputSinkInitError, interrupted_string, signal_name, write_styled,
 };
 use rust_clasp::potassco::format::{BasicCharBuffer, Color, Emphasis, TextStyle, TextStyleSpec};
+use rust_clasp::potassco::platform::CFile;
+
+unsafe extern "C" {
+    fn fclose(file: *mut CFile) -> i32;
+    fn fread(ptr: *mut core::ffi::c_void, size: usize, count: usize, stream: *mut CFile) -> usize;
+    fn rewind(stream: *mut CFile);
+    fn tmpfile() -> *mut CFile;
+}
+
+fn make_temp_file() -> *mut CFile {
+    let file = unsafe { tmpfile() };
+    assert!(!file.is_null());
+    file
+}
 
 #[test]
 fn color_style_defaults_match_upstream_values() {
@@ -59,15 +73,12 @@ fn color_style_defaults_match_upstream_values() {
 #[test]
 fn color_style_parser_matches_upstream_cases() {
     assert_eq!(
-        ColorStyleSpec::parse("*:").unwrap(),
+        ColorStyleSpec::new("*:").unwrap(),
         ColorStyleSpec::default_colors()
     );
-    assert_eq!(
-        ColorStyleSpec::parse("").unwrap(),
-        ColorStyleSpec::default()
-    );
+    assert_eq!(ColorStyleSpec::new("").unwrap(), ColorStyleSpec::default());
 
-    let rgb = ColorStyleSpec::parse("info=1;31:note=32:warning=02;34").unwrap();
+    let rgb = ColorStyleSpec::new("info=1;31:note=32:warning=02;34").unwrap();
     assert_eq!(
         rgb.info(),
         TextStyle::new(TextStyleSpec {
@@ -98,21 +109,47 @@ fn color_style_parser_matches_upstream_cases() {
 
 #[test]
 fn color_style_parser_reports_upstream_error_categories() {
-    let error = ColorStyleSpec::parse("bla").unwrap_err();
+    let error = ColorStyleSpec::new("bla").unwrap_err();
     assert_eq!(error.to_string(), "unknown color key 'bla'");
 
-    let error = ColorStyleSpec::parse("info=10").unwrap_err();
+    let error = ColorStyleSpec::new("info=10").unwrap_err();
     assert_eq!(error.to_string(), "invalid emphasis in 'info=10'");
 
-    let error = ColorStyleSpec::parse("info=1;2").unwrap_err();
+    let error = ColorStyleSpec::new("info=1;2").unwrap_err();
     assert_eq!(error.to_string(), "duplicate emphasis in 'info=1;2'");
 }
 
 #[test]
-fn output_sink_writes_to_string_and_char_buffer() {
+fn output_sink_writes_to_file_string_and_char_buffer() {
+    let file = make_temp_file();
+    {
+        let mut sink = OutputSink::from_c_file(file).unwrap();
+        assert_eq!(sink.file(), file);
+        assert_eq!(sink.write("gamma"), 5);
+        sink.flush();
+    }
+    let mut bytes = [0_u8; 16];
+    unsafe {
+        rewind(file);
+    }
+    let count = unsafe { fread(bytes.as_mut_ptr().cast(), 1, bytes.len(), file) };
+    assert_eq!(&bytes[..count], b"gamma");
+    assert_eq!(unsafe { fclose(file) }, 0);
+
+    let mut writer_bytes = Vec::new();
+    {
+        let writer: &mut dyn std::io::Write = &mut writer_bytes;
+        let mut sink = OutputSink::from(writer);
+        assert!(sink.file().is_null());
+        assert_eq!(sink.write("delta"), 5);
+        sink.flush();
+    }
+    assert_eq!(writer_bytes, b"delta");
+
     let mut string = String::new();
     {
         let mut sink = OutputSink::from(&mut string);
+        assert!(sink.file().is_null());
         assert_eq!(sink.write("alpha"), 5);
         sink.flush();
     }
@@ -121,10 +158,19 @@ fn output_sink_writes_to_string_and_char_buffer() {
     let mut buffer = BasicCharBuffer::default();
     {
         let mut sink = OutputSink::from(&mut buffer);
+        assert!(sink.file().is_null());
         assert_eq!(sink.write("beta"), 4);
         sink.flush();
     }
     assert_eq!(buffer.view(), "beta");
+}
+
+#[test]
+fn output_sink_rejects_null_file_pointer() {
+    match OutputSink::from_c_file(std::ptr::null_mut()) {
+        Err(error) => assert_eq!(error, OutputSinkInitError),
+        Ok(_) => panic!("expected invalid output sink error"),
+    }
 }
 
 #[test]

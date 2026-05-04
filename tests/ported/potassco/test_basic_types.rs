@@ -1,11 +1,40 @@
 use std::cmp::Ordering;
 
 use rust_clasp::potassco::basic_types::{
-    ATOM_MAX, ATOM_MIN, AtomArg, AtomArgMode, AtomCompare, BodyType, DomModifier, HeadType,
-    TruthValue, WeightLit, atom, atom_symbol, cmp_atom, lit, neg, pop_arg, predicate, to_span,
-    valid_atom, weight,
+    ATOM_MAX, ATOM_MIN, AbstractProgram, AtomArg, AtomArgMode, AtomCompare, AtomSpan, BodyType,
+    DomModifier, HeadType, LitSpan, TruthValue, Weight, WeightLit, WeightLitSpan, atom,
+    atom_symbol, cmp_atom, lit, neg, pop_arg, predicate, to_span, valid_atom, weight,
 };
 use rust_clasp::potassco::enums::{enum_cast, enum_count, enum_max, enum_min, enum_name};
+
+#[derive(Default)]
+struct LifecycleProbe {
+    marker: u32,
+}
+
+impl AbstractProgram for LifecycleProbe {
+    fn rule(&mut self, _head_type: HeadType, _head: AtomSpan<'_>, _body: LitSpan<'_>) {
+        panic!("unexpected rule call")
+    }
+
+    fn rule_weighted(
+        &mut self,
+        _head_type: HeadType,
+        _head: AtomSpan<'_>,
+        _bound: Weight,
+        _body: WeightLitSpan<'_>,
+    ) {
+        panic!("unexpected weighted rule call")
+    }
+
+    fn minimize(&mut self, _priority: Weight, _lits: WeightLitSpan<'_>) {
+        panic!("unexpected minimize call")
+    }
+
+    fn output_atom(&mut self, _atom: u32, _name: &str) {
+        panic!("unexpected output_atom call")
+    }
+}
 
 #[test]
 fn basic_type_helpers_follow_upstream_conventions() {
@@ -115,4 +144,15 @@ fn atom_symbol_predicate_and_pop_arg_match_original_cases() {
         "(1,2)"
     );
     assert_eq!(args, "\"(3,4)\"");
+}
+
+#[test]
+fn abstract_program_lifecycle_defaults_are_noops() {
+    let mut program = LifecycleProbe { marker: 17 };
+
+    program.init_program(true);
+    program.begin_step();
+    program.end_step();
+
+    assert_eq!(program.marker, 17);
 }

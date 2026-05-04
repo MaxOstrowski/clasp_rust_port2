@@ -38,11 +38,27 @@ pub enum WatchType {
     SubgoalFalse = 3,
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BodyData {
     pub watches: u32,
     pub picked: bool,
     pub lower_or_ext: u32,
+}
+
+impl BodyData {
+    pub const fn new() -> Self {
+        Self {
+            watches: 0,
+            picked: false,
+            lower_or_ext: 0,
+        }
+    }
+}
+
+impl Default for BodyData {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub type ExtSet = Bitset<u32, u32>;

@@ -45,10 +45,11 @@ fn atom_data_tracks_source_validity_like_upstream_bitfields() {
 
 #[test]
 fn body_data_defaults_match_zero_initialized_upstream_state() {
-    let body = BodyData::default();
+    let body = BodyData::new();
     assert_eq!(body.watches, 0);
     assert!(!body.picked);
     assert_eq!(body.lower_or_ext, 0);
+    assert_eq!(body, BodyData::default());
 }
 
 #[test]

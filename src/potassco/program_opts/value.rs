@@ -109,6 +109,15 @@ pub type ValueActionPtr<'a> = Box<dyn ValueAction<'a> + 'a>;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ValueActionRelease;
 
+impl ValueActionRelease {
+    pub fn call<'a>(&self, ptr: &mut std::option::Option<ValueActionPtr<'a>>) {
+        let should_release = ptr.as_mut().is_some_and(|action| action.release());
+        if should_release {
+            let _ = ptr.take();
+        }
+    }
+}
+
 pub fn make_action<'a, T>(action: T) -> Box<T>
 where
     T: ValueAction<'a> + 'a,

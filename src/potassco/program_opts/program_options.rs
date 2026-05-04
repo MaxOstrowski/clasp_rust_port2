@@ -309,8 +309,8 @@ impl<'a> OptionGroup<'a> {
             .unwrap_or(0)
     }
 
-    fn set_description_level(&mut self, level: DescriptionLevel) {
-        self.level = self.level.min(level);
+    pub fn set_description_level(&mut self, level: DescriptionLevel) {
+        self.level = level;
     }
 }
 
@@ -763,7 +763,8 @@ impl<'a> OptionContext<'a> {
                 self.groups.len() - 1
             }
         };
-        self.groups[index].set_description_level(level);
+        let merged_level = self.groups[index].desc_level().min(level);
+        self.groups[index].set_description_level(merged_level);
         if let Some(group_id) = group_id {
             *group_id = index;
         }
@@ -1264,26 +1265,45 @@ pub trait OptionOutput<'a> {
     fn column_width(&mut self, option: &Option<'a>) -> usize;
 }
 
+pub trait AppendSink {
+    fn append(&mut self, value: &str);
+}
+
+impl AppendSink for String {
+    fn append(&mut self, value: &str) {
+        self.push_str(value);
+    }
+}
+
 pub enum OutputSink<'a> {
-    String(&'a mut String),
+    Appender(&'a mut dyn AppendSink),
     Writer(&'a mut dyn Write),
 }
 
 impl<'a> OutputSink<'a> {
-    pub fn write(&mut self, value: &str) -> bool {
+    pub fn from_append_sink<S>(sink: &'a mut S) -> Self
+    where
+        S: AppendSink + 'a,
+    {
+        Self::Appender(sink)
+    }
+
+    pub fn write(&mut self, value: &str) -> &mut Self {
         match self {
-            Self::String(string) => {
-                string.push_str(value);
-                true
+            Self::Appender(sink) => {
+                sink.append(value);
             }
-            Self::Writer(writer) => writer.write_all(value.as_bytes()).is_ok(),
+            Self::Writer(writer) => {
+                let _ = writer.write_all(value.as_bytes());
+            }
         }
+        self
     }
 }
 
 impl<'a> From<&'a mut String> for OutputSink<'a> {
     fn from(value: &'a mut String) -> Self {
-        Self::String(value)
+        Self::from_append_sink(value)
     }
 }
 
@@ -1321,13 +1341,12 @@ where
         Self::with_formatter(OutputSink::Writer(writer), formatter)
     }
 
-    fn write_buffer(&mut self) -> bool {
+    fn write_buffer(&mut self) {
         if self.buffer.is_empty() {
-            true
-        } else {
-            let value = std::mem::take(&mut self.buffer);
-            self.sink.write(&value)
+            return;
         }
+        let value = std::mem::take(&mut self.buffer);
+        self.sink.write(&value);
     }
 }
 
@@ -1337,18 +1356,21 @@ where
 {
     fn print_context(&mut self, ctx: &OptionContext<'a>) -> bool {
         self.formatter.format_context(&mut self.buffer, ctx);
-        self.write_buffer()
+        self.write_buffer();
+        true
     }
 
     fn print_group(&mut self, group: &OptionGroup<'a>) -> bool {
         self.formatter.format_group(&mut self.buffer, group);
-        self.write_buffer()
+        self.write_buffer();
+        true
     }
 
     fn print_option(&mut self, option: &Option<'a>, max_width: usize) -> bool {
         self.formatter
             .format_option(&mut self.buffer, option, max_width);
-        self.write_buffer()
+        self.write_buffer();
+        true
     }
 
     fn column_width(&mut self, option: &Option<'a>) -> usize {

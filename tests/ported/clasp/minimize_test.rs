@@ -37,6 +37,45 @@ fn negative_lower_initialization_matches_upstream() {
 }
 
 #[test]
+fn shared_minimize_data_begin_starts_literal_iteration_before_sentinel() {
+    let data = negative_lower_sample();
+    let lits = data.begin().copied().collect::<Vec<_>>();
+
+    assert_eq!(lits.len(), 2);
+    assert_eq!(lits[0], data.literals()[0]);
+    assert_eq!(lits[1], data.literals()[1]);
+}
+
+#[test]
+fn shared_minimize_data_end_is_already_exhausted() {
+    let data = negative_lower_sample();
+
+    assert!(data.end().next().is_none());
+}
+
+#[test]
+fn shared_minimize_data_add_accumulates_sparse_level_weights_like_upstream() {
+    let data = negative_lower_sample();
+    let mut lhs = [0, 0, 0];
+
+    data.add(&mut lhs, data.literals()[0]);
+
+    assert_eq!(lhs, [1, -1, 1]);
+}
+
+#[test]
+fn shared_minimize_data_sub_updates_active_level_like_upstream() {
+    let data = negative_lower_sample();
+    let mut lhs = [0, 0, 0];
+    let mut active_level = 2;
+
+    data.sub(&mut lhs, data.literals()[0], &mut active_level);
+
+    assert_eq!(lhs, [-1, 1, -1]);
+    assert_eq!(active_level, 0);
+}
+
+#[test]
 fn adjusted_optimum_matches_upstream_adjust_behavior() {
     let mut data = SharedMinimizeData::from_parts(
         vec![-2],
@@ -60,6 +99,26 @@ fn adjusted_optimum_matches_upstream_adjust_behavior() {
 
     data.set_optimum(&[0]);
     assert_eq!(data.optimum(0), -2);
+}
+
+#[test]
+fn shared_minimize_data_imp_advances_to_sparse_level_like_upstream() {
+    let data = SharedMinimizeData::from_parts(
+        vec![0, 0, 0],
+        vec![LevelWeight::new(1, 2, true), LevelWeight::new(2, -1, false)],
+        vec![2, 1, 0],
+        vec![WeightLiteral {
+            lit: pos_lit(1),
+            weight: 0,
+        }],
+        MinimizeMode::Optimize,
+    );
+    let mut lhs = [0, 0, 0];
+    let rhs = [0, 2, -2];
+    let mut level = 0;
+
+    assert!(data.imp(&mut lhs, data.literals()[0], &rhs, &mut level));
+    assert_eq!(level, 1);
 }
 
 #[test]

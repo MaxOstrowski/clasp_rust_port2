@@ -1,5 +1,6 @@
 //! Rust port of original_clasp/libpotassco/potassco/format.h.
 
+use core::ffi::c_char;
 use core::fmt::{self, Write};
 
 use sprintf::{Printf, PrintfError, vsprintf};
@@ -290,6 +291,98 @@ pub struct TextStyleSpec {
     pub background: Option<Color>,
 }
 
+impl TextStyleSpec {
+    pub fn from_string(input: &str, start_pos: usize) -> Result<Self, TextStyleParseError> {
+        if start_pos > input.len() {
+            return Err(TextStyleParseError::OutOfRange);
+        }
+
+        let mut spec = Self::default();
+        let mut remaining = &input[start_pos..];
+        while !remaining.is_empty() {
+            let end = remaining.find(';').unwrap_or(remaining.len());
+            let part = &remaining[..end];
+            if part.is_empty() {
+                return Err(TextStyleParseError::InvalidArgument);
+            }
+
+            let value: u8 = part.parse().map_err(|error: std::num::ParseIntError| {
+                if error.kind() == &std::num::IntErrorKind::PosOverflow {
+                    TextStyleParseError::OutOfRange
+                } else {
+                    TextStyleParseError::InvalidArgument
+                }
+            })?;
+
+            if value < 30 {
+                if spec.emphasis != Emphasis::None {
+                    return Err(TextStyleParseError::InvalidArgument);
+                }
+                spec.emphasis = match value {
+                    0 => Emphasis::None,
+                    1 => Emphasis::Bold,
+                    2 => Emphasis::Faint,
+                    3 => Emphasis::Italic,
+                    4 => Emphasis::Underline,
+                    _ => return Err(TextStyleParseError::DomainError),
+                };
+            } else {
+                let background =
+                    value == 49 || (41..48).contains(&value) || (101..108).contains(&value);
+                let bg_offset = if background { 10 } else { 0 };
+                let color_offset = if value == 39 + bg_offset {
+                    bg_offset
+                } else if value >= 90 {
+                    81 + bg_offset
+                } else {
+                    29 + bg_offset
+                };
+                let color_value = value
+                    .checked_sub(color_offset)
+                    .ok_or(TextStyleParseError::DomainError)?;
+                let color = match color_value {
+                    1 => Color::Black,
+                    2 => Color::Red,
+                    3 => Color::Green,
+                    4 => Color::Yellow,
+                    5 => Color::Blue,
+                    6 => Color::Magenta,
+                    7 => Color::Cyan,
+                    8 => Color::White,
+                    9 => Color::BrightBlack,
+                    10 => Color::BrightRed,
+                    11 => Color::BrightGreen,
+                    12 => Color::BrightYellow,
+                    13 => Color::BrightBlue,
+                    14 => Color::BrightMagenta,
+                    15 => Color::BrightCyan,
+                    16 => Color::BrightWhite,
+                    39 => Color::Default,
+                    _ => return Err(TextStyleParseError::DomainError),
+                };
+
+                if background {
+                    if spec.background.replace(color).is_some() {
+                        return Err(TextStyleParseError::InvalidArgument);
+                    }
+                } else if spec.foreground.replace(color).is_some() {
+                    return Err(TextStyleParseError::InvalidArgument);
+                }
+            }
+
+            if end == remaining.len() {
+                break;
+            }
+            if end + 1 == remaining.len() {
+                return Err(TextStyleParseError::InvalidArgument);
+            }
+            remaining = &remaining[end + 1..];
+        }
+
+        Ok(spec)
+    }
+}
+
 impl Default for Emphasis {
     fn default() -> Self {
         Self::None
@@ -341,56 +434,23 @@ impl TextStyle {
     }
 
     pub fn from_string(input: &str, start_pos: usize) -> Result<Self, TextStyleParseError> {
-        if start_pos > input.len() {
-            return Err(TextStyleParseError::OutOfRange);
-        }
-        let mut spec = TextStyleSpec::default();
-        let mut remaining = &input[start_pos..];
-        if remaining.is_empty() {
+        let spec = TextStyleSpec::from_string(input, start_pos)?;
+        if spec == TextStyleSpec::default() {
             return Ok(Self::default());
-        }
-        while !remaining.is_empty() {
-            let end = remaining.find(';').unwrap_or(remaining.len());
-            let part = &remaining[..end];
-            if part.is_empty() {
-                return Err(TextStyleParseError::InvalidArgument);
-            }
-            let value: u16 = part.parse().map_err(|_| TextStyleParseError::OutOfRange)?;
-            if value < 30 {
-                if spec.emphasis != Emphasis::None {
-                    return Err(TextStyleParseError::InvalidArgument);
-                }
-                spec.emphasis = match value {
-                    0 => Emphasis::None,
-                    1 => Emphasis::Bold,
-                    2 => Emphasis::Faint,
-                    3 => Emphasis::Italic,
-                    4 => Emphasis::Underline,
-                    _ => return Err(TextStyleParseError::DomainError),
-                };
-            } else {
-                let (color, background) = parse_color(value)?;
-                if background {
-                    if spec.background.replace(color).is_some() {
-                        return Err(TextStyleParseError::InvalidArgument);
-                    }
-                } else if spec.foreground.replace(color).is_some() {
-                    return Err(TextStyleParseError::InvalidArgument);
-                }
-            }
-            if end == remaining.len() {
-                break;
-            }
-            remaining = &remaining[end + 1..];
-            if remaining.is_empty() {
-                return Err(TextStyleParseError::InvalidArgument);
-            }
         }
         Ok(Self::new(spec))
     }
 
     pub fn view(&self) -> &str {
         &self.repr
+    }
+
+    pub fn reset_str(&self) -> &'static str {
+        if self.repr.is_empty() {
+            ""
+        } else {
+            "\u{1b}[0m"
+        }
     }
 
     pub fn reset_view(&self) -> &str {
@@ -427,48 +487,6 @@ fn color_code(color: Color, background: bool) -> u16 {
             base + (color as u16 - Color::BrightBlack as u16)
         }
     }
-}
-
-fn parse_color(value: u16) -> Result<(Color, bool), TextStyleParseError> {
-    let background = value == 49 || (41..=47).contains(&value) || (101..=107).contains(&value);
-    let color = match value {
-        30 => Color::Black,
-        31 => Color::Red,
-        32 => Color::Green,
-        33 => Color::Yellow,
-        34 => Color::Blue,
-        35 => Color::Magenta,
-        36 => Color::Cyan,
-        37 => Color::White,
-        39 => Color::Default,
-        40 => Color::Black,
-        41 => Color::Red,
-        42 => Color::Green,
-        43 => Color::Yellow,
-        44 => Color::Blue,
-        45 => Color::Magenta,
-        46 => Color::Cyan,
-        47 => Color::White,
-        49 => Color::Default,
-        90 => Color::BrightBlack,
-        91 => Color::BrightRed,
-        92 => Color::BrightGreen,
-        93 => Color::BrightYellow,
-        94 => Color::BrightBlue,
-        95 => Color::BrightMagenta,
-        96 => Color::BrightCyan,
-        97 => Color::BrightWhite,
-        100 => Color::BrightBlack,
-        101 => Color::BrightRed,
-        102 => Color::BrightGreen,
-        103 => Color::BrightYellow,
-        104 => Color::BrightBlue,
-        105 => Color::BrightMagenta,
-        106 => Color::BrightCyan,
-        107 => Color::BrightWhite,
-        _ => return Err(TextStyleParseError::DomainError),
-    };
-    Ok((color, background))
 }
 
 pub struct Quoted<T> {
@@ -564,6 +582,21 @@ impl BasicCharBuffer {
         self.buffer.view()
     }
 
+    pub fn data(&self) -> *const u8 {
+        self.buffer.as_ptr()
+    }
+
+    pub fn c_str(&mut self) -> *const c_char {
+        if self.empty() || *self.buffer.back() != 0 {
+            self.buffer.push(0);
+        }
+        self.buffer.as_ptr().cast()
+    }
+
+    pub fn size(&self) -> u32 {
+        self.buffer.size() as u32
+    }
+
     pub fn empty(&self) -> bool {
         self.buffer.size() == 0
     }
@@ -583,6 +616,18 @@ impl BasicCharBuffer {
             self.append_value(&c);
         }
         self
+    }
+
+    pub fn push_back(&mut self, c: char) -> &mut Self {
+        self.append_value(&c)
+    }
+
+    pub fn back(&mut self) -> &mut u8 {
+        self.buffer.back()
+    }
+
+    pub fn pop(&mut self, n: u32) {
+        self.buffer.pop(n as usize);
     }
 
     pub fn append_sep<T: ToCharsValue>(&mut self, sep: &str, values: &[Option<T>]) -> &mut Self {

@@ -6,9 +6,17 @@
 use crate::potassco::format::{
     BasicCharBuffer, Color, Emphasis, TextStyle, TextStyleParseError, TextStyleSpec,
 };
+use crate::potassco::platform::CFile;
 use libc::SIGALRM;
 use std::fmt;
 use std::io::{self, Write};
+use std::os::raw::{c_int, c_void};
+use std::ptr;
+
+unsafe extern "C" {
+    fn fflush(stream: *mut CFile) -> c_int;
+    fn fwrite(ptr: *const c_void, size: usize, count: usize, stream: *mut CFile) -> usize;
+}
 
 const SIGNAL_NAMES: &[&str] = &[
     "",
@@ -47,15 +55,46 @@ pub fn interrupted_string(signal: i32) -> &'static str {
     }
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OutputSinkInitError;
+
+impl fmt::Display for OutputSinkInitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid output sink")
+    }
+}
+
+impl std::error::Error for OutputSinkInitError {}
+
 pub enum OutputSink<'a> {
+    File(*mut CFile),
     String(&'a mut String),
     Writer(&'a mut dyn Write),
     CharBuffer(&'a mut BasicCharBuffer),
 }
 
 impl<'a> OutputSink<'a> {
+    pub fn from_c_file(file: *mut CFile) -> Result<Self, OutputSinkInitError> {
+        if file.is_null() {
+            Err(OutputSinkInitError)
+        } else {
+            Ok(Self::File(file))
+        }
+    }
+
+    pub fn file(&self) -> *mut CFile {
+        match self {
+            Self::File(file) => *file,
+            Self::String(_) | Self::Writer(_) | Self::CharBuffer(_) => Self::no_file(),
+        }
+    }
+
     pub fn write(&mut self, text: &str) -> usize {
         match self {
+            Self::File(file) => {
+                // Match the C++ sink adapter and report the byte count `fwrite` accepted.
+                unsafe { fwrite(text.as_ptr().cast(), 1, text.len(), *file) }
+            }
             Self::String(buffer) => {
                 buffer.push_str(text);
                 text.len()
@@ -69,9 +108,29 @@ impl<'a> OutputSink<'a> {
     }
 
     pub fn flush(&mut self) {
-        if let Self::Writer(writer) = self {
-            let _ = writer.flush();
+        match self {
+            Self::File(file) => unsafe {
+                let _ = fflush(*file);
+            },
+            Self::Writer(writer) => {
+                let _ = writer.flush();
+            }
+            Self::String(_) | Self::CharBuffer(_) => Self::no_flush(),
         }
+    }
+
+    fn no_flush() {}
+
+    fn no_file() -> *mut CFile {
+        ptr::null_mut()
+    }
+}
+
+impl<'a> TryFrom<*mut CFile> for OutputSink<'a> {
+    type Error = OutputSinkInitError;
+
+    fn try_from(value: *mut CFile) -> Result<Self, Self::Error> {
+        Self::from_c_file(value)
     }
 }
 
@@ -84,6 +143,12 @@ impl<'a> From<&'a mut String> for OutputSink<'a> {
 impl<'a> From<&'a mut BasicCharBuffer> for OutputSink<'a> {
     fn from(value: &'a mut BasicCharBuffer) -> Self {
         Self::CharBuffer(value)
+    }
+}
+
+impl<'a> From<&'a mut dyn Write> for OutputSink<'a> {
+    fn from(value: &'a mut dyn Write) -> Self {
+        Self::Writer(value)
     }
 }
 
@@ -118,6 +183,10 @@ pub struct ColorStyleSpec {
 }
 
 impl ColorStyleSpec {
+    pub fn new(style: &str) -> Result<Self, ColorStyleParseError> {
+        Self::parse(style)
+    }
+
     pub fn default_colors() -> Self {
         Self {
             trace: TextStyle::new(TextStyleSpec {

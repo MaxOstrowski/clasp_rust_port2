@@ -92,6 +92,11 @@ fn booleans_and_chars_follow_upstream_prefix_rules() {
         string_cast::<char>("49").map(|value| value as u32),
         Some(49)
     );
+    assert_eq!(
+        string_cast::<char>("127").map(|value| value as u32),
+        Some(127)
+    );
+    assert_eq!(string_cast::<char>("128"), None);
     assert_eq!(string_cast::<char>("256"), None);
     assert_eq!(string_cast::<char>("\\a"), None);
 }

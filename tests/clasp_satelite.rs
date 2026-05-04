@@ -72,6 +72,21 @@ fn satelite_resize_and_mark_helpers_preserve_upstream_behavior() {
 }
 
 #[test]
+fn satelite_clone_returns_a_fresh_preprocessor() {
+    let mut satelite = SatElite::new();
+    satelite.resize_occ(4);
+    satelite.occur_mut(1).add(7, false);
+    satelite.occur_mut(2).add(8, true);
+
+    let cloned = satelite.clone();
+
+    assert_eq!(cloned.num_occ_slots(), 0);
+    assert_eq!(satelite.num_occ_slots(), 4);
+    assert_eq!(satelite.occur(1).clause_range(), &[pos_lit(7)]);
+    assert_eq!(satelite.occur(2).clause_range(), &[neg_lit(8)]);
+}
+
+#[test]
 fn satelite_subsumes_short_and_long_clauses_like_upstream() {
     let mut satelite = SatElite::new();
     satelite.resize_occ(16);

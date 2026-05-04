@@ -99,6 +99,25 @@ fn lookahead_params_and_constructor_preserve_header_semantics() {
 }
 
 #[test]
+fn lookahead_list_helpers_match_upstream_circular_list_setup() {
+    let mut look = Lookahead::new(LookaheadParams::new(VarType::Atom).add_imps(true));
+
+    assert!(look.top_level_imps());
+    assert!(look.empty());
+
+    look.append(pos_lit(2), false);
+    assert!(!look.empty());
+
+    look.append(neg_lit(3), true);
+    assert!(!look.empty());
+
+    look.clear();
+
+    assert!(look.empty());
+    assert!(look.top_level_imps());
+}
+
+#[test]
 fn score_look_counts_nant_and_scores_dependencies_like_upstream_source() {
     let infos = [
         ScoreLookVarInfo::new(VarType::Atom, false),

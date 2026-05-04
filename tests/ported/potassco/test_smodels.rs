@@ -476,39 +476,42 @@ fn smodels_reader_can_convert_edge_and_heuristic_atoms() {
             .convert_heuristic(),
     );
 
-    assert_eq!(
-        observer.base.heuristics,
+    assert_eq!(observer.base.heuristics, {
+        let cond_three = 3;
+        let cond_four = 4;
+        let cond_five = 5;
+        let cond_six = 6;
         vec![
             Heuristic {
                 atom: 1,
                 modifier: DomModifier::Sign,
                 bias: -1,
                 prio: 1,
-                cond: Vec::<Lit>::from(to_cond(3)),
+                cond: Vec::<Lit>::from(to_cond(&cond_three)),
             },
             Heuristic {
                 atom: 1,
                 modifier: DomModifier::True,
                 bias: 1,
                 prio: 1,
-                cond: Vec::<Lit>::from(to_cond(4)),
+                cond: Vec::<Lit>::from(to_cond(&cond_four)),
             },
             Heuristic {
                 atom: 2,
                 modifier: DomModifier::Level,
                 bias: -1,
                 prio: 10,
-                cond: Vec::<Lit>::from(to_cond(5)),
+                cond: Vec::<Lit>::from(to_cond(&cond_five)),
             },
             Heuristic {
                 atom: 2,
                 modifier: DomModifier::Factor,
                 bias: 2,
                 prio: 1,
-                cond: Vec::<Lit>::from(to_cond(6)),
+                cond: Vec::<Lit>::from(to_cond(&cond_six)),
             },
         ]
-    );
+    });
 
     let mut edge_writer = SmodelsOutput::new(Vec::<u8>::new(), false, 0);
     edge_writer.init_program(false);
@@ -528,20 +531,48 @@ fn smodels_reader_can_convert_edge_and_heuristic_atoms() {
     );
 
     assert_eq!(edge_observer.base.edges.len(), 3);
+    let first_edge_cond = 1;
     assert_eq!(
         edge_observer.base.edges[0].cond,
-        Vec::<Lit>::from(to_cond(1))
+        Vec::<Lit>::from(to_cond(&first_edge_cond))
     );
     assert_eq!(edge_observer.base.edges[0].s, 0);
     assert_eq!(edge_observer.base.edges[0].t, 1);
+    let second_edge_cond = 2;
     assert_eq!(
         edge_observer.base.edges[1].cond,
-        Vec::<Lit>::from(to_cond(2))
+        Vec::<Lit>::from(to_cond(&second_edge_cond))
     );
+    let third_edge_cond = 3;
     assert_eq!(
         edge_observer.base.edges[2].cond,
-        Vec::<Lit>::from(to_cond(3))
+        Vec::<Lit>::from(to_cond(&third_edge_cond))
     );
+}
+
+#[test]
+fn smodels_input_drop_converted_filters_converted_edge_symbols() {
+    let mut writer = SmodelsOutput::new(Vec::<u8>::new(), false, 0);
+    writer.init_program(false);
+    writer.begin_step();
+    writer.rule(HeadType::Choice, &[1, 2], &[]);
+    writer.output_atom(1, "_edge(1,2)");
+    writer.output_atom(2, "plain");
+    writer.end_step();
+    let program = String::from_utf8(writer.into_inner()).expect("utf8");
+
+    let kept = parse(&program, SmodelsOptions::default().convert_edges());
+    assert_eq!(kept.base.edges.len(), 1);
+    assert_eq!(kept.base.atoms.get(&1), Some(&"_edge(1,2)".to_owned()));
+    assert_eq!(kept.base.atoms.get(&2), Some(&"plain".to_owned()));
+
+    let filtered = parse(
+        &program,
+        SmodelsOptions::default().convert_edges().drop_converted(),
+    );
+    assert_eq!(filtered.base.edges.len(), 1);
+    assert!(!filtered.base.atoms.contains_key(&1));
+    assert_eq!(filtered.base.atoms.get(&2), Some(&"plain".to_owned()));
 }
 
 #[test]

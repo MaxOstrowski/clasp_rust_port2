@@ -271,6 +271,11 @@ impl SatElite {
         Self::default()
     }
 
+    #[allow(clippy::should_implement_trait)]
+    pub fn clone(&self) -> Self {
+        Self::new()
+    }
+
     pub fn resize_occ(&mut self, ns: u32) {
         if ns > self.n_occ {
             let grown = ((u64::from(self.n_occ) * 3) / 2).min(u64::from(u32::MAX)) as u32;
@@ -442,5 +447,11 @@ impl SatElite {
             .iter()
             .copied()
             .any(|lit| lit.var() != pivot && self.occur(lit.var()).marked(!lit.sign()))
+    }
+}
+
+impl Drop for SatElite {
+    fn drop(&mut self) {
+        self.cleanup();
     }
 }

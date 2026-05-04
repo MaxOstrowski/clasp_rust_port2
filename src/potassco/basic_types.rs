@@ -54,6 +54,7 @@ pub fn to_span<T>(value: &T) -> &[T] {
 pub enum HeadType {
     Disjunctive = 0,
     Choice = 1,
+    Minimize = 2,
 }
 
 impl EnumTag for HeadType {

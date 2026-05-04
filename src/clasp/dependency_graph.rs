@@ -38,6 +38,15 @@ impl Arc {
     pub const fn head(self) -> u32 {
         self.node[1]
     }
+
+    pub fn next<'a>(&self, arcs: &'a [Arc], index: usize) -> Option<&'a Arc> {
+        let current = arcs.get(index)?;
+        if current != self {
+            return None;
+        }
+        let next = arcs.get(index + 1)?;
+        (self.tail() == next.tail()).then_some(next)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,6 +66,46 @@ impl Inv {
 
     pub const fn continues(self) -> bool {
         (self.rep & 1u32) != 0
+    }
+
+    pub fn next<'a>(&self, arcs: &'a [Inv], index: usize) -> Option<&'a Inv> {
+        let current = arcs.get(index)?;
+        if current != self || !self.continues() {
+            return None;
+        }
+        arcs.get(index + 1)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CmpArc<const X: usize>;
+
+impl<const X: usize> CmpArc<X> {
+    pub const fn new() -> Self {
+        Self
+    }
+
+    pub const fn less_arc_node(&self, lhs: &Arc, node: u32) -> bool {
+        lhs.node[X] < node
+    }
+
+    pub const fn less_node_arc(&self, node: u32, rhs: &Arc) -> bool {
+        node < rhs.node[X]
+    }
+
+    pub const fn less_arc_arc(&self, lhs: &Arc, rhs: &Arc) -> bool {
+        lhs.node[X] < rhs.node[X]
+            || (lhs.node[X] == rhs.node[X] && lhs.node[1 - X] < rhs.node[1 - X])
+    }
+
+    fn ordering(&self, lhs: &Arc, rhs: &Arc) -> Ordering {
+        if self.less_arc_arc(lhs, rhs) {
+            Ordering::Less
+        } else if self.less_arc_arc(rhs, lhs) {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
     }
 }
 
@@ -132,10 +181,13 @@ impl ExtDepGraph {
     where
         F: FnMut(Var_t),
     {
+        let by_head = CmpArc::<1>::new();
+        let by_tail = CmpArc::<0>::new();
         if self.frozen() {
             return self.committed_edges;
         }
-        self.fwd_arcs.sort_unstable_by(cmp_arc_by_head_then_tail);
+        self.fwd_arcs
+            .sort_unstable_by(|lhs, rhs| by_head.ordering(lhs, rhs));
         self.inv_arcs.clear();
         self.nodes.clear();
         self.nodes.resize(self.max_node as usize, Node::sentinel());
@@ -160,7 +212,8 @@ impl ExtDepGraph {
             }
         }
 
-        self.fwd_arcs.sort_unstable_by(cmp_arc_by_tail_then_head);
+        self.fwd_arcs
+            .sort_unstable_by(|lhs, rhs| by_tail.ordering(lhs, rhs));
         let mut index = 0usize;
         while index < self.fwd_arcs.len() {
             let node = self.fwd_arcs[index].tail();
@@ -192,12 +245,14 @@ impl ExtDepGraph {
 
     pub fn fwd_begin(&self, node: u32) -> Option<&Arc> {
         let offset = self.node(node)?.fwd_off;
-        (offset != INVALID_OFFSET).then(|| &self.fwd_arcs[offset as usize])
+        self.valid_off(offset)
+            .then(|| &self.fwd_arcs[offset as usize])
     }
 
     pub fn inv_begin(&self, node: u32) -> Option<&Inv> {
         let offset = self.node(node)?.inv_off;
-        (offset != INVALID_OFFSET).then(|| &self.inv_arcs[offset as usize])
+        self.valid_off(offset)
+            .then(|| &self.inv_arcs[offset as usize])
     }
 
     pub fn fwd_arcs_from(&self, node: u32) -> &[Arc] {
@@ -238,6 +293,10 @@ impl ExtDepGraph {
         self.generation_count
     }
 
+    const fn valid_off(&self, offset: u32) -> bool {
+        offset != INVALID_OFFSET
+    }
+
     fn node(&self, node: u32) -> Option<&Node> {
         self.nodes.get(node as usize)
     }
@@ -260,16 +319,4 @@ impl ExtDepGraph {
         }
         end
     }
-}
-
-fn cmp_arc_by_head_then_tail(lhs: &Arc, rhs: &Arc) -> Ordering {
-    lhs.head()
-        .cmp(&rhs.head())
-        .then_with(|| lhs.tail().cmp(&rhs.tail()))
-}
-
-fn cmp_arc_by_tail_then_head(lhs: &Arc, rhs: &Arc) -> Ordering {
-    lhs.tail()
-        .cmp(&rhs.tail())
-        .then_with(|| lhs.head().cmp(&rhs.head()))
 }

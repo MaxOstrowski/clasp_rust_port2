@@ -7,7 +7,7 @@
 //! the not-yet-complete solver and shared-context APIs and remains to be ported.
 
 use crate::clasp::constraint::priority_reserved_look;
-use crate::clasp::literal::{Literal, Var_t, VarType};
+use crate::clasp::literal::{Literal, Var_t, VarType, lit_true};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VarScore {
@@ -272,12 +272,19 @@ impl LookaheadParams {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Lookahead {
     pub score: ScoreLook,
+    nodes: Vec<LitNode>,
+    saved: Vec<NodeId>,
+    imps: Vec<Literal>,
+    last: NodeId,
+    pos: NodeId,
+    top: u32,
     limit: u32,
-    top_level_imps: bool,
 }
 
 impl Lookahead {
     pub const PRIO: u32 = priority_reserved_look;
+    const HEAD_ID: NodeId = 0;
+    const UNDO_ID: NodeId = 1;
 
     pub fn is_type(var_type: u32) -> bool {
         var_type != 0 && var_type <= VarType::Hybrid.as_u32()
@@ -289,6 +296,12 @@ impl Lookahead {
         } else {
             ScoreLookMode::ScoreMax
         };
+        let mut nodes = vec![LitNode::new(lit_true), LitNode::new(lit_true)];
+        nodes[Self::HEAD_ID as usize].next = Self::HEAD_ID;
+        nodes[Self::UNDO_ID as usize].next = u32::MAX;
+        if params.top_level_imps {
+            nodes[Self::HEAD_ID as usize].lit.flag();
+        }
         Self {
             score: ScoreLook {
                 types: params.var_type,
@@ -296,9 +309,62 @@ impl Lookahead {
                 nant: params.restrict_nant,
                 ..ScoreLook::default()
             },
+            nodes,
+            saved: Vec::new(),
+            imps: Vec::new(),
+            last: Self::HEAD_ID,
+            pos: Self::HEAD_ID,
+            top: u32::MAX - 1,
             limit: params.lim,
-            top_level_imps: params.top_level_imps,
         }
+    }
+
+    fn node(&self, node_id: NodeId) -> &LitNode {
+        &self.nodes[node_id as usize]
+    }
+
+    fn node_mut(&mut self, node_id: NodeId) -> &mut LitNode {
+        &mut self.nodes[node_id as usize]
+    }
+
+    fn head(&self) -> &LitNode {
+        self.node(Self::HEAD_ID)
+    }
+
+    fn head_mut(&mut self) -> &mut LitNode {
+        self.node_mut(Self::HEAD_ID)
+    }
+
+    fn undo_mut(&mut self) -> &mut LitNode {
+        self.node_mut(Self::UNDO_ID)
+    }
+
+    pub fn clear(&mut self) {
+        self.score.clear_deps();
+        while self.saved.pop().is_some() {}
+        let head = *self.head();
+        self.nodes = vec![head, head];
+        self.head_mut().next = Self::HEAD_ID;
+        self.undo_mut().next = u32::MAX;
+        self.last = Self::HEAD_ID;
+        self.top = u32::MAX;
+        self.imps.clear();
+        self.pos = Self::HEAD_ID;
+    }
+
+    pub fn empty(&self) -> bool {
+        self.head().next == Self::HEAD_ID
+    }
+
+    pub fn append(&mut self, mut literal: Literal, test_both: bool) {
+        let next = self.nodes.len() as NodeId;
+        self.node_mut(self.last).next = next;
+        if test_both {
+            literal.flag();
+        }
+        self.nodes.push(LitNode::new(literal));
+        self.last = next;
+        self.node_mut(self.last).next = Self::HEAD_ID;
     }
 
     pub const fn priority(&self) -> u32 {
@@ -309,11 +375,28 @@ impl Lookahead {
         self.limit != 0
     }
 
-    pub const fn top_level_imps(&self) -> bool {
-        self.top_level_imps
+    pub fn top_level_imps(&self) -> bool {
+        self.head().lit.flagged()
     }
 
     pub const fn limit(&self) -> u32 {
         self.limit
+    }
+}
+
+type NodeId = u32;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LitNode {
+    lit: Literal,
+    next: NodeId,
+}
+
+impl LitNode {
+    const fn new(lit: Literal) -> Self {
+        Self {
+            lit,
+            next: u32::MAX,
+        }
     }
 }

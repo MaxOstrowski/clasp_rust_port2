@@ -4,6 +4,7 @@ use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 use core::mem;
+use core::ops::Index;
 use core::ptr::NonNull;
 use core::slice;
 use std::collections::HashMap;
@@ -80,14 +81,26 @@ impl DynamicBuffer {
 
     pub fn as_ptr(&self) -> *const u8 {
         match &self.storage {
-            BufferStorage::Owned(vec) => vec.as_ptr(),
+            BufferStorage::Owned(vec) => {
+                if vec.capacity() == 0 {
+                    core::ptr::null()
+                } else {
+                    vec.as_ptr()
+                }
+            }
             BufferStorage::Borrowed { ptr, .. } => ptr.as_ptr(),
         }
     }
 
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
         match &mut self.storage {
-            BufferStorage::Owned(vec) => vec.as_mut_ptr(),
+            BufferStorage::Owned(vec) => {
+                if vec.capacity() == 0 {
+                    core::ptr::null_mut()
+                } else {
+                    vec.as_mut_ptr()
+                }
+            }
             BufferStorage::Borrowed { ptr, .. } => ptr.as_ptr(),
         }
     }
@@ -415,6 +428,14 @@ impl ConstString {
     }
 }
 
+impl Index<usize> for ConstString {
+    type Output = u8;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.view().as_bytes()[index]
+    }
+}
+
 impl PartialEq for ConstString {
     fn eq(&self, other: &Self) -> bool {
         self.view() == other.view()
@@ -462,13 +483,25 @@ impl<T> Default for Temp<T> {
     }
 }
 
-impl<T: Clone> Temp<T> {
-    pub fn resize(&mut self, n: usize, value: T) {
-        self.buffer.resize(n, value);
+impl<T> Temp<T> {
+    pub fn size(&self) -> usize {
+        self.buffer.len()
     }
 
     pub fn data(&mut self) -> *mut T {
-        self.buffer.as_mut_ptr()
+        if self.buffer.is_empty() {
+            core::ptr::null_mut()
+        } else {
+            self.buffer.as_mut_ptr()
+        }
+    }
+}
+
+impl<T: Clone> Temp<T> {
+    pub fn resize(&mut self, n: usize, value: T) {
+        let mut replacement = Vec::with_capacity(n);
+        replacement.resize(n, value);
+        self.buffer = replacement;
     }
 
     pub fn as_slice(&self) -> &[T] {

@@ -13,8 +13,62 @@ use crate::clasp::literal::{
     Literal, SumVec, SumView, ValT, ValueView, Var_t, pos_lit, true_value, value_false, value_free,
     value_true,
 };
+use crate::clasp::minimize_constraint::MinimizeMode;
 use crate::clasp::solver_strategies::LowerBound;
 use crate::potassco::bits;
+
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnumMode {
+    Auto = 0,
+    Bt = 1,
+    Record = 2,
+    DomRecord = 3,
+    Consequences = 4,
+    Brave = 5,
+    Cautious = 6,
+    Query = 7,
+    User = 8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnumOptions {
+    pub num_models: i64,
+    pub enum_mode: EnumMode,
+    pub opt_mode: MinimizeMode,
+    pub pro_mode: ProjectMode,
+    pub project: u32,
+    pub opt_bound: SumVec,
+    pub opt_stop: SumVec,
+}
+
+impl Default for EnumOptions {
+    fn default() -> Self {
+        Self {
+            num_models: -1,
+            enum_mode: EnumMode::Auto,
+            opt_mode: MinimizeMode::Optimize,
+            pro_mode: ProjectMode::Implicit,
+            project: 0,
+            opt_bound: SumVec::new(),
+            opt_stop: SumVec::new(),
+        }
+    }
+}
+
+impl EnumOptions {
+    pub const fn consequences(&self) -> bool {
+        (self.enum_mode as u8 & EnumMode::Consequences as u8) != 0
+    }
+
+    pub const fn models(&self) -> bool {
+        (self.enum_mode as u8) < (EnumMode::Consequences as u8)
+    }
+
+    pub fn optimize(&self) -> bool {
+        bits::test_any(self.opt_mode as u32, MinimizeMode::Optimize as u32)
+    }
+}
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,10 +246,12 @@ impl<'a> Model<'a> {
     }
 }
 
-pub const fn model_type(model: &Model<'_>) -> &'static str {
-    match model.model_type & ModelType::CONS_MASK {
-        x if x == ModelType::Brave as u32 => "Brave consequences",
-        x if x == ModelType::Cautious as u32 => "Cautious consequences",
-        _ => "Model",
+pub const fn model_type(model: &Model<'_>) -> Option<&'static str> {
+    match model.model_type {
+        x if x == ModelType::Sat as u32 => Some("Model"),
+        x if x == ModelType::Brave as u32 => Some("Brave"),
+        x if x == ModelType::Cautious as u32 => Some("Cautious"),
+        x if x == ModelType::User as u32 => Some("User"),
+        _ => None,
     }
 }

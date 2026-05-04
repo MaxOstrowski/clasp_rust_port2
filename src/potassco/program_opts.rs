@@ -19,11 +19,11 @@ pub use errors::{
 };
 pub use intrusive_ptr::{IntrusiveRefCounted, IntrusiveSharedPtr, make_shared};
 pub use program_options::{
-    COMMAND_LINE_ALLOW_FLAG_VALUE, DefaultFormat, DefaultFormatElement, DefaultParseContext,
-    DescriptionLevel, FindType, OptState, Option, OptionContext, OptionFormatter, OptionGroup,
-    OptionGroupInit, OptionOutput, OptionOutputImpl, OptionParser, OptionPrinter, OutputSink,
-    ParseContext, ParsedOptions, PosOption, SharedOption, parse_cfg_file, parse_command_array,
-    parse_command_string,
+    AppendSink, COMMAND_LINE_ALLOW_FLAG_VALUE, DefaultFormat, DefaultFormatElement,
+    DefaultParseContext, DescriptionLevel, FindType, OptState, Option, OptionContext,
+    OptionFormatter, OptionGroup, OptionGroupInit, OptionOutput, OptionOutputImpl, OptionParser,
+    OptionPrinter, OutputSink, ParseContext, ParsedOptions, PosOption, SharedOption,
+    parse_cfg_file, parse_command_array, parse_command_string,
 };
 pub use string_convert::{
     EnumEntries, Errc, FromCharsResult, ParseChars, StringTo, extract, from_chars,

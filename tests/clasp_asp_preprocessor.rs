@@ -1,6 +1,64 @@
-use rust_clasp::clasp::asp_preprocessor::SatPreprocessor;
-use rust_clasp::clasp::literal::{LitVec, ValueVec, neg_lit, pos_lit};
+use rust_clasp::clasp::asp_preprocessor::{AspPreprocessor, SatPreprocessor};
+use rust_clasp::clasp::literal::{LitVec, ValueVec, neg_lit, pos_lit, var_max};
 use rust_clasp::clasp::shared_context::SharedContext;
+
+#[test]
+fn asp_preprocessor_constructs() {
+    let _ = AspPreprocessor::new();
+}
+
+#[test]
+fn asp_preprocessor_defaults_to_non_eq_mode() {
+    let pre = AspPreprocessor::new();
+
+    assert!(!pre.eq());
+}
+
+#[test]
+fn asp_preprocessor_returns_var_max_for_unset_root_atom() {
+    let pre = AspPreprocessor::new();
+
+    assert_eq!(pre.get_root_atom(pos_lit(7)), var_max);
+}
+
+#[test]
+fn asp_preprocessor_starts_without_a_bound_program() {
+    let mut pre = AspPreprocessor::new();
+
+    assert!(pre.program().is_none());
+    assert!(pre.program_mut().is_none());
+}
+
+#[test]
+fn asp_preprocessor_sets_root_atom_by_literal_id() {
+    let mut pre = AspPreprocessor::new();
+    let root = neg_lit(4);
+
+    pre.set_root_atom(root, 19);
+
+    assert_eq!(pre.get_root_atom(root), 19);
+    assert_eq!(pre.get_root_atom(pos_lit(4)), var_max);
+}
+
+#[test]
+fn asp_preprocessor_pop_follow_uses_stack_or_queue_order() {
+    let mut pre = AspPreprocessor::new();
+    let mut idx = 0;
+
+    pre.set_follow_for_test(&[3, 7]);
+    pre.set_dfs_for_test(true);
+    assert_eq!(pre.pop_follow_for_test(&mut idx), 7);
+    assert_eq!(idx, 0);
+    assert_eq!(pre.pop_follow_for_test(&mut idx), 3);
+
+    pre.set_follow_for_test(&[3, 7]);
+    pre.set_dfs_for_test(false);
+    idx = 0;
+    assert_eq!(pre.pop_follow_for_test(&mut idx), 3);
+    assert_eq!(idx, 1);
+    assert_eq!(pre.pop_follow_for_test(&mut idx), 7);
+    assert_eq!(idx, 2);
+}
 
 #[test]
 fn sat_preprocessor_splits_units_from_non_units() {

@@ -220,6 +220,51 @@ fn read_text(input: &str, observer: &mut TextObserver) -> bool {
     reader.accept(Cursor::new(input.as_bytes())) && reader.parse(ReadMode::Complete)
 }
 
+#[test]
+fn text_reader_attach_rejects_invalid_prefix_without_initializing_output() {
+    let mut observer = TextObserver::default();
+    let mut reader = ProgramReader::new(AspifTextInput::new(&mut observer));
+
+    assert!(!reader.accept(Cursor::new(b"?\n".as_slice())));
+    drop(reader);
+
+    assert_eq!(observer.base.n_step, 0);
+    assert!(!observer.base.incremental);
+    assert_eq!(observer.program(), "");
+}
+
+#[test]
+fn text_reader_attach_accepts_empty_input_and_parse_runs_single_step() {
+    let mut observer = TextObserver::default();
+    let mut reader = ProgramReader::new(AspifTextInput::new(&mut observer));
+
+    assert!(reader.accept(Cursor::new(b"".as_slice())));
+    assert!(reader.parse(ReadMode::Complete));
+    drop(reader);
+
+    assert_eq!(observer.base.n_step, 1);
+    assert!(!observer.base.incremental);
+    assert_eq!(observer.program(), "");
+}
+
+#[test]
+fn text_reader_set_output_rebinds_observer() {
+    let mut first = TextObserver::default();
+    let mut second = TextObserver::default();
+    let mut parser = AspifTextInput::new(&mut first);
+    parser.set_output(&mut second);
+    let mut reader = ProgramReader::new(parser);
+
+    assert!(reader.accept(Cursor::new(b"x1.\n".as_slice())));
+    assert!(reader.parse(ReadMode::Complete));
+    drop(reader);
+
+    assert_eq!(first.base.n_step, 0);
+    assert_eq!(first.program(), "");
+    assert_eq!(second.base.n_step, 1);
+    assert_eq!(second.program(), "x_1.\n");
+}
+
 fn panic_message<F>(func: F) -> String
 where
     F: FnOnce(),
@@ -312,6 +357,21 @@ fn text_reader_basic_cases() {
 }
 
 #[test]
+fn text_reader_match_agg_parses_mixed_implicit_and_explicit_weights() {
+    let mut observer = TextObserver::default();
+
+    assert!(read_text(
+        "x1 :- 2 {x2, x3=2, not x4 = 3, x5}.",
+        &mut observer
+    ));
+
+    assert_eq!(
+        observer.program(),
+        "x_1 :- 2 {x_2=1; x_3=2; not x_4=3; x_5=1}.\n"
+    );
+}
+
+#[test]
 fn text_reader_output_directives_map_like_upstream() {
     let mut observer = TextObserver::default();
     assert!(read_text("#output a(1) : x1.\n", &mut observer));
@@ -360,6 +420,21 @@ fn text_reader_output_directives_map_like_upstream() {
 }
 
 #[test]
+fn text_reader_match_term_preserves_nested_args_and_quoted_strings() {
+    let mut observer = TextObserver::default();
+
+    assert!(read_text(
+        "#output f(g(1,h(2)),\"A,B\") : x1. [term]\n",
+        &mut observer,
+    ));
+
+    assert_eq!(
+        observer.program(),
+        "#term f(g(1,h(2)),\"A,B\") : x_1. [0]\n"
+    );
+}
+
+#[test]
 fn text_reader_incremental_and_errors() {
     let mut observer = TextObserver::default();
     {
@@ -385,6 +460,27 @@ fn text_reader_incremental_and_errors() {
         let _ = read_text("#output a(1) : x1. [atom]\n", &mut observer);
     });
     assert!(message.contains("'term' expected"));
+}
+
+#[test]
+fn text_reader_match_heu_mod_uses_default_priority_and_modifier_name() {
+    let mut observer = TextObserver::default();
+
+    assert!(read_text("#heuristic x1. [1, level]", &mut observer));
+
+    assert_eq!(observer.program(), "#heuristic x_1. [1@0, level]\n");
+}
+
+#[test]
+fn text_writer_empty_program_is_empty_like_upstream() {
+    let mut bytes = Vec::new();
+    let mut out = AspifTextOutput::new(&mut bytes);
+
+    out.init_program(false);
+    out.begin_step();
+    out.end_step();
+
+    assert_eq!(render_output(&bytes), "");
 }
 
 #[test]

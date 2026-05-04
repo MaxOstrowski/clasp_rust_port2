@@ -453,6 +453,22 @@ pub fn read_smodels<R: Read>(input: R, out: &mut dyn AbstractProgram, opts: Smod
     read_program(input, &mut reader)
 }
 
+/// Rust port of the non-copyable C++ `SmodelsOutput` writer.
+///
+/// ```compile_fail
+/// use rust_clasp::potassco::smodels::SmodelsOutput;
+///
+/// let writer = SmodelsOutput::new(Vec::<u8>::new(), false, 0);
+/// let _clone = writer.clone();
+/// ```
+///
+/// ```compile_fail
+/// use rust_clasp::potassco::smodels::SmodelsOutput;
+///
+/// let writer = SmodelsOutput::new(Vec::<u8>::new(), false, 0);
+/// let _moved = writer;
+/// let _copy_like_use = writer;
+/// ```
 pub struct SmodelsOutput<W: Write> {
     os: W,
     false_atom: Atom,

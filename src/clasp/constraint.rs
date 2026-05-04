@@ -1,5 +1,6 @@
 //! Rust port of `original_clasp/clasp/constraint.h` and `original_clasp/src/constraint.cpp`.
 
+use core::cell::RefCell;
 use core::cmp::Ordering;
 use core::ffi::c_void;
 use core::ptr::NonNull;
@@ -8,9 +9,10 @@ use crate::clasp::clause::{
     CLAUSE_EXPLICIT, CLAUSE_FORCE_SIMPLIFY, CLAUSE_NO_PREPARE, ClauseCreator, ClauseInfo,
     ClauseRep, SharedLiterals,
 };
+use crate::clasp::cli::clasp_cli_options::solver_strategies::SignHeu;
 use crate::clasp::literal::{
-    LitVec, Literal, ValT, WeightLitVec, WeightLiteral, lit_false, value_false, value_free,
-    value_true, weight_max,
+    LitVec, Literal, ValT, WeightLitVec, WeightLiteral, lit_false, neg_lit, pos_lit, value_false,
+    value_free, value_true, weight_max,
 };
 use crate::clasp::pod_vector::{VectorLike, shrink_vec_to};
 use crate::clasp::shared_context::SharedContext;
@@ -287,8 +289,30 @@ pub trait DecisionHeuristic {
         false
     }
 
-    fn select_literal(&self, _solver: &Solver, var: u32, _idx: u32) -> Literal {
-        Literal::new(var, false)
+    fn select_literal(&self, solver: &Solver, var: u32, sign_score: i32) -> Literal {
+        let prefs = solver.pref(var);
+        if sign_score != 0
+            && !prefs.has(ValueSet::user_value | ValueSet::saved_value | ValueSet::pref_value)
+        {
+            return Literal::new(var, sign_score < 0);
+        }
+        if !prefs.empty() {
+            return Literal::new(var, prefs.sign());
+        }
+        match solver.strategies().sign_def {
+            value if value == SignHeu::SignPos as u32 => pos_lit(var),
+            value if value == SignHeu::SignNeg as u32 => neg_lit(var),
+            value if value == SignHeu::SignRnd as u32 => {
+                Literal::new(var, solver.rng.borrow_mut().drand() < 0.5)
+            }
+            _ if solver.shared_context().is_some_and(|shared| {
+                !shared.frozen() && solver.var_info(var).preferred_sign()
+            }) =>
+            {
+                neg_lit(var)
+            }
+            _ => pos_lit(var),
+        }
     }
 
     fn select(&mut self, solver: &mut Solver) -> bool {
@@ -334,7 +358,7 @@ pub struct Solver {
     heuristic: Box<dyn DecisionHeuristic>,
     strategies: SolverStrategies,
     stats: SolverStats,
-    rng: Rng,
+    rng: RefCell<Rng>,
     epochs: Vec<u32>,
     level_marks: Vec<bool>,
     implied_lits: ImpliedList,
@@ -635,7 +659,7 @@ impl Solver {
             heuristic: Box::<SelectFirst>::default(),
             strategies: SolverStrategies::default(),
             stats: SolverStats::default(),
-            rng: Rng::default(),
+            rng: RefCell::new(Rng::default()),
             epochs: vec![0],
             level_marks: vec![false],
             implied_lits: ImpliedList::default(),
@@ -1076,7 +1100,7 @@ impl Solver {
             } else {
                 params.seed
             };
-            self.rng.srand(seed);
+            self.rng.borrow_mut().srand(seed);
             if old_heu_id != params.heu_id {
                 self.set_default_heuristic();
             }
@@ -3052,12 +3076,12 @@ impl Solver {
         if self.num_free_vars() == 0 {
             return false;
         }
-        if randf <= 0.0 || self.rng.drand() >= randf {
+        if randf <= 0.0 || self.rng.borrow_mut().drand() >= randf {
             let solver_ptr = self as *mut Solver;
             return unsafe { (*solver_ptr).heuristic.select(&mut *solver_ptr) };
         }
         let max_var = self.num_vars() + 1;
-        let mut var = self.rng.irand(max_var).max(1);
+        let mut var = self.rng.borrow_mut().irand(max_var).max(1);
         loop {
             if self.value(var) == value_free {
                 let choice = self.heuristic.select_literal(self, var, 0);

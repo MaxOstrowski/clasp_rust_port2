@@ -253,6 +253,17 @@ impl SharedMinimizeData {
         &self.lits
     }
 
+    pub fn begin(&self) -> SharedMinimizeIter<'_> {
+        self.iter()
+    }
+
+    pub fn end(&self) -> SharedMinimizeIter<'_> {
+        SharedMinimizeIter {
+            data: &self.lits,
+            index: self.lits.len(),
+        }
+    }
+
     pub fn iter(&self) -> SharedMinimizeIter<'_> {
         SharedMinimizeIter {
             data: &self.lits,
@@ -380,6 +391,10 @@ impl SharedMinimizeData {
         self.opt_gen = self.generation();
     }
 
+    pub fn add(&self, lhs: &mut [Wsum_t], lit: WeightLiteral) {
+        self.add_weight(lhs, lit);
+    }
+
     pub fn add_weight(&self, lhs: &mut [Wsum_t], lit: WeightLiteral) {
         if self.weights.is_empty() {
             lhs[0] += i64::from(lit.weight);
@@ -397,6 +412,10 @@ impl SharedMinimizeData {
             }
             position += 1;
         }
+    }
+
+    pub fn sub(&self, lhs: &mut [Wsum_t], lit: WeightLiteral, active_level: &mut u32) {
+        self.sub_weight(lhs, lit, active_level);
     }
 
     pub fn sub_weight(&self, lhs: &mut [Wsum_t], lit: WeightLiteral, active_level: &mut u32) {
@@ -439,6 +458,16 @@ impl SharedMinimizeData {
         } else {
             self.imp_level_weight(lhs, lit.weight as usize, rhs, level)
         }
+    }
+
+    pub fn imp(
+        &self,
+        lhs: &mut [Wsum_t],
+        lit: WeightLiteral,
+        rhs: &[Wsum_t],
+        level: &mut u32,
+    ) -> bool {
+        self.implies_weight(lhs, lit, rhs, level)
     }
 
     pub fn imp_level_weight(

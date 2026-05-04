@@ -132,6 +132,24 @@ impl BerkminOrder {
     }
 }
 
+pub struct BerkminOrderCompare<'a> {
+    order: &'a mut BerkminOrder,
+}
+
+impl<'a> BerkminOrderCompare<'a> {
+    pub fn new(order: &'a mut BerkminOrder) -> Self {
+        Self { order }
+    }
+
+    pub fn prefers(&mut self, lhs: Var_t, rhs: Var_t) -> bool {
+        let comparison = self
+            .order
+            .decayed_score(lhs)
+            .cmp(&self.order.decayed_score(rhs));
+        comparison.is_gt() || (comparison.is_eq() && lhs < rhs)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BerkminConfig {
     pub order: BerkminOrder,
@@ -284,6 +302,12 @@ impl ActivityScore for VsidsScore {
 
     fn set(&mut self, value: f64) {
         self.value = value;
+    }
+}
+
+impl PartialOrd for VsidsScore {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.value.partial_cmp(&other.value)
     }
 }
 
@@ -458,6 +482,47 @@ impl ActivityScore for DomScore {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DomainDomPrio {
+    prio: [u16; 4],
+}
+
+impl DomainDomPrio {
+    pub const fn new() -> Self {
+        Self { prio: [0; 4] }
+    }
+
+    pub fn clear(&mut self) {
+        self.prio = [0; 4];
+    }
+}
+
+impl core::ops::Index<usize> for DomainDomPrio {
+    type Output = u16;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.prio[index]
+    }
+}
+
+impl core::ops::IndexMut<usize> for DomainDomPrio {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.prio[index]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DomainFrame {
+    pub dl: u32,
+    pub head: u32,
+}
+
+impl DomainFrame {
+    pub const fn new(dl: u32, head: u32) -> Self {
+        Self { dl, head }
+    }
+}
+
 impl PartialOrd for DomScore {
     fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
@@ -473,5 +538,24 @@ impl Ord for DomScore {
                 .partial_cmp(&other.value)
                 .unwrap_or(core::cmp::Ordering::Equal)
         })
+    }
+}
+
+pub struct VsidsCmpScore<'a, T> {
+    scores: &'a [T],
+}
+
+impl<'a, T> VsidsCmpScore<'a, T> {
+    pub const fn new(scores: &'a [T]) -> Self {
+        Self { scores }
+    }
+}
+
+impl<T> VsidsCmpScore<'_, T>
+where
+    T: PartialOrd,
+{
+    pub fn prefers(&self, lhs: Var_t, rhs: Var_t) -> bool {
+        self.scores[lhs as usize] > self.scores[rhs as usize]
     }
 }

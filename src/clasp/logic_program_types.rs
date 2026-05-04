@@ -7,10 +7,11 @@
 //! still depend on the unported logic-program, solver, clause, and
 //! weight-constraint integration layers.
 
+use crate::clasp::claspfwd::Configuration;
 use crate::clasp::literal::{
     LitView, Literal, Val_t, Var_t, lit_true, value_false, value_free, value_true,
 };
-use crate::clasp::pod_vector::PodVectorT;
+use crate::clasp::pod_vector::{PodVectorT, drop as pod_drop};
 use crate::potassco::basic_types::{Atom, Id, atom};
 
 #[allow(non_camel_case_types)]
@@ -273,6 +274,10 @@ impl AtomState {
     pub const SHOWN_FLAG: u8 = 0x20;
     pub const PROJECT_FLAG: u8 = 0x40;
 
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     pub fn swap(&mut self, other: &mut Self) {
         self.state.swap(&mut other.state);
     }
@@ -497,5 +502,52 @@ impl SmallEdgeList {
         let size = unsafe { last.offset_from(base) } as usize;
         self.large.resize(size, PrgEdge::no_edge());
         tag
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NonHcfSet {
+    values: PodVectorT<u32>,
+    pub config: *mut Configuration,
+}
+
+impl Default for NonHcfSet {
+    fn default() -> Self {
+        Self {
+            values: PodVectorT::new(),
+            config: std::ptr::null_mut(),
+        }
+    }
+}
+
+impl NonHcfSet {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add(&mut self, scc: u32) {
+        if let Err(index) = self.values.as_slice().binary_search(&scc) {
+            self.values.insert(index, scc);
+        }
+    }
+
+    pub fn find(&self, scc: u32) -> bool {
+        self.values.as_slice().binary_search(&scc).is_ok()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn as_slice(&self) -> &[u32] {
+        self.values.as_slice()
+    }
+
+    pub fn view(&self, offset: usize) -> &[u32] {
+        pod_drop(&self.values, offset)
     }
 }

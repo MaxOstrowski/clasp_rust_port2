@@ -41,6 +41,22 @@ fn reify_incremental() {
 }
 
 #[test]
+fn reify_begin_step_is_noop() {
+    let out = render(
+        ReifierOptions {
+            calculate_sccs: false,
+            reify_step: true,
+        },
+        |reifier| {
+            reifier.begin_step();
+            reifier.project(&[1]);
+            reifier.end_step();
+        },
+    );
+    assert_eq!(out, "project(1,0).\n");
+}
+
+#[test]
 fn reify_normal() {
     let out = render_default(|reifier| {
         reifier.rule(HeadType::Disjunctive, &[1], &[2]);
@@ -193,6 +209,14 @@ fn reify_output() {
         out,
         "outputTerm(a,0).\nliteral_tuple(0).\nliteral_tuple(0,2).\nliteral_tuple(0,3).\noutput(0,0).\n"
     );
+}
+
+#[test]
+fn reify_output_atom() {
+    let out = render_default(|reifier| {
+        reifier.output_atom(1, "a");
+    });
+    assert_eq!(out, "outputAtom(a,1).\n");
 }
 
 #[test]

@@ -44,14 +44,14 @@ impl<V> ParseValues<V> {
     }
 }
 
-impl<T> Parser<T> for ParseValues<T>
+impl<T, V> Parser<T> for ParseValues<V>
 where
-    T: Clone,
+    V: Clone + Into<T>,
 {
     fn parse(&mut self, input: &str, out: &mut T) -> bool {
         for (key, value) in &self.values {
             if parse::eq_ignore_case(key, input) {
-                *out = value.clone();
+                *out = value.clone().into();
                 return true;
             }
         }

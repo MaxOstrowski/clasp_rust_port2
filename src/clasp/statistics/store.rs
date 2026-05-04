@@ -25,6 +25,7 @@ pub(crate) enum ExternalObjectKey {
     Erased {
         obj: usize,
         vtab: usize,
+        op_id: usize,
     },
 }
 

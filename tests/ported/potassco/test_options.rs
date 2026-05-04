@@ -1,16 +1,17 @@
 //! Port target for original_clasp/libpotassco/tests/test_options.cpp.
 
 use std::cell::{Cell, RefCell};
-use std::io::Cursor;
+use std::io::{self, Cursor, Write};
 use std::rc::Rc;
 
 use rust_clasp::potassco::program_opts::{
-    AmbiguousOption, COMMAND_LINE_ALLOW_FLAG_VALUE, ContextError, ContextErrorType, DefaultFormat,
-    DefaultFormatElement, DefaultParseContext, DescriptionLevel, DuplicateOption, Error, FindType,
-    OptState, Option as ProgramOption, OptionContext, OptionGroup, OptionGroupInit, ParseContext,
-    Str, SyntaxErrorType, UnknownGroup, UnknownOption, ValueAction, ValueDesc, ValueErrorType,
-    action_default, flag, make_action, make_custom, parse, parse_cfg_file, parse_command_array,
-    parse_command_string, store_to, value, value_with_id,
+    AmbiguousOption, AppendSink, COMMAND_LINE_ALLOW_FLAG_VALUE, ContextError, ContextErrorType,
+    DefaultFormat, DefaultFormatElement, DefaultParseContext, DescriptionLevel, DuplicateOption,
+    Error, FindType, OptState, Option as ProgramOption, OptionContext, OptionGroup,
+    OptionGroupInit, ParseContext, Str, SyntaxErrorType, UnknownGroup, UnknownOption, ValueAction,
+    ValueActionPtr, ValueActionRelease, ValueDesc, ValueErrorType, action_default, flag,
+    make_action, make_custom, parse, parse_cfg_file, parse_command_array, parse_command_string,
+    store_to, store_to_with, value, value_with_id,
 };
 
 struct RecordingAction {
@@ -22,6 +23,66 @@ impl<'a> ValueAction<'a> for RecordingAction {
         self.calls.borrow_mut().push(value.to_owned());
         true
     }
+}
+
+struct DefaultReleaseAction {
+    drops: Rc<Cell<u32>>,
+}
+
+impl Drop for DefaultReleaseAction {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
+
+impl<'a> ValueAction<'a> for DefaultReleaseAction {
+    fn assign(&mut self, _opt: &ProgramOption<'a>, _value: &str) -> bool {
+        true
+    }
+}
+
+struct RetainedAction {
+    drops: Rc<Cell<u32>>,
+}
+
+impl Drop for RetainedAction {
+    fn drop(&mut self) {
+        self.drops.set(self.drops.get() + 1);
+    }
+}
+
+impl<'a> ValueAction<'a> for RetainedAction {
+    fn assign(&mut self, _opt: &ProgramOption<'a>, _value: &str) -> bool {
+        true
+    }
+
+    fn release(&mut self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn value_action_release_matches_upstream_deleter_behavior() {
+    let releaser = ValueActionRelease;
+
+    let default_drops = Rc::new(Cell::new(0));
+    let mut default_ptr: Option<ValueActionPtr<'_>> = Some(Box::new(DefaultReleaseAction {
+        drops: default_drops.clone(),
+    }));
+    releaser.call(&mut default_ptr);
+    assert!(default_ptr.is_none());
+    assert_eq!(default_drops.get(), 1);
+
+    let retained_drops = Rc::new(Cell::new(0));
+    let mut retained_ptr: Option<ValueActionPtr<'_>> = Some(Box::new(RetainedAction {
+        drops: retained_drops.clone(),
+    }));
+    releaser.call(&mut retained_ptr);
+    assert!(retained_ptr.is_some());
+    assert_eq!(retained_drops.get(), 0);
+
+    drop(retained_ptr);
+    assert_eq!(retained_drops.get(), 1);
 }
 
 #[test]
@@ -53,6 +114,33 @@ fn str_detects_literal_and_dynamic_values_and_supports_prefix_removal() {
     assert_eq!(dynamic.str(), "o");
     assert_eq!(lit.size(), 3);
     assert_eq!(dynamic.size(), 1);
+}
+
+#[test]
+fn str_clone_plus_reassignment_matches_copy_assignment_observables() {
+    let literal_source = Str::literal("Hallo");
+    let dynamic_source = Str::dynamic("Hallo");
+
+    let mut literal_assigned = Str::default();
+    let mut dynamic_assigned = Str::default();
+    assert!(literal_assigned.empty());
+    assert!(dynamic_assigned.empty());
+
+    literal_assigned = literal_source.clone();
+    dynamic_assigned = dynamic_source.clone();
+
+    assert!(literal_assigned.is_lit());
+    assert!(!dynamic_assigned.is_lit());
+    assert_eq!(literal_assigned.str(), "Hallo");
+    assert_eq!(dynamic_assigned.str(), "Hallo");
+
+    literal_assigned.remove_prefix(2);
+    dynamic_assigned.remove_prefix(4);
+
+    assert_eq!(literal_source.str(), "Hallo");
+    assert_eq!(dynamic_source.str(), "Hallo");
+    assert_eq!(literal_assigned.str(), "llo");
+    assert_eq!(dynamic_assigned.str(), "o");
 }
 
 #[test]
@@ -169,6 +257,48 @@ fn action_factories_support_explicit_ids_for_boxed_and_shared_actions() {
     assert_eq!(passthrough_calls.borrow().as_slice(), ["123"]);
 }
 
+#[test]
+fn value_desc_action_accessor_reflects_default_boxed_and_shared_actions() {
+    let empty_desc = ValueDesc::default();
+    assert!(empty_desc.action_ref().is_none());
+    assert_eq!(empty_desc.id(), 0);
+
+    let boxed_desc = ValueDesc::new(
+        make_action(RecordingAction {
+            calls: Rc::new(RefCell::new(Vec::new())),
+        }),
+        31,
+    );
+    assert!(boxed_desc.action_ref().is_some());
+    assert_eq!(boxed_desc.id(), 31);
+
+    let shared_action = make_custom(|_opt: &ProgramOption<'_>, _value: &str| true);
+    let shared_desc = value_with_id(shared_action, 23);
+    assert!(shared_desc.action_ref().is_some());
+    assert_eq!(shared_desc.id(), 23);
+}
+
+#[test]
+fn value_desc_defaults_to_assigned_matches_upstream_defaulted_construction() {
+    let mut assigned = Cell::new(0);
+    let desc = store_to_with(&mut assigned, |value: &str, slot: &mut Cell<i32>| {
+        value.parse::<i32>().map(|parsed| slot.set(parsed)).is_ok()
+    })
+    .defaults_to_assigned("123")
+    .arg("<n>");
+    assert_eq!(desc.default_value().str(), "123");
+    assert!(desc.is_defaulted());
+
+    {
+        let option = ProgramOption::new("some-int", "some integer", desc);
+        assert_eq!(option.default_value(), "123");
+        assert!(option.defaulted());
+        assert!(option.assign("82"));
+        assert!(!option.defaulted());
+    }
+    assert_eq!(assigned.get(), 82);
+}
+
 fn negatable_int(input: &str, out: &mut i32) -> bool {
     if input == "no" {
         *out = 0;
@@ -202,6 +332,7 @@ fn assert_value_error(error: Error, kind: ValueErrorType) {
 #[test]
 fn context_error_wrappers_preserve_types_and_messages() {
     let duplicate = DuplicateOption::new("ctx", "opt");
+    assert_eq!(duplicate.r#type(), ContextErrorType::DuplicateOption);
     assert_eq!(duplicate.kind(), ContextErrorType::DuplicateOption);
     assert_eq!(duplicate.ctx(), "ctx");
     assert_eq!(duplicate.key(), "opt");
@@ -233,6 +364,34 @@ fn context_error_wrappers_preserve_types_and_messages() {
 
     let duplicate_error: Error = duplicate.into();
     assert_context_error(duplicate_error, ContextErrorType::DuplicateOption);
+}
+
+#[test]
+fn syntax_error_exposes_cpp_style_type_accessor() {
+    let error =
+        rust_clasp::potassco::program_opts::SyntaxError::new(SyntaxErrorType::MissingValue, "flag");
+    assert_eq!(error.r#type(), SyntaxErrorType::MissingValue);
+    assert_eq!(error.key(), "flag");
+    assert_eq!(error.to_string(), "SyntaxError: 'flag' requires a value!");
+}
+
+#[test]
+fn value_error_exposes_cpp_style_type_accessor() {
+    let error = rust_clasp::potassco::program_opts::ValueError::new(
+        "ctx",
+        ValueErrorType::InvalidValue,
+        "flag",
+        "abc",
+        "",
+    );
+    assert_eq!(error.r#type(), ValueErrorType::InvalidValue);
+    assert_eq!(error.ctx(), "ctx");
+    assert_eq!(error.key(), "flag");
+    assert_eq!(error.value(), "abc");
+    assert_eq!(
+        error.to_string(),
+        "In context 'ctx': 'abc' invalid value for: 'flag'"
+    );
 }
 
 #[test]
@@ -278,6 +437,210 @@ fn option_group_init_applies_specs_and_context_manages_groups_aliases_and_prefix
         Err(error) => assert_context_error(error, ContextErrorType::AmbiguousOption),
         Ok(_) => panic!("expected ambiguous prefix lookup"),
     }
+}
+
+#[test]
+fn default_format_column_width_matches_cpp_rules() {
+    let long_only = ProgramOption::new("number", "a number", ValueDesc::default());
+    assert_eq!(DefaultFormat::column_width(&long_only), 16);
+
+    let with_alias = ProgramOption::with_alias("number", "a number", ValueDesc::default(), 'n');
+    assert_eq!(DefaultFormat::column_width(&with_alias), 19);
+
+    let flag_option =
+        ProgramOption::with_alias("number", "a number", ValueDesc::default().flag(), 'n');
+    assert_eq!(DefaultFormat::column_width(&flag_option), 13);
+
+    let negatable =
+        ProgramOption::with_alias("number", "a number", ValueDesc::default().negatable(), 'n');
+    assert_eq!(DefaultFormat::column_width(&negatable), 22);
+
+    let negatable_flag = ProgramOption::with_alias(
+        "number",
+        "a number",
+        ValueDesc::default().negatable().flag(),
+        'n',
+    );
+    assert_eq!(DefaultFormat::column_width(&negatable_flag), 18);
+}
+
+#[test]
+fn default_format_formats_options_and_group_captions_like_cpp() {
+    let mut out = String::new();
+
+    DefaultFormat::format_option(
+        &mut out,
+        &ProgramOption::new("number", "a number", ValueDesc::default()),
+        0,
+        None,
+    );
+    assert_eq!(out, "  --number=<arg>: a number\n");
+
+    out.clear();
+    DefaultFormat::format_option(
+        &mut out,
+        &ProgramOption::with_alias("number", "a number", ValueDesc::default(), 'n'),
+        0,
+        None,
+    );
+    assert_eq!(out, "  -n,--number <arg>: a number\n");
+
+    out.clear();
+    DefaultFormat::format_option(
+        &mut out,
+        &ProgramOption::with_alias("number", "a number", ValueDesc::default().flag(), 'n'),
+        0,
+        None,
+    );
+    assert_eq!(out, "  -n,--number: a number\n");
+
+    out.clear();
+    DefaultFormat::format_option(
+        &mut out,
+        &ProgramOption::with_alias("number", "a number", ValueDesc::default().negatable(), 'n'),
+        0,
+        None,
+    );
+    assert_eq!(out, "  -n,--number <arg>|no: a number\n");
+
+    out.clear();
+    DefaultFormat::format_option(
+        &mut out,
+        &ProgramOption::with_alias(
+            "number",
+            "a number",
+            ValueDesc::default().negatable().flag(),
+            'n',
+        ),
+        0,
+        None,
+    );
+    assert_eq!(out, "  -n,--[no-]number: a number\n");
+
+    out.clear();
+    DefaultFormat::format_option(
+        &mut out,
+        &ProgramOption::new("number", "a number", ValueDesc::default()),
+        20,
+        None,
+    );
+    assert_eq!(out, "  --number=<arg>    : a number\n");
+
+    let empty = OptionGroup::new("", DescriptionLevel::Default);
+    out.clear();
+    DefaultFormat::format_group(&mut out, &empty, None);
+    assert!(out.is_empty());
+
+    let basic = OptionGroup::new("Basic Options", DescriptionLevel::Default);
+    out.clear();
+    DefaultFormat::format_group(&mut out, &basic, None);
+    assert_eq!(out, "\nBasic Options:\n\n");
+}
+
+#[test]
+fn default_parse_context_lifecycle_matches_cpp_behavior() {
+    let assigned = Rc::new(Cell::new(0));
+    let mut group = OptionGroup::new("", DescriptionLevel::Default);
+    {
+        let assigned_target = assigned.clone();
+        let mut init = group.add_options();
+        init.add(
+            "value",
+            action_default::<i32, _>(move |value| assigned_target.set(value)),
+            "an int",
+        )
+        .unwrap();
+    }
+
+    let mut ctx = OptionContext::new("ctx", DescriptionLevel::Default);
+    ctx.add(group).unwrap();
+
+    let opt = ctx.option("value", FindType::NAME).unwrap();
+    let mut parse = DefaultParseContext::new(&ctx);
+    assert!(parse.parsed().empty());
+    assert_eq!(parse.state(&opt), OptState::Open);
+
+    let fetched = parse.get_option("value", FindType::NAME).unwrap();
+    assert_eq!(fetched.name(), "value");
+
+    parse.set_value(&opt, "7").unwrap();
+    assert_eq!(assigned.get(), 7);
+    assert_eq!(parse.state(&opt), OptState::Seen);
+    assert!(!parse.parsed().contains("value"));
+
+    parse.finish(None);
+    assert!(parse.parsed().contains("value"));
+    assert_eq!(parse.state(&opt), OptState::Skip);
+
+    parse.clear_parsed();
+    assert!(parse.parsed().empty());
+    assert_eq!(parse.state(&opt), OptState::Open);
+}
+
+#[test]
+fn option_assignment_and_default_state_match_cpp_behavior() {
+    let assigned = Rc::new(Cell::new(0));
+    let option = ProgramOption::with_alias(
+        "some-int",
+        "some integer",
+        action_default::<i32, _>({
+            let assigned = assigned.clone();
+            move |value| assigned.set(value)
+        })
+        .defaults_to("123")
+        .arg("<n>")
+        .implicit("77")
+        .composing()
+        .negatable()
+        .level(DescriptionLevel::E2),
+        's',
+    );
+
+    assert_eq!(option.name(), "some-int");
+    assert_eq!(option.alias(), 's');
+    assert_eq!(option.description(), "some integer");
+    assert_eq!(option.arg_name(), "<n>");
+    assert_eq!(option.default_value(), "123");
+    assert_eq!(option.implicit_value(), "77");
+    assert_eq!(option.desc_level(), DescriptionLevel::E2);
+    assert!(option.composing());
+    assert!(option.negatable());
+    assert!(option.implicit());
+    assert!(!option.flag());
+    assert!(!option.defaulted());
+
+    assert!(option.assign_default());
+    assert_eq!(assigned.get(), 123);
+    assert!(option.defaulted());
+
+    assert!(option.assign("82"));
+    assert_eq!(assigned.get(), 82);
+    assert!(!option.defaulted());
+
+    assert!(option.assign(""));
+    assert_eq!(assigned.get(), 77);
+    assert!(!option.defaulted());
+
+    assert!(option.assign_default_with("923"));
+    assert_eq!(assigned.get(), 923);
+    assert_eq!(option.default_value(), "923");
+    assert!(option.defaulted());
+
+    assert!(option.assign_default_with(""));
+    assert_eq!(assigned.get(), 923);
+    assert_eq!(option.default_value(), "");
+    assert!(!option.defaulted());
+
+    let mut enabled = false;
+    {
+        let flag_option = ProgramOption::new("flag", "", flag(&mut enabled));
+        assert!(flag_option.flag());
+        assert!(flag_option.implicit());
+        assert_eq!(flag_option.arg_name(), "");
+        assert_eq!(flag_option.implicit_value(), "1");
+        assert!(flag_option.assign(""));
+    }
+    assert!(enabled);
 }
 
 #[test]
@@ -724,4 +1087,133 @@ fn option_parser_supports_custom_parse_contexts() {
     .unwrap();
     assert_eq!(first.get(), 10);
     assert_eq!(second.get(), 22);
+}
+
+#[test]
+fn option_output_keeps_formatting_when_sink_writes_fail() {
+    #[derive(Default)]
+    struct RecordingFormatter {
+        calls: Rc<RefCell<Vec<&'static str>>>,
+    }
+
+    impl rust_clasp::potassco::program_opts::OptionFormatter for RecordingFormatter {
+        fn format_context<'a, 'b>(
+            &self,
+            buffer: &'b mut String,
+            _ctx: &OptionContext<'a>,
+        ) -> &'b mut String {
+            self.calls.borrow_mut().push("context");
+            buffer.push_str("ctx");
+            buffer
+        }
+
+        fn format_group<'a, 'b>(
+            &self,
+            buffer: &'b mut String,
+            _group: &OptionGroup<'a>,
+        ) -> &'b mut String {
+            self.calls.borrow_mut().push("group");
+            buffer.push_str("group");
+            buffer
+        }
+
+        fn format_option<'a, 'b>(
+            &self,
+            buffer: &'b mut String,
+            _option: &ProgramOption<'a>,
+            _max_width: usize,
+        ) -> &'b mut String {
+            self.calls.borrow_mut().push("option");
+            buffer.push_str("option");
+            buffer
+        }
+
+        fn column_width<'a>(&self, _option: &ProgramOption<'a>) -> usize {
+            0
+        }
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("expected failure"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = FailingWriter;
+    let mut enabled = false;
+    let mut group = OptionGroup::new("Visible", DescriptionLevel::Default);
+    group
+        .add_options()
+        .add("flag", flag(&mut enabled), "desc")
+        .unwrap();
+    let mut ctx = OptionContext::new("ctx", DescriptionLevel::Default);
+    ctx.add(group).unwrap();
+
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let formatter = RecordingFormatter {
+        calls: calls.clone(),
+    };
+    let mut output =
+        rust_clasp::potassco::program_opts::OptionOutputImpl::with_writer(&mut writer, formatter);
+
+    ctx.description(&mut output);
+
+    assert_eq!(&*calls.borrow(), &["context", "group", "option"]);
+}
+
+#[test]
+fn option_group_set_description_level_assigns_exact_level() {
+    let mut group = OptionGroup::new("Base", DescriptionLevel::E1);
+    group.set_description_level(DescriptionLevel::Hidden);
+    assert_eq!(group.desc_level(), DescriptionLevel::Hidden);
+
+    let mut left = OptionContext::new("ctx", DescriptionLevel::Default);
+    left.add(group).unwrap();
+
+    let right_group = OptionGroup::new("Base", DescriptionLevel::Default);
+    left.add(right_group).unwrap();
+    assert_eq!(
+        left.group("Base").unwrap().desc_level(),
+        DescriptionLevel::Default
+    );
+}
+
+#[test]
+fn option_output_accepts_custom_append_sinks() {
+    #[derive(Default)]
+    struct Buffer(String);
+
+    impl AppendSink for Buffer {
+        fn append(&mut self, value: &str) {
+            self.0.push_str(value);
+        }
+    }
+
+    let mut buffer = Buffer::default();
+
+    {
+        let mut enabled = false;
+        let mut group = OptionGroup::new("Visible", DescriptionLevel::Default);
+        group
+            .add_options()
+            .add("flag", flag(&mut enabled), "desc")
+            .unwrap();
+        let mut ctx = OptionContext::new("ctx", DescriptionLevel::Default);
+        ctx.add(group).unwrap();
+
+        let mut output = rust_clasp::potassco::program_opts::OptionPrinter::new(
+            rust_clasp::potassco::program_opts::OutputSink::from_append_sink(&mut buffer),
+        );
+
+        ctx.description(&mut output);
+    }
+
+    assert!(buffer.0.contains("Visible:"));
+    assert!(buffer.0.contains("--flag"));
 }

@@ -731,6 +731,14 @@ impl ImpliedList {
         dl < self.level && self.front as usize != self.lits.len()
     }
 
+    pub fn begin(&self) -> core::slice::Iter<'_, ImpliedLiteral> {
+        self.lits.as_slice().iter()
+    }
+
+    pub fn end(&self) -> core::slice::Iter<'_, ImpliedLiteral> {
+        self.lits.as_slice()[self.lits.len()..].iter()
+    }
+
     pub fn iter(&self) -> core::slice::Iter<'_, ImpliedLiteral> {
         self.lits.as_slice().iter()
     }

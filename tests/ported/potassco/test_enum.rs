@@ -1,6 +1,7 @@
+use rust_clasp::potassco::enums::detail::EnumMeta;
 use rust_clasp::potassco::enums::{
-    DefaultEnum, EnumMetadata, EnumTag, HasEnumEntries, enum_cast, enum_count, enum_entries,
-    enum_max, enum_min, enum_name, make_entries,
+    DefaultEnum, EnumMetadata, EnumTag, FixedString, HasEnumEntries, enum_cast, enum_count,
+    enum_entries, enum_max, enum_min, enum_name, make_entries,
 };
 use rust_clasp::potassco::program_opts::{Errc, ParseChars, string_to_errc};
 
@@ -237,6 +238,91 @@ fn explicit_enum_entries_match_upstream_gap_behavior() {
     assert_eq!(enum_cast::<Foo>(5), None);
     assert_eq!(enum_cast::<Foo>(6), None);
     assert_eq!(enum_cast::<Foo>(7), Some(Foo::Value5));
+}
+
+#[test]
+fn enum_entries_find_returns_matching_entry() {
+    let entry = Foo::entries_metadata().find(Foo::Value5);
+
+    assert_eq!(entry, Some(&(Foo::Value5, "value5")));
+}
+
+#[test]
+fn enum_entries_constructor_sorts_unsorted_input() {
+    let entries = make_entries(&[
+        (Foo::Value5, "value5"),
+        (Foo::Value1, "value1"),
+        (Foo::Value6, "value6"),
+    ]);
+
+    assert_eq!(
+        entries.entries(),
+        &[
+            (Foo::Value1, "value1"),
+            (Foo::Value5, "value5"),
+            (Foo::Value6, "value6"),
+        ]
+    );
+    assert_eq!(entries.min(), 0);
+    assert_eq!(entries.max(), 8);
+}
+
+#[test]
+fn fixed_string_constructor_copies_prefix_and_appends_nul() {
+    let fixed = FixedString::<5>::new("value1");
+
+    assert_eq!(fixed.data, *b"value");
+    assert_eq!(fixed.nul, 0);
+}
+
+#[test]
+fn fixed_string_size_matches_template_extent() {
+    let fixed = FixedString::<5>::new("value1");
+
+    assert_eq!(fixed.size(), 5);
+}
+
+#[test]
+fn fixed_string_as_str_returns_the_copied_prefix() {
+    let fixed = FixedString::<5>::new("value1");
+
+    assert_eq!(fixed.as_str(), "value");
+}
+
+#[test]
+fn fixed_string_ordering_matches_lexicographic_byte_order() {
+    let lhs = FixedString::<5>::new("alpha");
+    let rhs = FixedString::<5>::new("bravo");
+
+    assert!(lhs < rhs);
+}
+
+#[test]
+fn enum_meta_min_uses_metadata_or_underlying_fallback() {
+    assert_eq!(EnumMeta::<Foo>::min(), 0);
+    assert_eq!(EnumMeta::<NoMeta>::min(), u8::MIN);
+}
+
+#[test]
+fn enum_meta_max_uses_metadata_or_underlying_fallback() {
+    assert_eq!(EnumMeta::<Foo>::max(), 8);
+    assert_eq!(EnumMeta::<NoMeta>::max(), u8::MAX);
+}
+
+#[test]
+fn enum_meta_count_uses_metadata_count() {
+    assert_eq!(EnumMeta::<Foo>::count(), 6);
+}
+
+#[test]
+fn enum_meta_valid_checks_explicit_entries() {
+    assert!(EnumMeta::<Foo>::valid(7));
+    assert!(!EnumMeta::<Foo>::valid(5));
+}
+
+#[test]
+fn enum_meta_name_returns_entry_name() {
+    assert_eq!(EnumMeta::<Foo>::name(Foo::Value3), "value3");
 }
 
 #[test]

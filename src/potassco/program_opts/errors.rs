@@ -38,6 +38,10 @@ impl SyntaxError {
         &self.key
     }
 
+    pub fn r#type(&self) -> SyntaxErrorType {
+        self.kind
+    }
+
     pub fn kind(&self) -> SyntaxErrorType {
         self.kind
     }
@@ -105,6 +109,10 @@ impl ContextError {
 
     pub fn key(&self) -> &str {
         &self.key
+    }
+
+    pub fn r#type(&self) -> ContextErrorType {
+        self.kind
     }
 
     pub fn kind(&self) -> ContextErrorType {
@@ -298,6 +306,10 @@ impl ValueError {
 
     pub fn value(&self) -> &str {
         &self.value
+    }
+
+    pub fn r#type(&self) -> ValueErrorType {
+        self.kind
     }
 
     pub fn kind(&self) -> ValueErrorType {

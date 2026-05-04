@@ -2,12 +2,13 @@
 
 use rust_clasp::clasp::constraint::ConstraintType;
 use rust_clasp::clasp::heuristics::{
-    BERK_MAX_DECAY, BerkminConfig, BerkminHScore, BerkminOrder, DomScore, VmtfConfig, VmtfVarInfo,
-    VsidsConfig, VsidsDynDecay, VsidsScore, add_other, init_decay, moms_score_from_counts,
-    normalize_activity_scores,
+    BERK_MAX_DECAY, BerkminConfig, BerkminHScore, BerkminOrder, BerkminOrderCompare, DomScore,
+    DomainDomPrio, DomainFrame, VmtfConfig, VmtfVarInfo, VsidsCmpScore, VsidsConfig, VsidsDynDecay,
+    VsidsScore, add_other, init_decay, moms_score_from_counts, normalize_activity_scores,
 };
 use rust_clasp::clasp::literal::{neg_lit, pos_lit};
 use rust_clasp::clasp::solver_strategies::{DomMod, HeuParams, Score, ScoreOther, VsidsDecay};
+use std::cmp::Ordering;
 
 #[test]
 fn moms_score_formula_matches_upstream() {
@@ -93,6 +94,26 @@ fn berkmin_order_inc_and_compare_follow_header_gates() {
     assert_eq!(order.occ(1), 2);
     assert_eq!(order.occ(2), -2);
     assert!(order.compare(1, 2) > 0);
+}
+
+#[test]
+fn berkmin_order_compare_uses_score_then_var_tie_break() {
+    let mut order = BerkminOrder {
+        score: vec![BerkminHScore::default(); 4],
+        decay: 0,
+        huang: false,
+        nant: false,
+        res_score: Score::ScoreMultiSet as u8,
+    };
+    order.score[1].act = 2;
+    order.score[2].act = 2;
+    order.score[3].act = 3;
+
+    let mut compare = BerkminOrderCompare::new(&mut order);
+
+    assert!(compare.prefers(3, 1));
+    assert!(compare.prefers(1, 2));
+    assert!(!compare.prefers(2, 1));
 }
 
 #[test]
@@ -199,6 +220,15 @@ fn vsids_config_handles_dynamic_decay_and_flags() {
 }
 
 #[test]
+fn vsids_score_orders_by_activity_value() {
+    let low = VsidsScore::new(1.25);
+    let high = VsidsScore::new(2.5);
+
+    assert!(high > low);
+    assert_ne!(low.partial_cmp(&high), Some(Ordering::Greater));
+}
+
+#[test]
 fn vsids_config_without_dynamic_decay_uses_plain_defaults() {
     let params = HeuParams {
         param: 0,
@@ -300,6 +330,40 @@ fn dom_score_breaks_same_level_ties_by_value() {
 
     rhs.factor = 2;
     assert_eq!(DomScore::apply_factor(&[lhs, rhs], 1, 1.5), 3.0);
+}
+
+#[test]
+fn domain_dom_prio_and_frame_match_header_helpers() {
+    let mut prio = DomainDomPrio::new();
+    prio[1] = 7;
+    prio[3] = 11;
+
+    assert_eq!(prio[1], 7);
+    assert_eq!(prio[3], 11);
+
+    prio.clear();
+
+    assert_eq!(prio[0], 0);
+    assert_eq!(prio[1], 0);
+    assert_eq!(prio[2], 0);
+    assert_eq!(prio[3], 0);
+
+    let frame = DomainFrame::new(4, 9);
+    assert_eq!(frame.dl, 4);
+    assert_eq!(frame.head, 9);
+}
+
+#[test]
+fn vsids_cmp_score_prefers_higher_scores() {
+    let scores = [
+        VsidsScore::new(0.0),
+        VsidsScore::new(1.0),
+        VsidsScore::new(3.0),
+    ];
+    let compare = VsidsCmpScore::new(&scores);
+
+    assert!(compare.prefers(2, 1));
+    assert!(!compare.prefers(1, 2));
 }
 
 #[test]

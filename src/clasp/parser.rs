@@ -7,7 +7,7 @@
 use std::io::{Cursor, Read};
 
 use crate::clasp::claspfwd::ProblemType;
-use crate::potassco::aspif_text::AspifTextInput;
+use crate::potassco::aspif::{AspifInput, OutputMapping};
 use crate::potassco::basic_types::AbstractProgram;
 use crate::potassco::match_basic_types::{ProgramReader, ReadMode, is_digit};
 use crate::potassco::smodels::{SmodelsInput, SmodelsOptions};
@@ -124,14 +124,14 @@ pub trait ProgramParserApi {
 
 enum AspStrategy<'a> {
     Smodels(ProgramReader<SmodelsInput<'a>>),
-    AspifText(ProgramReader<AspifTextInput<'a>>),
+    Aspif(ProgramReader<AspifInput<'a>>),
 }
 
 impl AspStrategy<'_> {
     fn incremental(&self) -> bool {
         match self {
             Self::Smodels(reader) => reader.incremental(),
-            Self::AspifText(reader) => reader.incremental(),
+            Self::Aspif(reader) => reader.incremental(),
         }
     }
 
@@ -139,21 +139,21 @@ impl AspStrategy<'_> {
         match self {
             // Upstream ProgramParser::parse() parses a single step.
             Self::Smodels(reader) => reader.parse(ReadMode::Incremental),
-            Self::AspifText(reader) => reader.parse(ReadMode::Incremental),
+            Self::Aspif(reader) => reader.parse(ReadMode::Incremental),
         }
     }
 
     fn more(&mut self) -> bool {
         match self {
             Self::Smodels(reader) => reader.more(),
-            Self::AspifText(reader) => reader.more(),
+            Self::Aspif(reader) => reader.more(),
         }
     }
 
     fn reset(&mut self) {
         match self {
             Self::Smodels(reader) => reader.reset(),
-            Self::AspifText(reader) => reader.reset(),
+            Self::Aspif(reader) => reader.reset(),
         }
     }
 }
@@ -210,11 +210,12 @@ impl<'a> AspParser<'a> {
         accepted
     }
 
-    fn accept_aspif_text(&mut self) -> bool {
-        let mut reader = ProgramReader::new(AspifTextInput::new(self.out_mut()));
+    fn accept_aspif(&mut self) -> bool {
+        let mut reader =
+            ProgramReader::new(AspifInput::new(self.out_mut(), OutputMapping::AtomFact, 0));
         let accepted = reader.accept(Cursor::new(self.input_buf.as_slice()));
         if accepted {
-            self.strategy = Some(AspStrategy::AspifText(reader));
+            self.strategy = Some(AspStrategy::Aspif(reader));
         }
         accepted
     }
@@ -232,7 +233,7 @@ impl ProgramParserApi for AspParser<'_> {
         if self.first_non_ws().is_some_and(is_digit) {
             self.accept_smodels(opts)
         } else {
-            self.accept_aspif_text()
+            self.accept_aspif()
         }
     }
 

@@ -2,6 +2,7 @@ use rust_clasp::clasp::cb_enumerator::{EnumMode, EnumOptions};
 use rust_clasp::clasp::model_enumerators::{
     ModelEnumerator, ModelEnumeratorInitWarning, ProjectOptions, Strategy,
 };
+use rust_clasp::clasp::shared_context::SharedContext;
 
 #[test]
 fn set_strategy_normalizes_projection_flags_like_upstream() {
@@ -40,18 +41,21 @@ fn from_enum_options_maps_bt_record_and_dom_record_modes() {
     let backtrack = ModelEnumerator::from_enum_options(
         EnumOptions {
             enum_mode: EnumMode::Bt,
+            ..EnumOptions::default()
         },
         0,
     );
     let record = ModelEnumerator::from_enum_options(
         EnumOptions {
             enum_mode: EnumMode::Record,
+            ..EnumOptions::default()
         },
         0,
     );
     let dom_record = ModelEnumerator::from_enum_options(
         EnumOptions {
             enum_mode: EnumMode::DomRecord,
+            ..EnumOptions::default()
         },
         0,
     );
@@ -67,9 +71,9 @@ fn project_membership_uses_dynamic_bitset_storage() {
     let mut enumerator = ModelEnumerator::default();
 
     assert!(!enumerator.project(1));
-    assert!(enumerator.add_project(1));
-    assert!(enumerator.add_project(65));
-    assert!(!enumerator.add_project(65));
+    assert!(enumerator.add_project_var(1));
+    assert!(enumerator.add_project_var(65));
+    assert!(!enumerator.add_project_var(65));
     assert!(enumerator.project(1));
     assert!(enumerator.project(65));
     assert!(!enumerator.project(64));
@@ -78,6 +82,20 @@ fn project_membership_uses_dynamic_bitset_storage() {
 
     assert!(!enumerator.project(1));
     assert!(!enumerator.project(65));
+}
+
+#[test]
+fn add_project_freezes_the_variable_in_shared_context() {
+    let mut enumerator = ModelEnumerator::default();
+    let mut ctx = SharedContext::new();
+    let var = ctx.add_var();
+
+    assert!(!ctx.var_info(var).frozen());
+
+    enumerator.add_project(&mut ctx, var);
+
+    assert!(enumerator.project(var));
+    assert!(ctx.var_info(var).frozen());
 }
 
 #[test]
