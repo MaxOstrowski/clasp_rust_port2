@@ -977,6 +977,12 @@ pub trait Configuration {
     fn num_search(&self) -> u32;
     fn solver(&self, idx: u32) -> &SolverParams;
     fn search(&self, idx: u32) -> &SolveParams;
+
+    fn add_post(&self, _solver: &mut Solver) -> bool {
+        true
+    }
+
+    fn set_heuristic(&self, _solver: &mut Solver) {}
 }
 
 pub trait UserConfiguration: Configuration {

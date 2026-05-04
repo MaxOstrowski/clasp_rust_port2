@@ -7,20 +7,24 @@
 //! solver.
 
 use crate::clasp::asp_preprocessor::SatPreprocessor;
+use crate::clasp::clause::SharedLiterals;
 use crate::clasp::cli::clasp_cli_options::{
-    HeuristicType,
+    HeuristicType, ProjectMode,
     context_params::{ShareMode, ShortSimpMode},
 };
-use crate::clasp::constraint::{Antecedent, ConstraintType};
+use crate::clasp::constraint::{Antecedent, Constraint, ConstraintInfo, ConstraintType};
+use crate::clasp::dependency_graph::ExtDepGraph;
 use crate::clasp::literal::{Literal, VarType, lit_false, lit_true, true_value, value_free};
 use crate::clasp::literal::{WeightLiteral, WeightT};
 use crate::clasp::minimize_constraint::{MinimizeBuilder, SharedMinimizeData};
 use crate::clasp::solver::Solver;
 use crate::clasp::solver_strategies::{
-    BasicSatConfig, Configuration, Model, ModelHandler, ShortMode,
+    BasicSatConfig, Configuration, DomPref, Model, ModelHandler, ShortMode,
 };
+use crate::clasp::solver_types::SolverStats;
 use crate::clasp::statistics::{StatisticMap, StatisticObject};
-use crate::clasp::util::misc_types::{EnterEvent, EventLike, Subsystem, Verbosity};
+use crate::clasp::util::misc_types::{EnterEvent, EventLike, Range32, Subsystem, Verbosity};
+use crate::potassco::basic_types::DomModifier;
 use crate::potassco::bits::{
     store_clear_mask, store_set_mask, store_toggle_bit, test_any, test_mask,
 };
@@ -252,11 +256,499 @@ pub enum LogEventType {
     Warning = b'W' as isize,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SolveMode {
+    #[default]
+    SolveOnce = 0,
+    SolveMulti = 1,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ReportMode {
+    #[default]
+    Default = 0,
+    Conflict = 1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputType {
+    Var = 0,
+    Pred = 1,
+    Term = 2,
+    Theory = 3,
+}
+
+pub trait OutputTheory {
+    fn first(&mut self, model: &Model) -> Option<&str>;
+    fn next(&mut self) -> Option<&str>;
+
+    fn output_type(&self) -> OutputType {
+        OutputType::Theory
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutputPredicateEntry {
+    pub name: String,
+    pub cond: Literal,
+    pub user: u32,
+}
+
+enum OutputTheoryEntry {
+    Borrowed(*mut dyn OutputTheory),
+    Owned(Box<dyn OutputTheory>),
+}
+
+impl core::fmt::Debug for OutputTheoryEntry {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Borrowed(_) => f.write_str("BorrowedTheory"),
+            Self::Owned(_) => f.write_str("OwnedTheory"),
+        }
+    }
+}
+
+impl OutputTheoryEntry {
+    fn ptr(&self) -> *mut dyn OutputTheory {
+        match self {
+            Self::Borrowed(ptr) => *ptr,
+            Self::Owned(theory) => &**theory as *const dyn OutputTheory as *mut dyn OutputTheory,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct OutputTable {
+    preds: Vec<OutputPredicateEntry>,
+    theories: Vec<OutputTheoryEntry>,
+    projected: Vec<Literal>,
+    vars: Range32,
+    project_mode: ProjectMode,
+    hide: char,
+}
+
+impl Default for OutputTable {
+    fn default() -> Self {
+        Self {
+            preds: Vec::new(),
+            theories: Vec::new(),
+            projected: Vec::new(),
+            vars: Range32::new(0, 0),
+            project_mode: ProjectMode::Implicit,
+            hide: '\0',
+        }
+    }
+}
+
+impl OutputTable {
+    pub fn add_predicate(&mut self, name: impl Into<String>, cond: Literal, user: u32) {
+        self.preds.push(OutputPredicateEntry {
+            name: name.into(),
+            cond,
+            user,
+        });
+    }
+
+    pub fn add_theory(&mut self, theory: &'static mut dyn OutputTheory) {
+        self.theories.push(OutputTheoryEntry::Borrowed(theory));
+    }
+
+    pub fn add_owned_theory(&mut self, theory: Box<dyn OutputTheory>) {
+        self.theories.push(OutputTheoryEntry::Owned(theory));
+    }
+
+    pub fn remove_theory(&mut self, theory: &'static mut dyn OutputTheory) -> bool {
+        let target = theory as *mut dyn OutputTheory;
+        let before = self.theories.len();
+        self.theories
+            .retain(|entry| !std::ptr::addr_eq(entry.ptr(), target));
+        before != self.theories.len()
+    }
+
+    pub fn set_var_range(&mut self, vars: Range32) {
+        self.vars = vars;
+    }
+
+    pub fn set_project_mode(&mut self, mode: ProjectMode) {
+        self.project_mode = mode;
+    }
+
+    pub fn set_filter(&mut self, hide: char) {
+        self.hide = hide;
+    }
+
+    pub fn filter_name(&self, name: &str) -> bool {
+        name.is_empty() || (self.hide != '\0' && name.starts_with(self.hide))
+    }
+
+    pub fn filter(&mut self, start_pos: u32) -> u32 {
+        let start = start_pos.min(self.num_preds()) as usize;
+        let hide = self.hide;
+        let mut filtered = self.preds[..start].to_vec();
+        let mut removed = 0u32;
+        for pred in self.preds.drain(start..) {
+            let drop = pred.cond == lit_false
+                || pred.name.is_empty()
+                || (hide != '\0' && pred.name.starts_with(hide));
+            if drop {
+                removed += 1;
+            } else {
+                filtered.push(pred);
+            }
+        }
+        self.preds = filtered;
+        removed
+    }
+
+    pub fn set_predicate_condition(&mut self, index: u32, cond: Literal) {
+        self.preds[index as usize].cond = cond;
+    }
+
+    pub fn sort_predicates_by<F>(&mut self, mut cmp: F, start_pos: u32)
+    where
+        F: FnMut(&OutputPredicateEntry, &OutputPredicateEntry) -> core::cmp::Ordering,
+    {
+        let start = start_pos.min(self.num_preds()) as usize;
+        self.preds[start..].sort_by(|lhs, rhs| cmp(lhs, rhs));
+    }
+
+    pub fn pred_range(&self) -> &[OutputPredicateEntry] {
+        &self.preds
+    }
+
+    pub fn vars_range(&self) -> core::ops::Range<u32> {
+        self.vars.lo..self.vars.hi
+    }
+
+    pub fn project_mode(&self) -> ProjectMode {
+        if self.project_mode != ProjectMode::Implicit {
+            self.project_mode
+        } else if self.has_project() {
+            ProjectMode::Project
+        } else {
+            ProjectMode::Output
+        }
+    }
+
+    pub fn has_project(&self) -> bool {
+        !self.projected.is_empty()
+    }
+
+    pub fn proj_range(&self) -> &[Literal] {
+        &self.projected
+    }
+
+    pub fn add_project(&mut self, literal: Literal) {
+        self.projected.push(literal);
+    }
+
+    pub fn clear_project(&mut self) {
+        self.projected.clear();
+    }
+
+    pub fn size(&self) -> u32 {
+        self.num_preds() + self.num_vars()
+    }
+
+    pub fn num_preds(&self) -> u32 {
+        self.preds.len() as u32
+    }
+
+    pub fn num_vars(&self) -> u32 {
+        self.vars.hi.saturating_sub(self.vars.lo)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DomainValue {
+    cond: Literal,
+    var: u32,
+    kind: u8,
+    composite: bool,
+    bias: i16,
+    prio: u16,
+}
+
+impl DomainValue {
+    pub fn new(var: u32, kind: DomModifier, bias: i16, prio: u16, cond: Literal) -> Self {
+        Self {
+            cond,
+            var,
+            kind: if (kind as u8) <= (DomModifier::Init as u8) {
+                kind as u8
+            } else {
+                u8::from(kind == DomModifier::False)
+            },
+            composite: matches!(kind, DomModifier::True | DomModifier::False),
+            bias,
+            prio,
+        }
+    }
+
+    pub fn has_condition(&self) -> bool {
+        self.cond.var() != 0
+    }
+
+    pub fn cond(&self) -> Literal {
+        self.cond
+    }
+
+    pub fn var(&self) -> u32 {
+        self.var
+    }
+
+    pub fn kind(&self) -> DomModifier {
+        if !self.composite {
+            match self.kind {
+                0 => DomModifier::Level,
+                1 => DomModifier::Sign,
+                2 => DomModifier::Factor,
+                _ => DomModifier::Init,
+            }
+        } else if self.kind == 0 {
+            DomModifier::True
+        } else {
+            DomModifier::False
+        }
+    }
+
+    pub fn bias(&self) -> i16 {
+        self.bias
+    }
+
+    pub fn prio(&self) -> u16 {
+        self.prio
+    }
+
+    pub fn composite(&self) -> bool {
+        self.composite
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DomainTable {
+    entries: Vec<DomainValue>,
+    seen: u32,
+}
+
+impl DomainTable {
+    pub fn add(&mut self, var: u32, kind: DomModifier, bias: i16, prio: u16, cond: Literal) {
+        if cond != lit_false && (kind != DomModifier::Init || cond == lit_true) {
+            self.entries
+                .push(DomainValue::new(var, kind, bias, prio, cond));
+        }
+    }
+
+    pub fn simplify(&mut self) -> u32 {
+        if self.seen as usize >= self.entries.len() {
+            return self.size();
+        }
+        self.entries[self.seen as usize..].sort_by(|lhs, rhs| {
+            lhs.cond()
+                .cmp(&rhs.cond())
+                .then_with(|| lhs.var().cmp(&rhs.var()))
+        });
+        let mut merged = self.entries[..self.seen as usize].to_vec();
+        let mut index = self.seen as usize;
+        while index < self.entries.len() {
+            let var = self.entries[index].var();
+            let cond = self.entries[index].cond();
+            let mut next = index + 1;
+            while next < self.entries.len()
+                && self.entries[next].var() == var
+                && self.entries[next].cond() == cond
+            {
+                next += 1;
+            }
+            if next - index == 1 {
+                merged.push(self.entries[index]);
+            } else {
+                const NO_BIAS: i16 = i16::MAX;
+                let mut prio = [0u16; 4];
+                let mut bias = [NO_BIAS; 4];
+                for entry in &self.entries[index..next] {
+                    if !entry.composite() {
+                        let slot = entry.kind as usize;
+                        if entry.prio() >= prio[slot] {
+                            prio[slot] = entry.prio();
+                            bias[slot] = entry.bias();
+                        }
+                    } else {
+                        if entry.prio() >= prio[DomModifier::Level as usize] {
+                            prio[DomModifier::Level as usize] = entry.prio();
+                            bias[DomModifier::Level as usize] = entry.bias();
+                        }
+                        if entry.prio() >= prio[DomModifier::Sign as usize] {
+                            prio[DomModifier::Sign as usize] = entry.prio();
+                            bias[DomModifier::Sign as usize] = if entry.kind() == DomModifier::True
+                            {
+                                1
+                            } else {
+                                -1
+                            };
+                        }
+                    }
+                }
+                let mut start = 0usize;
+                if bias[DomModifier::Level as usize] != NO_BIAS
+                    && bias[DomModifier::Sign as usize] != NO_BIAS
+                    && bias[DomModifier::Sign as usize] != 0
+                    && prio[DomModifier::Level as usize] == prio[DomModifier::Sign as usize]
+                {
+                    merged.push(DomainValue::new(
+                        var,
+                        if bias[DomModifier::Sign as usize] > 0 {
+                            DomModifier::True
+                        } else {
+                            DomModifier::False
+                        },
+                        bias[DomModifier::Level as usize],
+                        prio[DomModifier::Level as usize],
+                        cond,
+                    ));
+                    start = DomModifier::Sign as usize + 1;
+                }
+                for slot in start..=DomModifier::Init as usize {
+                    if bias[slot] != NO_BIAS {
+                        let kind = match slot as u8 {
+                            0 => DomModifier::Level,
+                            1 => DomModifier::Sign,
+                            2 => DomModifier::Factor,
+                            _ => DomModifier::Init,
+                        };
+                        merged.push(DomainValue::new(var, kind, bias[slot], prio[slot], cond));
+                    }
+                }
+            }
+            index = next;
+        }
+        self.entries = merged;
+        self.seen = self.size();
+        self.seen
+    }
+
+    pub fn reset(&mut self) {
+        self.entries.clear();
+        self.seen = 0;
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn size(&self) -> u32 {
+        self.entries.len() as u32
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &DomainValue> {
+        self.entries.iter()
+    }
+
+    pub fn apply_default<F>(ctx: &SharedContext, mut action: F, def_filter: u32)
+    where
+        F: FnMut(Literal, u32, u32),
+    {
+        if (def_filter & DomPref::PrefShow as u32) != 0 || def_filter == 0 {
+            let pref = if def_filter != 0 {
+                DomPref::PrefShow as u32
+            } else {
+                DomPref::PrefAtom as u32
+            };
+            for pred in ctx.output.pred_range() {
+                if def_filter != 0 || pred.user != 0 {
+                    action(pred.cond, pref, pref);
+                }
+            }
+            if def_filter != 0 {
+                for var in ctx.output.vars_range() {
+                    action(Literal::new(var, false), pref, pref);
+                }
+            } else {
+                for var in ctx.vars() {
+                    if ctx.var_info(var).atom() {
+                        action(Literal::new(var, false), pref, pref);
+                    }
+                }
+            }
+        }
+        if (def_filter & DomPref::PrefMin as u32) != 0 {
+            if let Some(minimize) = ctx.minimize_no_create() {
+                let mut last_weight = i32::MIN;
+                let mut strat = DomPref::PrefShow as u32;
+                for weight_lit in minimize.iter() {
+                    if weight_lit.weight != last_weight && strat > DomPref::PrefDisj as u32 {
+                        strat -= 1;
+                        last_weight = weight_lit.weight;
+                    }
+                    action(weight_lit.lit, DomPref::PrefMin as u32, strat);
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DistributorPolicy {
+    pub size: u32,
+    pub lbd: u32,
+    pub types: u32,
+}
+
+impl DistributorPolicy {
+    pub const fn new(size: u32, lbd: u32, types: u32) -> Self {
+        Self { size, lbd, types }
+    }
+
+    pub const fn is_candidate_raw(&self, size: u32, lbd: u32, constraint_type: u32) -> bool {
+        size <= self.size && lbd <= self.lbd && (self.types & constraint_type) != 0
+    }
+
+    pub const fn is_candidate_type(
+        &self,
+        size: u32,
+        lbd: u32,
+        constraint_type: ConstraintType,
+    ) -> bool {
+        self.is_candidate_raw(size, lbd, constraint_type.as_u32())
+    }
+
+    pub fn is_candidate_info(&self, size: u32, extra: ConstraintInfo) -> bool {
+        size <= 3 || self.is_candidate_type(size, extra.lbd(), extra.constraint_type())
+    }
+}
+
+pub trait Distributor {
+    fn policy(&self) -> DistributorPolicy;
+
+    fn is_candidate_raw(&self, size: u32, lbd: u32, constraint_type: u32) -> bool {
+        self.policy().is_candidate_raw(size, lbd, constraint_type)
+    }
+
+    fn is_candidate_type(&self, size: u32, lbd: u32, constraint_type: ConstraintType) -> bool {
+        self.policy().is_candidate_type(size, lbd, constraint_type)
+    }
+
+    fn is_candidate_info(&self, size: u32, extra: ConstraintInfo) -> bool {
+        self.policy().is_candidate_info(size, extra)
+    }
+
+    fn publish(&mut self, source: &Solver, lits: *mut SharedLiterals);
+    fn receive(&mut self, input: &Solver, out: &mut [*mut SharedLiterals]) -> u32;
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogEvent {
     pub base: crate::clasp::util::misc_types::Event,
     pub solver: Option<*const Solver>,
     pub msg: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SharedConflictEvent {
+    pub base: crate::clasp::util::misc_types::Event,
+    pub solver: *const Solver,
+    pub learnt: Vec<Literal>,
+    pub info: ConstraintInfo,
 }
 
 impl LogEvent {
@@ -281,7 +773,31 @@ impl LogEvent {
     }
 }
 
+impl SharedConflictEvent {
+    pub fn new(solver: &Solver, learnt: &[Literal], info: ConstraintInfo) -> Self {
+        Self {
+            base: crate::clasp::util::misc_types::Event::for_type::<Self>(
+                Subsystem::SubsystemSolve,
+                Verbosity::VerbosityQuiet,
+            ),
+            solver: solver as *const Solver,
+            learnt: learnt.to_vec(),
+            info,
+        }
+    }
+}
+
 impl EventLike for LogEvent {
+    fn event(&self) -> &crate::clasp::util::misc_types::Event {
+        &self.base
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl EventLike for SharedConflictEvent {
     fn event(&self) -> &crate::clasp::util::misc_types::Event {
         &self.base
     }
@@ -409,6 +925,26 @@ impl Default for ShortImplicationsGraph {
 }
 
 impl ShortImplicationsGraph {
+    pub fn for_each<F>(&self, literal: Literal, mut op: F) -> bool
+    where
+        F: FnMut(Literal, Literal, Literal) -> bool,
+    {
+        let Some(node) = self.graph.get(literal.id() as usize) else {
+            return true;
+        };
+        for &other in &node.binary {
+            if !op(literal, other, lit_false) {
+                return false;
+            }
+        }
+        for &[first, second] in &node.ternary {
+            if !op(literal, first, second) {
+                return false;
+            }
+        }
+        true
+    }
+
     pub fn resize(&mut self, nodes: u32) {
         self.graph
             .resize_with(nodes as usize, ShortImplicationNode::default);
@@ -784,11 +1320,13 @@ impl SharedContextMinimize {
     }
 }
 
-#[derive(Debug)]
 pub struct SharedContext {
     stats: ProblemStats,
+    output: OutputTable,
+    dom_table: DomainTable,
     var_info: Vec<VarInfo>,
     btig: ShortImplicationsGraph,
+    ext_graph: Option<ExtDepGraph>,
     config: BasicSatConfig,
     sat_prepro: Option<Box<SatPreprocessor>>,
     mini: Option<SharedContextMinimize>,
@@ -803,16 +1341,40 @@ pub struct SharedContext {
     preserve_shown: bool,
     preserve_heuristic: bool,
     progress: Option<EventHandler>,
+    report_mode: ReportMode,
     share_problem: bool,
     share_learnts: bool,
+    solve_mode: SolveMode,
+    last_top_level: u32,
+    winner: u32,
+    distributor: Option<Box<dyn Distributor>>,
+}
+
+impl core::fmt::Debug for SharedContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SharedContext")
+            .field("stats", &self.stats)
+            .field("num_vars", &self.num_vars())
+            .field("num_solvers", &self.num_solvers())
+            .field("step_literal", &self.step_literal)
+            .field("frozen", &self.frozen)
+            .field("report_mode", &self.report_mode)
+            .field("solve_mode", &self.solve_mode)
+            .field("last_top_level", &self.last_top_level)
+            .field("winner", &self.winner)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for SharedContext {
     fn default() -> Self {
         let mut context = Self {
             stats: ProblemStats::default(),
+            output: OutputTable::default(),
+            dom_table: DomainTable::default(),
             var_info: vec![VarInfo::default()],
             btig: ShortImplicationsGraph::default(),
+            ext_graph: None,
             config: BasicSatConfig::new(),
             sat_prepro: None,
             mini: None,
@@ -824,8 +1386,13 @@ impl Default for SharedContext {
             preserve_shown: false,
             preserve_heuristic: false,
             progress: None,
+            report_mode: ReportMode::Default,
             share_problem: false,
             share_learnts: false,
+            solve_mode: SolveMode::SolveOnce,
+            last_top_level: 0,
+            winner: 0,
+            distributor: None,
         };
         context.refresh_solver_links();
         context
@@ -849,6 +1416,14 @@ impl SharedContext {
         *self = Self::default();
     }
 
+    pub fn set_solve_mode(&mut self, mode: SolveMode) {
+        self.solve_mode = mode;
+    }
+
+    pub fn solve_mode(&self) -> SolveMode {
+        self.solve_mode
+    }
+
     pub fn default_dom_pref(&self) -> u32 {
         let solver = self.config.solver(0);
         if solver.heu_id == HeuristicType::Domain as u32 && solver.heuristic.dom_mod != 0 {
@@ -864,6 +1439,30 @@ impl SharedContext {
 
     pub fn configuration_mut(&mut self) -> &mut BasicSatConfig {
         &mut self.config
+    }
+
+    pub fn output(&self) -> &OutputTable {
+        &self.output
+    }
+
+    pub fn output_mut(&mut self) -> &mut OutputTable {
+        &mut self.output
+    }
+
+    pub fn dom_table(&self) -> &DomainTable {
+        &self.dom_table
+    }
+
+    pub fn dom_table_mut(&mut self) -> &mut DomainTable {
+        &mut self.dom_table
+    }
+
+    pub fn ext_graph(&self) -> Option<&ExtDepGraph> {
+        self.ext_graph.as_ref()
+    }
+
+    pub fn set_ext_graph(&mut self, ext_graph: Option<ExtDepGraph>) {
+        self.ext_graph = ext_graph;
     }
 
     pub fn set_configuration(&mut self, mut config: BasicSatConfig) {
@@ -967,12 +1566,37 @@ impl SharedContext {
         self.progress = handler;
     }
 
+    pub fn set_event_handler_with_mode(
+        &mut self,
+        handler: Option<EventHandler>,
+        report_mode: ReportMode,
+    ) {
+        self.progress = handler;
+        self.report_mode = report_mode;
+    }
+
     pub fn set_sat_prepro(&mut self, sat_prepro: Option<Box<SatPreprocessor>>) {
         self.sat_prepro = sat_prepro;
     }
 
     pub fn seed_solvers(&self) -> bool {
         self.config.context().seed != 0
+    }
+
+    pub fn winner(&self) -> u32 {
+        self.winner
+    }
+
+    pub fn set_winner(&mut self, solver_id: u32) {
+        self.winner = solver_id.min(self.concurrency());
+    }
+
+    pub fn distributor(&self) -> Option<&dyn Distributor> {
+        self.distributor.as_deref()
+    }
+
+    pub fn set_distributor(&mut self, distributor: Option<Box<dyn Distributor>>) {
+        self.distributor = distributor;
     }
 
     pub fn stats(&self) -> &ProblemStats {
@@ -1145,13 +1769,16 @@ impl SharedContext {
 
     fn unfreeze_step(&mut self) -> bool {
         let tag = self.step_literal.var();
+        let master_params = *self.config.solver(self.master.id());
+        let _ = self.master.end_step(self.last_top_level, master_params);
         if tag == 0 {
             return !self.master.has_conflict();
         }
         self.btig.remove_true(&self.master, !self.step_literal);
         for solver in &mut self.solvers {
-            if solver.valid_var(tag) {
-                let _ = solver.pop_root_level(solver.root_level());
+            if tag == 0 || solver.valid_var(tag) {
+                let params = *self.config.solver(solver.id());
+                let _ = solver.end_step(self.last_top_level, params);
             }
         }
         if !self.valid_var(tag + 1) {
@@ -1242,7 +1869,9 @@ impl SharedContext {
         }
         self.refresh_solver_links();
         let mut expected_size = (self.num_vars() + 1) << 1;
-        if self.step_literal == lit_false {
+        if self.step_literal == lit_false
+            || (self.step_literal == lit_true && self.solve_mode == SolveMode::SolveMulti)
+        {
             expected_size += 2;
         }
         self.btig.resize(expected_size);
@@ -1261,6 +1890,8 @@ impl SharedContext {
             let params = *self.config.solver(self.master.id());
             self.master.start_init(self.num_constraints(), params);
         }
+        let master_stats = self.master_ref().stats().clone();
+        Self::init_stats_from(&master_stats, &mut self.master);
         if self.step_literal == lit_false {
             self.require_step_var();
         }
@@ -1277,6 +1908,12 @@ impl SharedContext {
         self.stats.constraints.other = self.master.num_constraints();
         self.stats.constraints.binary = self.btig.num_binary();
         self.stats.constraints.ternary = self.btig.num_ternary();
+        self.stats.acyc_edges = self.ext_graph.as_ref().map_or(0, ExtDepGraph::edges);
+        self.last_top_level = self
+            .master_ref()
+            .num_assigned_vars()
+            .saturating_sub(u32::from(self.step_literal.var() != 0));
+        self.stats.complexity = self.stats.complexity.max(self.problem_complexity());
         self.master.set_db_index(self.master.num_constraints());
         self.btig.mark_shared(self.concurrency() > 1);
         self.frozen = true;
@@ -1298,6 +1935,10 @@ impl SharedContext {
 
     pub fn num_ternary(&self) -> u32 {
         self.btig.num_ternary()
+    }
+
+    pub fn num_unary(&self) -> u32 {
+        self.last_top_level
     }
 
     pub fn num_learnt_short(&self) -> u32 {
@@ -1352,6 +1993,13 @@ impl SharedContext {
         assert!(!self.frozen() || !self.physical_share_problem());
         self.master().acquire_problem_var(literal.var());
         self.master().force(literal, Antecedent::new())
+    }
+
+    pub fn add(&mut self, constraint: Box<Constraint>) {
+        assert!(!self.frozen(), "Cannot add constraints to frozen program");
+        let mut constraint = constraint;
+        constraint.attach_to_solver(self.master());
+        self.master().add_constraint(Box::into_raw(constraint));
     }
 
     pub fn add_ternary(&mut self, first: Literal, second: Literal, third: Literal) -> bool {
@@ -1444,8 +2092,7 @@ impl SharedContext {
         let ok = unsafe {
             let other = &mut *other_ptr;
             other.detach_local_runtime();
-            other.stats_mut().enable(&master_stats);
-            other.stats_mut().reset();
+            Self::init_stats_from(&master_stats, other);
             other.begin_init();
             other.acquire_problem_var(master_num_vars);
             other.reserve_watch_capacity(master_watch_cap);
@@ -1635,6 +2282,173 @@ impl SharedContext {
         }
     }
 
+    pub fn init_stats(&self, solver: &mut Solver) {
+        let master_stats = self.master_ref().stats().clone();
+        Self::init_stats_from(&master_stats, solver);
+    }
+
+    pub fn solver_stats(&self, solver_id: u32) -> &SolverStats {
+        self.solver_ref(solver_id)
+            .unwrap_or_else(|| panic!("solver id out of range: {solver_id}"))
+            .stats()
+    }
+
+    pub fn accu_stats<'a>(&self, out: &'a mut SolverStats) -> &'a SolverStats {
+        out.accu_with_enable(self.master_ref().stats(), true);
+        for solver in &self.solvers {
+            out.accu_with_enable(solver.stats(), true);
+        }
+        out
+    }
+
+    pub fn add_post(&self, solver: &mut Solver) -> bool {
+        let belongs_to_self = solver.shared_context().is_some_and(|shared| {
+            std::ptr::eq(shared as *const SharedContext, self as *const SharedContext)
+        });
+        assert!(belongs_to_self, "solver not attached");
+        self.config.add_post(solver)
+    }
+
+    pub fn set_heuristic(&self, solver: &mut Solver) {
+        let belongs_to_self = solver.shared_context().is_some_and(|shared| {
+            std::ptr::eq(shared as *const SharedContext, self as *const SharedContext)
+        });
+        assert!(belongs_to_self, "solver not attached");
+        self.config.set_heuristic(solver);
+    }
+
+    pub fn preprocess_short(&mut self) -> bool {
+        let master_ptr = self.master() as *mut Solver;
+        let mut seen = Vec::new();
+        let mut rewrites = Vec::new();
+        let num_vars = unsafe { (*master_ptr).assignment().num_vars() };
+        for var in 1..num_vars {
+            if unsafe { (*master_ptr).assignment().value(var) } != value_free {
+                continue;
+            }
+            for literal in [Literal::new(var, false), Literal::new(var, true)] {
+                if self.marked(literal) {
+                    continue;
+                }
+                rewrites.clear();
+                let mut q_front = unsafe { (*master_ptr).assignment().assigned() };
+                let mut ok = unsafe {
+                    (*master_ptr).assignment_mut().assign(
+                        literal,
+                        0,
+                        Antecedent::from_literal(lit_true),
+                    )
+                };
+                while ok {
+                    let assigned = unsafe { (*master_ptr).assignment().assigned() };
+                    if q_front >= assigned {
+                        break;
+                    }
+                    let propagated = unsafe { (*master_ptr).assignment().trail[q_front as usize] };
+                    q_front += 1;
+                    ok = self.btig.for_each(propagated, |premise, first, second| {
+                        if second == lit_false {
+                            return unsafe {
+                                (*master_ptr).assignment_mut().assign(
+                                    first,
+                                    0,
+                                    Antecedent::from_literal(premise),
+                                )
+                            };
+                        }
+                        let antecedent = Antecedent::from_literal(premise);
+                        let first_value = unsafe { (*master_ptr).assignment().value(first.var()) };
+                        let second_value =
+                            unsafe { (*master_ptr).assignment().value(second.var()) };
+                        if second_value == true_value(second) || first_value == true_value(first) {
+                            let first_reason =
+                                unsafe { (*master_ptr).assignment().reason(first.var()).as_u64() };
+                            let second_reason =
+                                unsafe { (*master_ptr).assignment().reason(second.var()).as_u64() };
+                            if first_reason == antecedent.as_u64()
+                                || second_reason == antecedent.as_u64()
+                            {
+                                rewrites.push(!premise);
+                                rewrites.push(first);
+                                rewrites.push(second);
+                            }
+                            return true;
+                        }
+                        if second_value == first_value {
+                            return second_value == value_free;
+                        }
+                        if first_value != value_free {
+                            let first_reason =
+                                unsafe { (*master_ptr).assignment().reason(first.var()).as_u64() };
+                            if first_reason == antecedent.as_u64() {
+                                let mut tagged = first;
+                                tagged.flag();
+                                rewrites.push(tagged);
+                                rewrites.push(!premise);
+                                rewrites.push(second);
+                            }
+                            return unsafe {
+                                (*master_ptr).assignment_mut().assign(
+                                    second,
+                                    0,
+                                    Antecedent::from_literals(premise, !first),
+                                )
+                            };
+                        }
+                        let second_reason =
+                            unsafe { (*master_ptr).assignment().reason(second.var()).as_u64() };
+                        if second_reason == antecedent.as_u64() {
+                            let mut tagged = second;
+                            tagged.flag();
+                            rewrites.push(tagged);
+                            rewrites.push(!premise);
+                            rewrites.push(first);
+                        }
+                        unsafe {
+                            (*master_ptr).assignment_mut().assign(
+                                first,
+                                0,
+                                Antecedent::from_literals(premise, !second),
+                            )
+                        }
+                    });
+                }
+                if ok {
+                    for clause in rewrites.chunks_exact_mut(3) {
+                        let sat = !clause[0].flagged();
+                        let learnt = clause[1].flagged() || clause[2].flagged();
+                        clause[0].unflag();
+                        self.btig.remove(&clause[..3], learnt);
+                        if !sat {
+                            let _ = self.btig.add(&clause[1..3], learnt);
+                        }
+                    }
+                }
+                unsafe {
+                    let assign = (*master_ptr).assignment_mut();
+                    while assign.last() != literal {
+                        let last = assign.last();
+                        if !self.marked(last) {
+                            self.mark(last);
+                            seen.push(last);
+                        }
+                        assign.undo_last();
+                    }
+                    assign.undo_last();
+                }
+                if !ok {
+                    let _ = unsafe { (*master_ptr).force(!literal, Antecedent::new()) }
+                        && unsafe { (*master_ptr).propagate() };
+                    break;
+                }
+            }
+        }
+        while let Some(literal) = seen.pop() {
+            self.unmark_var(literal.var());
+        }
+        self.master().simplify()
+    }
+
     pub fn warn(&mut self, what: &str) {
         if let Some(handler) = &mut self.progress {
             let event = LogEvent::new(
@@ -1658,6 +2472,21 @@ impl SharedContext {
                 what,
             );
             handler.dispatch(&event);
+        }
+    }
+
+    pub fn report_model(&mut self, solver: &Solver, model: &Model) -> bool {
+        self.progress
+            .as_mut()
+            .is_none_or(|handler| handler.on_model(solver, model))
+    }
+
+    pub fn report_conflict(&mut self, solver: &Solver, learnt: &[Literal], info: &ConstraintInfo) {
+        if self.report_mode == ReportMode::Conflict {
+            if let Some(handler) = &mut self.progress {
+                let event = SharedConflictEvent::new(solver, learnt, *info);
+                handler.dispatch(&event);
+            }
         }
     }
 
@@ -1692,6 +2521,9 @@ impl SharedContext {
             for solver in &mut self.solvers {
                 solver.update_vars(current_vars);
             }
+            self.last_top_level = self
+                .last_top_level
+                .min(self.master_ref().num_assigned_vars());
         }
         if self.step_literal.var() > self.num_vars() {
             self.step_literal = lit_false;
@@ -1706,8 +2538,20 @@ impl SharedContext {
         &mut self.btig
     }
 
-    pub(crate) fn add_post_for_solver(&mut self, _solver_id: u32) -> bool {
-        self.ok()
+    pub(crate) fn add_post_for_solver(&mut self, solver_id: u32) -> bool {
+        if !self.ok() {
+            return false;
+        }
+        let solver_ptr = match self.solver(solver_id) {
+            Some(solver) => solver as *mut Solver,
+            None => return false,
+        };
+        unsafe { self.config.add_post(&mut *solver_ptr) }
+    }
+
+    fn init_stats_from(master_stats: &SolverStats, solver: &mut Solver) {
+        let _ = solver.stats_mut().enable(master_stats);
+        solver.stats_mut().reset();
     }
 
     fn refresh_solver_links(&mut self) {

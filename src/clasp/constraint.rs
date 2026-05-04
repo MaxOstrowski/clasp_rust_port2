@@ -1128,6 +1128,10 @@ impl Solver {
         &self.assignment
     }
 
+    pub fn assignment_mut(&mut self) -> &mut Assignment {
+        &mut self.assignment
+    }
+
     pub fn level_start(&self, level: u32) -> u32 {
         self.level_starts[level as usize]
     }
@@ -3252,6 +3256,12 @@ impl Constraint {
 
     pub fn reset_activity(&mut self) {
         self.inner.reset_activity();
+    }
+
+    pub fn attach_to_solver(&mut self, solver: &mut Solver) {
+        if let Some(mut head) = self.clause() {
+            unsafe { head.as_mut().attach(solver) };
+        }
     }
 
     pub fn is_open(&mut self, s: &Solver, types: &TypeSet, free_lits: &mut LitVec) -> u32 {
