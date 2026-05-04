@@ -7,12 +7,18 @@
 //! solver.
 
 use crate::clasp::asp_preprocessor::SatPreprocessor;
-use crate::clasp::cli::clasp_cli_options::context_params::ShortSimpMode;
+use crate::clasp::cli::clasp_cli_options::{
+    HeuristicType,
+    context_params::{ShareMode, ShortSimpMode},
+};
 use crate::clasp::constraint::{Antecedent, ConstraintType};
 use crate::clasp::literal::{Literal, VarType, lit_false, lit_true, true_value, value_free};
 use crate::clasp::solver::Solver;
-use crate::clasp::solver_strategies::{BasicSatConfig, Configuration};
+use crate::clasp::solver_strategies::{
+    BasicSatConfig, Configuration, Model, ModelHandler, ShortMode,
+};
 use crate::clasp::statistics::{StatisticMap, StatisticObject};
+use crate::clasp::util::misc_types::{EnterEvent, EventLike, Subsystem, Verbosity};
 use crate::potassco::bits::{
     store_clear_mask, store_set_mask, store_toggle_bit, test_any, test_mask,
 };
@@ -112,6 +118,174 @@ impl StatisticMap for ProblemStats {
 
     fn at<'a>(&'a self, key: &str) -> StatisticObject<'a> {
         Self::at(self, key)
+    }
+}
+
+pub trait EventObserver {
+    fn on_event(&mut self, event: &dyn EventLike);
+}
+
+struct NoopEventObserver;
+
+impl EventObserver for NoopEventObserver {
+    fn on_event(&mut self, _event: &dyn EventLike) {}
+}
+
+pub struct EventHandler {
+    verb: u16,
+    sys: u16,
+    observer: Box<dyn EventObserver>,
+}
+
+impl std::fmt::Debug for EventHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventHandler")
+            .field("verb", &self.verb)
+            .field("sys", &self.sys)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for EventHandler {
+    fn default() -> Self {
+        Self::new(Verbosity::VerbosityQuiet)
+    }
+}
+
+impl EventHandler {
+    const VERB_MASK: u32 = 15;
+    const VERB_SHIFT: u32 = 2;
+
+    pub fn new(verbosity: Verbosity) -> Self {
+        Self::with_observer(verbosity, NoopEventObserver)
+    }
+
+    pub fn with_observer<O>(verbosity: Verbosity, observer: O) -> Self
+    where
+        O: EventObserver + 'static,
+    {
+        let mut handler = Self {
+            verb: 0,
+            sys: 0,
+            observer: Box::new(observer),
+        };
+        let level = verbosity as u32;
+        if level != 0 {
+            let replicated = level | (level << 4) | (level << 8) | (level << 12);
+            handler.verb = replicated as u16;
+        }
+        handler
+    }
+
+    pub fn set_observer<O>(&mut self, observer: O)
+    where
+        O: EventObserver + 'static,
+    {
+        self.observer = Box::new(observer);
+    }
+
+    pub fn set_verbosity(&mut self, sys: Subsystem, verb: Verbosity) {
+        let shift = (sys as u32) << Self::VERB_SHIFT;
+        let mut bits = u32::from(self.verb);
+        store_clear_mask(&mut bits, Self::VERB_MASK << shift);
+        store_set_mask(&mut bits, (verb as u32) << shift);
+        self.verb = bits as u16;
+    }
+
+    pub fn set_active(&mut self, sys: Subsystem) -> bool {
+        if sys as u16 != self.sys {
+            self.sys = sys as u16;
+            let verb = if sys == Subsystem::SubsystemSolve {
+                Verbosity::VerbosityLow
+            } else {
+                Verbosity::VerbosityHigh
+            };
+            let enter = EnterEvent::new(sys, verb);
+            self.dispatch(&enter);
+            return true;
+        }
+        false
+    }
+
+    pub fn active(&self) -> Subsystem {
+        match self.sys as u32 {
+            0 => Subsystem::SubsystemFacade,
+            1 => Subsystem::SubsystemLoad,
+            2 => Subsystem::SubsystemPrepare,
+            3 => Subsystem::SubsystemSolve,
+            value => panic!("invalid subsystem id: {value}"),
+        }
+    }
+
+    pub fn verbosity(&self, sys: Subsystem) -> u32 {
+        (u32::from(self.verb) >> ((sys as u32) << Self::VERB_SHIFT)) & Self::VERB_MASK
+    }
+
+    pub fn dispatch(&mut self, event: &dyn EventLike) {
+        if event.event().verb <= self.verbosity(self.event_subsystem(event)) {
+            self.observer.on_event(event);
+        }
+    }
+
+    fn event_subsystem(&self, event: &dyn EventLike) -> Subsystem {
+        match event.event().system {
+            0 => Subsystem::SubsystemFacade,
+            1 => Subsystem::SubsystemLoad,
+            2 => Subsystem::SubsystemPrepare,
+            3 => Subsystem::SubsystemSolve,
+            value => panic!("invalid subsystem id: {value}"),
+        }
+    }
+}
+
+impl ModelHandler for EventHandler {
+    fn on_model(&mut self, _solver: &Solver, _model: &Model) -> bool {
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogEventType {
+    Message = b'M' as isize,
+    Warning = b'W' as isize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogEvent {
+    pub base: crate::clasp::util::misc_types::Event,
+    pub solver: Option<*const Solver>,
+    pub msg: String,
+}
+
+impl LogEvent {
+    pub fn new(
+        system: Subsystem,
+        verbosity: Verbosity,
+        kind: LogEventType,
+        solver: Option<&Solver>,
+        msg: impl Into<String>,
+    ) -> Self {
+        let mut base = crate::clasp::util::misc_types::Event::for_type::<Self>(system, verbosity);
+        base.op = kind as u32;
+        Self {
+            base,
+            solver: solver.map(|solver| solver as *const Solver),
+            msg: msg.into(),
+        }
+    }
+
+    pub fn is_warning(&self) -> bool {
+        self.base.op == LogEventType::Warning as u32
+    }
+}
+
+impl EventLike for LogEvent {
+    fn event(&self) -> &crate::clasp::util::misc_types::Event {
+        &self.base
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -279,12 +453,29 @@ impl ShortImplicationsGraph {
 
     pub fn add(&mut self, lits: &[Literal], learnt: bool) -> bool {
         assert!((2..=3).contains(&lits.len()));
+        let mut normalized = lits.to_vec();
+        for lit in &mut normalized {
+            lit.unflag();
+        }
         let index = usize::from(learnt);
-        let max_id = lits.iter().map(|lit| (!*lit).id()).max().unwrap_or(0) + 1;
+        let max_id = normalized.iter().map(|lit| (!*lit).id()).max().unwrap_or(0) + 1;
         if self.graph.len() < max_id as usize {
             self.resize(max_id);
         }
-        let mut stored = lits.to_vec();
+        let simplify = self.simp_mode == ShortSimpMode::SimpAll
+            || (learnt && self.simp_mode == ShortSimpMode::SimpLearnt);
+        let first = normalized[0];
+        let second = normalized[1];
+        if simplify && self.has_binary_arc(!first, second) {
+            return true;
+        }
+        if normalized.len() == 3 {
+            let third = normalized[2];
+            if simplify && self.has_ternary_arc(!first, Self::canonical_pair(second, third)) {
+                return true;
+            }
+        }
+        let mut stored = normalized;
         if learnt {
             for lit in &mut stored {
                 lit.flag();
@@ -470,6 +661,18 @@ impl ShortImplicationsGraph {
         }
     }
 
+    fn has_binary_arc(&self, watch: Literal, target: Literal) -> bool {
+        self.graph
+            .get(watch.id() as usize)
+            .is_some_and(|node| node.binary.contains(&target))
+    }
+
+    fn has_ternary_arc(&self, watch: Literal, target: [Literal; 2]) -> bool {
+        self.graph
+            .get(watch.id() as usize)
+            .is_some_and(|node| node.ternary.contains(&target))
+    }
+
     fn remove_binary_clause(&mut self, first: Literal, second: Literal) -> bool {
         let left = self.erase_binary((!first).id() as usize, second);
         let right = self.erase_binary((!second).id() as usize, first);
@@ -562,6 +765,10 @@ pub struct SharedContext {
     solvers: Vec<Box<Solver>>,
     step_literal: Literal,
     frozen: bool,
+    preserve_models: bool,
+    preserve_shown: bool,
+    preserve_heuristic: bool,
+    progress: Option<EventHandler>,
     share_problem: bool,
     share_learnts: bool,
 }
@@ -578,6 +785,10 @@ impl Default for SharedContext {
             solvers: Vec::new(),
             step_literal: lit_true,
             frozen: false,
+            preserve_models: false,
+            preserve_shown: false,
+            preserve_heuristic: false,
+            progress: None,
             share_problem: false,
             share_learnts: false,
         };
@@ -599,6 +810,19 @@ impl SharedContext {
         Self::default()
     }
 
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn default_dom_pref(&self) -> u32 {
+        let solver = self.config.solver(0);
+        if solver.heu_id == HeuristicType::Domain as u32 && solver.heuristic.dom_mod != 0 {
+            solver.heuristic.dom_pref
+        } else {
+            1u32 << 31
+        }
+    }
+
     pub fn configuration(&self) -> &BasicSatConfig {
         &self.config
     }
@@ -610,8 +834,65 @@ impl SharedContext {
     pub fn set_configuration(&mut self, mut config: BasicSatConfig) {
         let solver_count = self.num_solvers().max(1);
         let search_count = config.num_search().max(1);
+        let _ = config.prepare();
         config.resize(solver_count, search_count);
         self.config = config;
+        self.set_share_mode(match self.config.context().share_mode {
+            1 => ShareMode::ShareProblem,
+            2 => ShareMode::ShareLearnt,
+            3 => ShareMode::ShareAll,
+            4 => ShareMode::ShareAuto,
+            _ => ShareMode::ShareNo,
+        });
+        self.set_short_mode(
+            if self.config.context().short_mode == ShortMode::ShortExplicit as u8 {
+                ShortMode::ShortExplicit
+            } else {
+                ShortMode::ShortImplicit
+            },
+            match self.config.context().short_simp {
+                1 => ShortSimpMode::SimpLearnt,
+                2 => ShortSimpMode::SimpAll,
+                _ => ShortSimpMode::SimpNo,
+            },
+        );
+        self.enable_stats(u32::from(self.config.context().stats));
+        self.master.reset_config();
+        for solver in &mut self.solvers {
+            solver.reset_config();
+        }
+    }
+
+    pub fn set_share_mode(&mut self, mode: ShareMode) {
+        self.config.context_options.share_mode = mode as u8;
+        let effective = if mode == ShareMode::ShareAuto && self.concurrency() > 1 {
+            ShareMode::ShareAll
+        } else {
+            mode
+        };
+        match effective {
+            ShareMode::ShareNo | ShareMode::ShareAuto => {
+                self.set_physical_share_modes(false, false)
+            }
+            ShareMode::ShareProblem => self.set_physical_share_modes(true, false),
+            ShareMode::ShareLearnt => self.set_physical_share_modes(false, true),
+            ShareMode::ShareAll => self.set_physical_share_modes(true, true),
+        }
+    }
+
+    pub fn set_short_mode(&mut self, mode: ShortMode, simp: ShortSimpMode) {
+        self.config.context_options.short_mode = mode as u8;
+        self.config.context_options.short_simp = simp as u8;
+        self.btig.set_simp_mode(simp);
+    }
+
+    pub fn enable_stats(&mut self, level: u32) {
+        if level != 0 {
+            let _ = self.master.stats_mut().enable_extended();
+            for solver in &mut self.solvers {
+                let _ = solver.stats_mut().enable_extended();
+            }
+        }
     }
 
     pub fn sat_prepro(&self) -> Option<&SatPreprocessor> {
@@ -620,6 +901,10 @@ impl SharedContext {
 
     pub fn sat_prepro_mut(&mut self) -> Option<&mut SatPreprocessor> {
         self.sat_prepro.as_deref_mut()
+    }
+
+    pub fn set_event_handler(&mut self, handler: Option<EventHandler>) {
+        self.progress = handler;
     }
 
     pub fn set_sat_prepro(&mut self, sat_prepro: Option<Box<SatPreprocessor>>) {
@@ -640,6 +925,30 @@ impl SharedContext {
 
     pub fn frozen(&self) -> bool {
         self.frozen
+    }
+
+    pub fn set_preserve_models(&mut self, enabled: bool) {
+        self.preserve_models = enabled;
+    }
+
+    pub fn preserve_models(&self) -> bool {
+        self.preserve_models
+    }
+
+    pub fn set_preserve_shown(&mut self, enabled: bool) {
+        self.preserve_shown = enabled;
+    }
+
+    pub fn preserve_shown(&self) -> bool {
+        self.preserve_shown
+    }
+
+    pub fn set_preserve_heuristic(&mut self, enabled: bool) {
+        self.preserve_heuristic = enabled;
+    }
+
+    pub fn preserve_heuristic(&self) -> bool {
+        self.preserve_heuristic
     }
 
     pub fn ok(&self) -> bool {
@@ -817,6 +1126,22 @@ impl SharedContext {
         self.num_solvers()
     }
 
+    pub fn set_concurrency(&mut self, num_solvers: u32) {
+        let target = num_solvers.max(1);
+        while self.num_solvers() < target {
+            let _ = self.push_solver();
+        }
+        while self.num_solvers() > target {
+            let _ = self.solvers.pop();
+        }
+        let search_count = self.config.num_search().max(1);
+        self.config.resize(target, search_count);
+        if self.config.context().share_mode == ShareMode::ShareAuto as u8 {
+            self.set_share_mode(ShareMode::ShareAuto);
+        }
+        self.refresh_solver_links();
+    }
+
     pub fn push_solver(&mut self) -> &mut Solver {
         let solver_count = self.num_solvers() + 1;
         let search_count = self.config.num_search().max(1);
@@ -852,8 +1177,10 @@ impl SharedContext {
     }
 
     pub fn start_add_constraints_with_guess(&mut self, constraint_guess: u32) -> &mut Solver {
+        if !self.unfreeze() {
+            return &mut self.master;
+        }
         self.refresh_solver_links();
-        self.frozen = false;
         let mut expected_size = (self.num_vars() + 1) << 1;
         if self.step_literal == lit_false {
             expected_size += 2;
@@ -870,6 +1197,10 @@ impl SharedContext {
 
     pub fn end_init_with_attach_all(&mut self, attach_all: bool) -> bool {
         self.refresh_solver_links();
+        if self.master.strategies().has_config == 0 {
+            let params = *self.config.solver(self.master.id());
+            self.master.start_init(self.num_constraints(), params);
+        }
         if self.step_literal == lit_false {
             self.require_step_var();
         }
@@ -877,12 +1208,18 @@ impl SharedContext {
         if self.step_literal.var() != 0 {
             let _ = self.master.force(!self.step_literal, Antecedent::new());
         }
+        let mut ok = !self.master.has_conflict();
+        if ok {
+            let mut temp = self.sat_prepro.take();
+            ok = temp.as_mut().is_none_or(|pre| pre.preprocess(self)) && self.master.end_init();
+            self.sat_prepro = temp;
+        }
         self.stats.constraints.other = self.master.num_constraints();
         self.stats.constraints.binary = self.btig.num_binary();
         self.stats.constraints.ternary = self.btig.num_ternary();
-        self.btig.mark_shared(false);
+        self.master.set_db_index(self.master.num_constraints());
+        self.btig.mark_shared(self.concurrency() > 1);
         self.frozen = true;
-        let ok = self.master.end_init();
         if !ok || !attach_all {
             return ok;
         }
@@ -915,7 +1252,7 @@ impl SharedContext {
         if matches!(constraint_type, ConstraintType::Static) {
             !self.physical_share_problem()
         } else {
-            true
+            self.config.context().short_mode != ShortMode::ShortExplicit as u8
         }
     }
 
@@ -923,14 +1260,38 @@ impl SharedContext {
         if !self.allow_implicit(constraint_type) {
             return -1;
         }
-        i32::from(
-            self.btig
-                .add(lits, !matches!(constraint_type, ConstraintType::Static)),
-        )
+        let learnt = !matches!(constraint_type, ConstraintType::Static);
+        if !learnt && !self.frozen() {
+            if let Some(mut sat_prepro) = self.sat_prepro.take() {
+                let added = sat_prepro.add_clause(lits);
+                self.sat_prepro = Some(sat_prepro);
+                return i32::from(added);
+            }
+        }
+        i32::from(self.btig.add(lits, learnt))
+    }
+
+    pub fn propagate(&mut self) -> bool {
+        if !self.master.propagate() {
+            return false;
+        }
+        if self.frozen() {
+            return true;
+        }
+        let mut temp = self.sat_prepro.take();
+        let ok = temp.as_mut().is_none_or(|pre| pre.propagate(self));
+        self.sat_prepro = temp;
+        ok
     }
 
     pub fn add_binary(&mut self, first: Literal, second: Literal) -> bool {
         self.add_imp(&[first, second], ConstraintType::Static) > 0
+    }
+
+    pub fn add_unary(&mut self, literal: Literal) -> bool {
+        assert!(!self.frozen() || !self.physical_share_problem());
+        self.master().acquire_problem_var(literal.var());
+        self.master().force(literal, Antecedent::new())
     }
 
     pub fn add_ternary(&mut self, first: Literal, second: Literal, third: Literal) -> bool {
@@ -998,6 +1359,15 @@ impl SharedContext {
         let master_stats = self.master_ref().stats().clone();
         let master_num_vars = self.master_ref().num_vars();
         let master_watch_cap = ((master_num_vars + 1) << 1) as usize;
+        let attached_start = self
+            .sat_prepro
+            .as_ref()
+            .map(|_| {
+                self.solver_ref(solver_id)
+                    .map_or(0, Solver::num_vars)
+                    .saturating_add(1)
+            })
+            .unwrap_or(u32::MAX);
         let master_trail = self
             .master_ref()
             .trail_view(0)
@@ -1006,6 +1376,7 @@ impl SharedContext {
             .filter(|lit| !self.master_ref().aux_var(lit.var()))
             .collect::<Vec<_>>();
         let master_db = self.master_ref().constraint_db().to_vec();
+        let master_enum = self.master_ref().enumeration_constraint();
         let other_ptr = match self.solver(solver_id) {
             Some(solver) => solver as *mut Solver,
             None => return false,
@@ -1028,7 +1399,29 @@ impl SharedContext {
                         break;
                     }
                 }
-                attached && other.clone_db(&master_db) && other.end_init()
+                if attached && attached_start <= master_num_vars {
+                    for var in attached_start..=master_num_vars {
+                        if self.eliminated(var) && other.value(var) == value_free {
+                            other.eliminate_var(var);
+                        }
+                    }
+                }
+                if attached && !other.clone_db(&master_db) {
+                    attached = false;
+                }
+                if attached {
+                    let enumeration = master_enum.and_then(|constraint_ptr| {
+                        constraint_ptr
+                            .as_ref()
+                            .and_then(|constraint| constraint.clone_attach(other))
+                            .map(Box::into_raw)
+                    });
+                    other.set_enumeration_constraint(enumeration);
+                }
+                attached && other.end_init() && {
+                    other.set_db_index(other.num_constraints());
+                    true
+                }
             }
         };
         if !ok {
@@ -1086,6 +1479,131 @@ impl SharedContext {
             std::ptr::eq(shared as *const SharedContext, self as *const SharedContext)
         }) {
             self.detach(solver.id(), reset);
+        }
+    }
+
+    pub fn simplify(&mut self, assigned: &[Literal], shuffle: bool) {
+        if !self.physical_share_problem() && !assigned.is_empty() {
+            for &literal in assigned {
+                if literal.id() < self.btig.size() {
+                    self.btig.remove_true(&self.master, literal);
+                }
+            }
+        }
+
+        let master_ptr = self.master() as *mut Solver;
+        let old_len = self.master_ref().num_constraints();
+        let mut removed_before = Vec::new();
+        let mut removed = 0u32;
+        unsafe {
+            let db = (*master_ptr).constraint_db_mut();
+            let mut write = 0usize;
+            for read in 0..db.len() {
+                let constraint_ptr = db[read];
+                let remove = constraint_ptr
+                    .as_mut()
+                    .is_some_and(|constraint| constraint.simplify(&mut *master_ptr, shuffle));
+                if remove {
+                    removed_before.push(read as u32);
+                    removed += 1;
+                    crate::clasp::constraint::Constraint::destroy_raw(
+                        constraint_ptr,
+                        Some(&mut *master_ptr),
+                        false,
+                    );
+                } else {
+                    db[write] = constraint_ptr;
+                    write += 1;
+                }
+            }
+            db.truncate(write);
+            (*master_ptr).set_db_index(db.len() as u32);
+        }
+        if removed != 0 {
+            for solver in &mut self.solvers {
+                let db_index = solver.db_index();
+                if db_index == old_len {
+                    solver.set_db_index(db_index.saturating_sub(removed));
+                } else if db_index != 0 {
+                    let removed_in_prefix = removed_before
+                        .iter()
+                        .filter(|&&index| index < db_index)
+                        .count() as u32;
+                    solver.set_db_index(db_index.saturating_sub(removed_in_prefix));
+                }
+            }
+        }
+        self.stats.constraints.other = self.master_ref().num_constraints();
+    }
+
+    pub fn remove_constraint(&mut self, index: u32, detach: bool) {
+        let master_ptr = self.master() as *mut Solver;
+        let constraint_ptr = unsafe {
+            let db = (*master_ptr).constraint_db_mut();
+            assert!((index as usize) < db.len());
+            db.remove(index as usize)
+        };
+        for solver in &mut self.solvers {
+            if index < solver.db_index() {
+                solver.set_db_index(solver.db_index().saturating_sub(1));
+            }
+        }
+        unsafe {
+            (*master_ptr).set_db_index((*master_ptr).num_constraints());
+            crate::clasp::constraint::Constraint::destroy_raw(
+                constraint_ptr,
+                Some(&mut *master_ptr),
+                detach,
+            );
+        }
+        self.stats.constraints.other = self.master_ref().num_constraints();
+    }
+
+    pub fn problem_complexity(&self) -> u32 {
+        if self.is_extended() {
+            let mut total = self.num_binary() + self.num_ternary();
+            for &constraint_ptr in self.master_ref().constraint_db() {
+                unsafe {
+                    if let Some(constraint) = constraint_ptr.as_ref() {
+                        total += constraint.estimate_complexity(self.master_ref());
+                    }
+                }
+            }
+            total
+        } else {
+            self.num_constraints()
+        }
+    }
+
+    pub fn warn(&mut self, what: &str) {
+        if let Some(handler) = &mut self.progress {
+            let event = LogEvent::new(
+                handler.active(),
+                Verbosity::VerbosityQuiet,
+                LogEventType::Warning,
+                None,
+                what,
+            );
+            handler.dispatch(&event);
+        }
+    }
+
+    pub fn report(&mut self, what: &str, solver: Option<&Solver>) {
+        if let Some(handler) = &mut self.progress {
+            let event = LogEvent::new(
+                handler.active(),
+                Verbosity::VerbosityHigh,
+                LogEventType::Message,
+                solver,
+                what,
+            );
+            handler.dispatch(&event);
+        }
+    }
+
+    pub fn enter(&mut self, system: Subsystem) {
+        if let Some(handler) = &mut self.progress {
+            let _ = handler.set_active(system);
         }
     }
 

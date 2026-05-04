@@ -76,7 +76,7 @@ libpotassco/potassco/utils.h: ported
     src/potassco/utils.rs
 libpotassco/potassco/program_opts/program_options.h: ported
     src/potassco/program_opts/program_options.rs
-clasp/asp_preprocessor.h: blocked by clasp/logic_program.h, clasp/logic_program_types.h, clasp/shared_context.h, src/logic_program.cpp, src/logic_program_types.cpp; rust stub only
+clasp/asp_preprocessor.h: partially ported, the shared SatPreprocessor base layer for unit/clause staging, preprocess/propagate entry points, clause attachment, frozen-range handling, and model-extension cleanup is ported; the concrete SatElite backend and logic-program-specific preprocessing remain blocked by clasp/logic_program.h, clasp/logic_program_types.h, clasp/shared_context.h, src/logic_program.cpp, and src/logic_program_types.cpp
     src/clasp/asp_preprocessor.rs
 libpotassco/potassco/program_opts/typed_value.h: ported
     src/potassco/program_opts/typed_value.rs
@@ -177,7 +177,7 @@ libpotassco/tests/test_string_convert.cpp: ported
     tests/ported/potassco/test_enum.rs
 clasp/minimize_constraint.h: blocked by clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/shared_context.h; upstream minimize unit still needs real solver propagation/backtrack/watch/root APIs, SharedContext-backed builder/freeze support, and WeightConstraint/Clause-based unsat-core support, rust stub only
     src/clasp/minimize_constraint.rs
-clasp/shared_context.h: partially ported, ProblemStats, VarInfo, ShortImplicationsGraph storage/counting/propagation/remove/reverseArc, learnt-short accounting, and the Bundle A SharedContext kernel subset (master ownership, tracked local solvers, addVar/validVar/stats/startAddConstraints/endInit plus the current `endInit(bool attachAll=false)` wrapper for already-added local solvers, requestStepVar/requireStepVar creation semantics, the current unfreeze plus step-literal cleanup path, committed popVars shrink/update behavior, init-time post-propagator activation, mark/unmark and eliminate state on variable metadata, attach/detach for attached local solvers including raw-pointer compatibility shims for the upstream Solver& overloads, cloneDB-backed explicit-constraint cloning, and implicit-short clause storage with shared short implications) are ported; incremental popVars/unfreezeStep parity, event/report/preprocessor, output/domain/minimize tables, and broader incremental/multi-solver runtime remain blocked
+clasp/shared_context.h: partially ported, ProblemStats, VarInfo, EventHandler/LogEvent reporting hooks, ShortImplicationsGraph storage/counting/propagation/remove/reverseArc plus learnt-short accounting, SatPreprocessor integration hooks, and a broad SharedContext runtime slice are ported: master ownership, tracked local solvers, addVar/validVar/stats/startAddConstraints/endInit/propagate, requestStepVar/requireStepVar creation semantics, the current unfreeze plus step-literal cleanup path, committed popVars shrink/update behavior, init-time post-propagator activation, mark/unmark and eliminate state on variable metadata, attach/detach for attached local solvers including cloneDB-backed explicit-constraint cloning and enumeration-constraint carry-over, preserve/share/short-mode/reset/concurrency/default-dom-pref control paths, DB maintenance (`simplify`, `removeConstraint`, `problemComplexity`), and implicit-short clause storage with shared short implications; output/domain/minimize tables, `preprocessShort()`, and broader incremental/multi-solver distribution remain blocked
     src/clasp/shared_context.rs
     src/clasp/constraint.rs
     src/clasp/clause.rs
@@ -263,7 +263,7 @@ libpotassco/tests/test_reify.cpp: ported
 clasp/dependency_graph.h: partially ported, ExtDepGraph storage/finalize/update behavior is ported; PrgDepGraph and AcyclicityCheck remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/logic_program.h, src/logic_program.cpp, and src/shared_context.cpp
     src/clasp/dependency_graph.rs
     tests/clasp_dependency_graph.rs
-src/asp_preprocessor.cpp: blocked by clasp/logic_program.h, clasp/logic_program_types.h, clasp/shared_context.h, src/logic_program.cpp; rust stub only
+src/asp_preprocessor.cpp: partially ported, the shared SatPreprocessor base clause/unit handling, preprocess/propagate flow, clause attachment, frozen-range updates, and model-extension cleanup are ported; the concrete SatElite backend and logic-program-specific preprocessing remain blocked by clasp/logic_program.h, clasp/logic_program_types.h, clasp/shared_context.h, and src/logic_program.cpp
     src/clasp/asp_preprocessor.rs
 tests/lpcompare.h: partially ported, compare/find helpers and external statistics helpers are ported; logic_program-dependent writeSmodels/writeAspif/lpAdd helpers remain blocked by clasp/logic_program.h, src/logic_program.cpp, clasp/parser.h, src/parser.cpp
     tests/ported/clasp/lpcompare.rs
@@ -282,7 +282,7 @@ clasp/heuristics.h: partially ported, solver-independent score containers, lazy-
 clasp/lookahead.h: partially ported, VarScore, ScoreLook comparison/reset helpers, Lookahead parameter builder/state, and constructor mode/limit semantics are ported; propagate/test/init/undo and solver-integrated scoring remain blocked by clasp/solver.h, clasp/shared_context.h, clasp/constraint.h, and src/lookahead.cpp
     src/clasp/lookahead.rs
     tests/clasp_lookahead.rs
-clasp/satelite.h: partially ported, occurrence lists, clause abstraction/strengthening, event constants, mark/find-unmarked helpers, trivial-resolvent detection, and subsumption primitives are ported; the full SatElite preprocessing loop remains blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, and src/shared_context.cpp
+clasp/satelite.h: partially ported, occurrence lists, clause abstraction/strengthening/simplify, clause-to-solver short-clause emission, event constants, mark/find-unmarked helpers, trivial-resolvent detection, and subsumption primitives are ported; the full SatElite preprocessing loop remains blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, and src/shared_context.cpp
     src/clasp/satelite.rs
     tests/clasp_satelite.rs
 src/clause.cpp: partially ported, SharedLiterals storage/refcount/simplify, ClauseCreator start/watch-order/prepare/status/ignore plus end/create/integrate, explicit and shared Clause/ClauseHead watched-literal runtime, explicit contracted-clause creation/backtrack restoration/strengthen-to-implicit-short behavior, explicit storage metadata accessors (`contracted`/`isSmall`/`strengthened`/`computeAllocSize`) with retained-allocation tracking across learnt contracted-strengthening, learnt-clause compression to contracted explicit clauses, and the supported LoopFormula reason/propagate/simplify/minimize subset are ported; shared-clause distribution, allocator-specific small-clause storage, sat-prepro/sharing hooks, and the remaining src/clause.cpp logic remain blocked
@@ -344,9 +344,14 @@ src/logic_program.cpp: blocked by clasp/logic_program.h, clasp/logic_program_typ
     src/clasp/logic_program.rs
 src/parser.cpp: blocked by clasp/parser.h, clasp/program_builder.h, clasp/logic_program.h, clasp/shared_context.h, clasp/solver.h; rust stub only because parser behavior still depends on blocked parser/program-builder/logic-program/shared-context/solver units
     src/clasp/parser.rs
-src/shared_context.cpp: partially ported, ProblemStats aggregation plus the Bundle A shared-context runtime path are ported: ShortImplicationsGraph add/count/propagate behavior, SharedContext::startAddConstraints/addImp/numConstraints/endInit with master-solver ownership and basic variable metadata, the requestStepVar/requireStepVar creation path, the current unfreeze plus step-literal cleanup path, committed popVars shrink/update behavior, and the eliminate/marked/mark/unmark variable-state slice; incremental popVars/unfreezeStep parity, event/report/preprocess, and multi-solver sharing/distribution remain blocked by the remaining solver/clause/runtime pieces
+src/shared_context.cpp: partially ported, ProblemStats aggregation plus a broad shared-context runtime slice are ported: EventHandler/LogEvent reporting hooks, ShortImplicationsGraph add/count/propagate/remove behavior, SharedContext::startAddConstraints/addImp/propagate/endInit, SatPreprocessor integration, attach/detach cloning for attached local solvers, preserve/share/short-mode/reset/concurrency/default-dom-pref control paths, DB maintenance (`simplify`, `removeConstraint`, `problemComplexity`), the requestStepVar/requireStepVar creation path, the current unfreeze plus step-literal cleanup path, committed popVars shrink/update behavior, and the eliminate/marked/mark/unmark variable-state slice; output/domain/minimize tables, `preprocessShort()`, and broader multi-solver sharing/distribution remain blocked by the remaining solver/clause/runtime pieces
     src/clasp/shared_context.rs
     src/clasp/constraint.rs
+    src/clasp/asp_preprocessor.rs
+    src/clasp/satelite.rs
+    tests/clasp_shared_context.rs
+    tests/clasp_asp_preprocessor.rs
+    tests/clasp_satelite.rs
     tests/ported/clasp/solver_test.rs
 tests/dependency_graph_test.cpp: blocked by clasp/dependency_graph.h, src/dependency_graph.cpp, clasp/logic_program.h, src/logic_program.cpp, clasp/shared_context.h, src/shared_context.cpp, clasp/solver.h, src/solver.cpp; rust stub only because dependency-graph and acyclicity behavior still needs unresolved logic-program/shared-context/solver integration
     tests/ported/clasp/dependency_graph_test.rs

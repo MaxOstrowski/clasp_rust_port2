@@ -6,7 +6,12 @@
 //! concrete `SharedContext` or `Solver`. The preprocessing loop itself remains
 //! blocked on the unported shared-context, clause, and solver integration.
 
+use crate::clasp::clause::{ClauseCreator, ClauseInfo};
+use crate::clasp::constraint::ConstraintType;
+use crate::clasp::literal::LitVec;
+use crate::clasp::literal::value_free;
 use crate::clasp::literal::{Literal, Var_t, lit_false, lit_true};
+use crate::clasp::solver::Solver;
 use crate::clasp::util::left_right_sequence::LeftRightSequence;
 
 pub const EVENT_BCE: u8 = b'B';
@@ -87,6 +92,50 @@ impl SatPreClause {
             .lits
             .iter()
             .fold(0u64, |acc, &lit| acc | Self::abstract_lit(lit));
+    }
+
+    pub fn simplify(&mut self, solver: &Solver) {
+        let mut index = 0usize;
+        while index < self.lits.len() && solver.value(self.lits[index].var()) == value_free {
+            index += 1;
+        }
+        if index == self.lits.len() {
+            return;
+        }
+        if solver.is_true(self.lits[index]) {
+            self.lits.swap(0, index);
+            return;
+        }
+        let mut write = index;
+        index += 1;
+        while index < self.lits.len() {
+            if solver.is_true(self.lits[index]) {
+                self.lits.swap(0, index);
+                return;
+            }
+            if !solver.is_false(self.lits[index]) {
+                self.lits[write] = self.lits[index];
+                write += 1;
+            }
+            index += 1;
+        }
+        self.lits.truncate(write);
+        self.abstraction = self
+            .lits
+            .iter()
+            .fold(0u64, |acc, &lit| acc | Self::abstract_lit(lit));
+    }
+
+    pub fn add_to(&self, solver: &mut Solver) -> bool {
+        let mut lits = LitVec::new();
+        lits.assign_from_slice(&self.lits);
+        ClauseCreator::create(
+            solver,
+            &mut lits,
+            0,
+            ClauseInfo::new(ConstraintType::Static),
+        )
+        .ok()
     }
 }
 

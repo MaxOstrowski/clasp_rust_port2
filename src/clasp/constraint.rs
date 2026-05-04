@@ -331,6 +331,7 @@ pub struct Solver {
     cc_lits: LitVec,
     cc_info: ConstraintInfo,
     enum_constraint: Option<*mut Constraint>,
+    db_index: u32,
     last_simplify: u32,
     split_requested: bool,
     stop_conflict: Option<StopConflictState>,
@@ -605,6 +606,7 @@ impl Solver {
             cc_lits: LitVec::new(),
             cc_info: ConstraintInfo::new(ConstraintType::Conflict),
             enum_constraint: None,
+            db_index: 0,
             last_simplify: 0,
             split_requested: false,
             stop_conflict: None,
@@ -2262,6 +2264,18 @@ impl Solver {
 
     pub(crate) fn constraint_db(&self) -> &[*mut Constraint] {
         &self.constraints
+    }
+
+    pub(crate) fn constraint_db_mut(&mut self) -> &mut Vec<*mut Constraint> {
+        &mut self.constraints
+    }
+
+    pub(crate) fn db_index(&self) -> u32 {
+        self.db_index
+    }
+
+    pub(crate) fn set_db_index(&mut self, db_index: u32) {
+        self.db_index = db_index;
     }
 
     pub(crate) fn clone_db(&mut self, db: &[*mut Constraint]) -> bool {

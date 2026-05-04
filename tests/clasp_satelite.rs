@@ -2,6 +2,7 @@ use rust_clasp::clasp::literal::{lit_false, lit_true, neg_lit, pos_lit};
 use rust_clasp::clasp::satelite::{
     EVENT_BCE, EVENT_SUBSUMPTION, EVENT_VAR_ELIM, OccurList, SatElite, SatPreClause, less_occ_cost,
 };
+use rust_clasp::clasp::shared_context::SharedContext;
 
 #[test]
 fn occur_list_tracks_occurrences_marks_and_watchers() {
@@ -144,6 +145,38 @@ fn satelite_clause_helpers_and_cost_order_match_header_logic() {
     assert!(clause.marked());
     assert_eq!(clause.lits(), &[pos_lit(1), pos_lit(3)]);
     assert!(less_occ_cost(&occurs, 2, 1));
+}
+
+#[test]
+fn satelite_clause_simplify_removes_false_literals_and_tracks_satisfaction() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+    let b = ctx.add_var();
+    let c = ctx.add_var();
+    assert!(ctx.add_unary(pos_lit(a)));
+    assert!(ctx.add_unary(neg_lit(b)));
+
+    let mut shrunk = SatPreClause::new(vec![neg_lit(a), pos_lit(b), pos_lit(c)]);
+    shrunk.simplify(ctx.master_ref());
+    assert_eq!(shrunk.lits(), &[pos_lit(c)]);
+
+    let mut satisfied = SatPreClause::new(vec![neg_lit(a), pos_lit(c), neg_lit(b)]);
+    satisfied.simplify(ctx.master_ref());
+    assert_eq!(satisfied.lit(0), neg_lit(b));
+    assert_eq!(satisfied.size(), 3);
+}
+
+#[test]
+fn satelite_clause_add_to_creates_a_short_clause_in_solver() {
+    let mut ctx = SharedContext::default();
+    let a = ctx.add_var();
+    let b = ctx.add_var();
+    let clause = SatPreClause::new(vec![neg_lit(a), pos_lit(b)]);
+
+    let solver = ctx.start_add_constraints();
+    assert!(clause.add_to(solver));
+    assert!(ctx.end_init());
+    assert_eq!(ctx.num_binary(), 1);
 }
 
 #[test]
