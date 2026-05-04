@@ -14,14 +14,14 @@ use crate::clasp::literal::{
 use crate::clasp::pod_vector::{VectorLike, shrink_vec_to};
 use crate::clasp::shared_context::SharedContext;
 use crate::clasp::solver_strategies::{
-    CCMinAntes, HeuParams, ReduceAlgorithm, ReduceStrategy, SearchLimits, SearchStrategy,
-    SolverParams, SolverStrategies, WatchInit,
+    CCMinAntes, CCRepMode, HeuParams, ReduceAlgorithm, ReduceStrategy, SearchLimits,
+    SearchStrategy, SolverParams, SolverStrategies, WatchInit,
 };
 use crate::clasp::solver_types::{
     Assignment, ClauseWatch, GenericWatch, ImpliedList, ImpliedLiteral, SolverStats, ValueSet,
     WatchList,
 };
-use crate::clasp::util::misc_types::Rng;
+use crate::clasp::util::misc_types::{Rng, ratio};
 use crate::potassco::bits::{
     BitIndex, Bitset, nth_bit, right_most_bit, store_clear_bit, store_clear_mask, store_set_mask,
     store_toggle_bit, test_any, test_bit,
@@ -2366,6 +2366,7 @@ impl Solver {
         let mut on_level = 0u32;
         let mut res_size = 0u32;
         let mut pivot = Literal::default();
+        let mut last_reason = Antecedent::default();
         self.cc_info = ClauseInfo::new(ConstraintType::Conflict);
         self.cc_lits.clear();
         self.cc_lits.push_back(pivot);
@@ -2398,16 +2399,25 @@ impl Solver {
             }
             on_level -= 1;
             res_size = res_size.saturating_sub(1);
+            last_reason = reason;
             let mut next_conflict = LitVec::new();
             let mut antecedent = reason;
             antecedent.reason(self, pivot, &mut next_conflict);
             self.conflict_lits = next_conflict;
         }
         self.cc_lits[0] = !pivot;
-        self.simplify_conflict_clause()
+        let last_res = if !last_reason.is_null()
+            && last_reason.type_() == Antecedent::GENERIC
+            && self.cc_lits.len() <= self.conflict_lits.len() + 1
+        {
+            last_reason.constraint_mut().clause()
+        } else {
+            None
+        };
+        self.simplify_conflict_clause(last_res)
     }
 
-    fn simplify_conflict_clause(&mut self) -> u32 {
+    fn simplify_conflict_clause(&mut self, mut rhs: Option<NonNull<ClauseHead>>) -> u32 {
         let mut removed = LitVec::new();
         let mut recursive = CCMinRecursive::default();
         let recursive_ptr = if self.strategies.cc_min_rec != 0 {
@@ -2416,10 +2426,66 @@ impl Solver {
         } else {
             core::ptr::null_mut()
         };
-        let _on_assert =
+        let on_assert =
             self.cc_minimize_clause(&mut removed, self.strategies.cc_min_antes, recursive_ptr);
+        let assert_level = if self.cc_lits.len() > 1 {
+            self.level(self.cc_lits[1].var())
+        } else {
+            0
+        };
         for literal in removed.as_slice().iter().copied() {
             self.clear_seen_var(literal.var());
+        }
+        if on_assert == 1 && self.strategies.reverse_arcs > 0 && self.cc_lits.len() > 1 {
+            self.mark_seen_var(self.cc_lits[0].var());
+            if let Some(antecedent) = self.reverse_arc(self.cc_lits[1], assert_level) {
+                let mut reason = LitVec::new();
+                let mut antecedent = antecedent;
+                antecedent.reason(self, !self.cc_lits[1], &mut reason);
+                for literal in reason.as_slice().iter().copied() {
+                    if !self.seen_var(literal.var()) {
+                        self.mark_level(self.level(literal.var()));
+                        self.cc_lits.push_back(!literal);
+                    }
+                }
+                let resolved = self.cc_lits[1];
+                self.clear_seen_var(resolved.var());
+                self.unmark_level(self.level(resolved.var()));
+                let last = self.cc_lits.len() - 1;
+                self.cc_lits.as_mut_slice().swap(1, last);
+                self.cc_lits.pop_back();
+            }
+            self.clear_seen_var(self.cc_lits[0].var());
+        }
+        if let Some(mut rhs_head) = rhs.take() {
+            let mut strengthen = LitVec::new();
+            self.mark_seen_var(self.cc_lits[0].var());
+            let rhs_lits = unsafe { rhs_head.as_ref() }.to_lits();
+            let mut marked = self.cc_lits.len() as isize;
+            let mut max_missing = rhs_lits.len() as isize - marked;
+            for literal in rhs_lits {
+                if !self.seen_var(literal.var()) || self.level(literal.var()) == 0 {
+                    max_missing -= 1;
+                    if max_missing < 0 {
+                        break;
+                    }
+                    strengthen.push_back(literal);
+                } else {
+                    marked -= 1;
+                    if marked == 0 {
+                        break;
+                    }
+                }
+            }
+            if marked <= 0 {
+                for literal in strengthen.as_slice().iter().copied() {
+                    let result = unsafe { rhs_head.as_mut() }.strengthen(self, literal, false);
+                    if !result.lit_removed {
+                        break;
+                    }
+                }
+            }
+            self.clear_seen_var(self.cc_lits[0].var());
         }
         self.finalize_conflict_clause()
     }
@@ -2513,6 +2579,94 @@ impl Solver {
         }
         if assert_pos != 1 && self.cc_lits.len() > 1 {
             self.cc_lits.as_mut_slice().swap(1, assert_pos);
+        }
+        let mut rep_mode = if self.cc_lits.len()
+            < core::cmp::max(
+                self.strategies.compress as usize,
+                self.decision_level as usize + 1,
+            ) {
+            CCRepMode::CcNoReplace as u32
+        } else {
+            self.strategies.cc_rep_mode
+        };
+        if rep_mode == CCRepMode::CcRepDynamic as u32 {
+            rep_mode = if ratio(u64::from(lbd), u64::from(self.decision_level())) > 0.66 {
+                CCRepMode::CcRepDecision as u32
+            } else {
+                CCRepMode::CcRepUip as u32
+            };
+        }
+        if rep_mode != CCRepMode::CcNoReplace as u32 {
+            max_var = self.cc_lits[0].var();
+            tagged = false;
+            lbd = 1;
+            if rep_mode == CCRepMode::CcRepDecision as u32 {
+                self.cc_lits.truncate(1);
+                for level in (1..=assert_level).rev() {
+                    let decision = !self.decision(level);
+                    self.cc_lits.push_back(decision);
+                    lbd += 1;
+                    if decision == tag_lit {
+                        tagged = true;
+                    }
+                    if decision.var() > max_var {
+                        max_var = decision.var();
+                    }
+                }
+            } else {
+                let mut marked = self.cc_lits.len() as u32 - 1;
+                while self.cc_lits.len() > 1 {
+                    let lit = self.cc_lits[self.cc_lits.len() - 1];
+                    self.mark_seen_literal(!lit);
+                    self.cc_lits.pop_back();
+                }
+                let trail = self.assignment.trail.as_slice().to_vec();
+                let mut trail_pos = trail.len();
+                while marked != 0 {
+                    loop {
+                        trail_pos -= 1;
+                        if self.seen_literal(trail[trail_pos]) {
+                            break;
+                        }
+                    }
+                    let trail_lit = trail[trail_pos];
+                    let resolve_next = marked != 1 && !self.reason(trail_lit.var()).is_null();
+                    let mut next = trail_pos;
+                    if resolve_next {
+                        let stop = self.level_start(self.level(trail_lit.var())) as usize;
+                        while next > stop {
+                            next -= 1;
+                            if self.seen_literal(trail[next]) {
+                                break;
+                            }
+                        }
+                    }
+                    marked -= 1;
+                    self.clear_seen_var(trail_lit.var());
+                    if !resolve_next || self.level(trail[next].var()) != self.level(trail_lit.var())
+                    {
+                        self.cc_lits.push_back(!trail_lit);
+                        if trail_lit.var() == tag_lit.var() {
+                            tagged = true;
+                        }
+                        if trail_lit.var() > max_var {
+                            max_var = trail_lit.var();
+                        }
+                    } else {
+                        let mut antecedent = *self.reason(trail_lit.var());
+                        let mut reason_snapshot = LitVec::new();
+                        antecedent.reason(self, trail_lit, &mut reason_snapshot);
+                        let reason_snapshot = reason_snapshot.as_slice().to_vec();
+                        for lit in reason_snapshot {
+                            if !self.seen_literal(lit) {
+                                marked += 1;
+                                self.mark_seen_literal(lit);
+                            }
+                        }
+                    }
+                }
+                lbd = self.cc_lits.len() as u32;
+            }
         }
         self.cc_info
             .set_score(ConstraintScore::new(self.cc_info.activity(), lbd));

@@ -3,7 +3,7 @@ use std::ptr::NonNull;
 use std::rc::Rc;
 
 use rust_clasp::clasp::asp_preprocessor::SatPreprocessor;
-use rust_clasp::clasp::clause::{ClauseCreator, ClauseRep};
+use rust_clasp::clasp::clause::{CLAUSE_WATCH_FIRST, CLAUSE_WATCH_LEAST, ClauseCreator, ClauseRep};
 use rust_clasp::clasp::constraint::{
     Antecedent, Constraint, ConstraintDyn, PropResult, priority_reserved_look,
 };
@@ -17,8 +17,8 @@ use rust_clasp::clasp::solver::{
     priority_class_general,
 };
 use rust_clasp::clasp::solver_strategies::{
-    CCMinAntes, Forget, HeuParams, ReduceStrategy, SearchLimits, SearchStrategy, SolverParams,
-    UpdateMode, UserConfiguration,
+    CCMinAntes, CCRepMode, Forget, HeuParams, ReduceStrategy, SearchLimits, SearchStrategy,
+    SolverParams, UpdateMode, UserConfiguration,
 };
 use rust_clasp::clasp::solver_types::{
     Assignment, ClauseWatch, ExtendedStats, GenericWatch, ReasonStore64, ReasonStore64Value,
@@ -1938,6 +1938,171 @@ fn solver_estimate_bcp_matches_upstream_binary_walk_and_loop_behavior() {
 }
 
 #[test]
+fn solver_assert_immediate_matches_upstream_reason_shapes() {
+    let mut ctx = SharedContext::default();
+    let a = pos_lit(ctx.add_var());
+    let b = pos_lit(ctx.add_var());
+    let d = pos_lit(ctx.add_var());
+    let q = pos_lit(ctx.add_var());
+    let f = pos_lit(ctx.add_var());
+    let x = pos_lit(ctx.add_var());
+    let z = pos_lit(ctx.add_var());
+
+    let solver = ctx.start_add_constraints();
+    let mut creator = ClauseCreator::new(Some(solver));
+    creator.add_default_flags(CLAUSE_WATCH_FIRST);
+    creator
+        .start(ConstraintType::Static)
+        .add(!z)
+        .add(d)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(a)
+        .add(b)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(a)
+        .add(!b)
+        .add(z)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(a)
+        .add(!b)
+        .add(!z)
+        .add(d)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(!b)
+        .add(!z)
+        .add(!d)
+        .add(q)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(!q)
+        .add(f)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(!f)
+        .add(!z)
+        .add(x)
+        .end_with_defaults();
+
+    assert!(solver.assume(!a));
+    assert!(solver.propagate());
+
+    assert_eq!(solver.num_assigned_vars(), 7);
+
+    let why_b = *solver.reason(b.var());
+    let why_z = *solver.reason(z.var());
+    let why_d = *solver.reason(d.var());
+    let why_q = *solver.reason(q.var());
+    let why_f = *solver.reason(f.var());
+    let why_x = *solver.reason(x.var());
+
+    assert_eq!(why_b.type_(), Antecedent::BINARY);
+    assert_eq!(why_b.first_literal(), !a);
+
+    assert_eq!(why_z.type_(), Antecedent::TERNARY);
+    assert_eq!(why_z.first_literal(), !a);
+    assert_eq!(why_z.second_literal(), b);
+
+    assert_eq!(why_d.type_(), Antecedent::GENERIC);
+    assert_eq!(why_q.type_(), Antecedent::GENERIC);
+
+    assert_eq!(why_f.type_(), Antecedent::BINARY);
+    assert_eq!(why_f.first_literal(), q);
+
+    assert_eq!(why_x.type_(), Antecedent::TERNARY);
+    assert_eq!(why_x.first_literal(), f);
+    assert_eq!(why_x.second_literal(), z);
+}
+
+#[test]
+fn solver_prefer_short_bfs_matches_upstream_reason_selection() {
+    let mut ctx = SharedContext::default();
+    let a = pos_lit(ctx.add_var());
+    let b = pos_lit(ctx.add_var());
+    let p = pos_lit(ctx.add_var());
+    let q = pos_lit(ctx.add_var());
+    let x = pos_lit(ctx.add_var());
+    let y = pos_lit(ctx.add_var());
+    let z = pos_lit(ctx.add_var());
+
+    let solver = ctx.start_add_constraints();
+    let mut creator = ClauseCreator::new(Some(solver));
+    creator.add_default_flags(CLAUSE_WATCH_LEAST);
+    creator
+        .start(ConstraintType::Static)
+        .add(a)
+        .add(x)
+        .add(y)
+        .add(p)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(a)
+        .add(x)
+        .add(y)
+        .add(z)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(a)
+        .add(p)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(a)
+        .add(!p)
+        .add(z)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(!z)
+        .add(b)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(a)
+        .add(x)
+        .add(q)
+        .add(!b)
+        .end_with_defaults();
+    creator
+        .start(ConstraintType::Static)
+        .add(a)
+        .add(!b)
+        .add(!p)
+        .add(!q)
+        .end_with_defaults();
+
+    let shared = solver.shared_context().expect("shared context");
+    assert_eq!(shared.num_binary(), 2);
+    assert_eq!(shared.num_ternary(), 1);
+
+    assert!(solver.assume(!x));
+    assert!(solver.propagate());
+    assert!(solver.assume(!y));
+    assert!(solver.propagate());
+    assert_eq!(solver.num_assigned_vars(), 2);
+    assert!(solver.assume(!a));
+
+    assert!(!solver.propagate());
+    assert_eq!(solver.num_assigned_vars(), 7);
+
+    assert_eq!(solver.reason(b.var()).type_(), Antecedent::BINARY);
+    assert_eq!(solver.reason(p.var()).type_(), Antecedent::BINARY);
+    assert_eq!(solver.reason(z.var()).type_(), Antecedent::TERNARY);
+    assert_eq!(solver.reason(q.var()).type_(), Antecedent::GENERIC);
+}
+
+#[test]
 fn solver_reverse_arc_reports_binary_and_ternary_short_reasons() {
     let mut binary_ctx = SharedContext::default();
     let a = pos_lit(binary_ctx.add_var());
@@ -1980,6 +2145,101 @@ fn solver_reverse_arc_reports_binary_and_ternary_short_reasons() {
     assert_eq!(ternary.type_(), Antecedent::TERNARY);
     assert_eq!(ternary.first_literal(), !b);
     assert_eq!(ternary.second_literal(), !c);
+}
+
+#[test]
+fn solver_resolve_conflict_uses_reverse_arc_to_strengthen_learnt_clause() {
+    let mut ctx = SharedContext::default();
+    let q = pos_lit(ctx.add_var());
+    let a = pos_lit(ctx.add_var());
+    let c = pos_lit(ctx.add_var());
+    let d = pos_lit(ctx.add_var());
+    let x = pos_lit(ctx.add_var());
+
+    let solver = ctx.start_add_constraints();
+    solver.strategies_mut().reverse_arcs = 1;
+    assert!(solver.add(
+        &ClauseRep::prepared(&[!q, c], ClauseInfo::new(ConstraintType::Static)),
+        true,
+    ));
+    assert!(ctx.end_init());
+
+    let solver = ctx.master();
+    assert!(solver.assume(q));
+    assert!(solver.assume(a) && solver.propagate());
+    assert!(solver.is_true(c));
+    assert!(solver.assume(d) && solver.propagate());
+    assert!(solver.force(x, Antecedent::from_literal(d)));
+
+    let conflict = Box::into_raw(Box::new(Constraint::new(ConflictReasonConstraint {
+        ante: vec![c, d, x],
+    })));
+    assert!(!solver.force(lit_false, Antecedent::from_constraint_ptr(conflict)));
+    unsafe {
+        Constraint::destroy_raw(conflict, None, false);
+    }
+
+    assert!(solver.resolve_conflict());
+    assert!(solver.is_true(!d));
+    assert_eq!(solver.decision_level(), 1);
+
+    let mut antecedent = *solver.reason(d.var());
+    assert_eq!(antecedent.type_(), Antecedent::BINARY);
+    let mut reason = LitVec::new();
+    antecedent.reason(solver, !d, &mut reason);
+    reason.push_back(!d);
+
+    assert_eq!(reason.len(), 2);
+    assert!(contains(reason.as_slice(), &q));
+    assert!(contains(reason.as_slice(), &!d));
+    assert!(!contains(reason.as_slice(), &a));
+    assert!(!contains(reason.as_slice(), &c));
+}
+
+#[test]
+fn solver_resolve_conflict_strengthens_subsumed_rhs_clause() {
+    let mut ctx = SharedContext::default();
+    let c = pos_lit(ctx.add_var());
+    let d = pos_lit(ctx.add_var());
+    let r = pos_lit(ctx.add_var());
+    let x = pos_lit(ctx.add_var());
+
+    let solver = ctx.start_add_constraints();
+    let mut creator = ClauseCreator::new(Some(solver));
+    let rhs = creator
+        .start(ConstraintType::Static)
+        .add(!c)
+        .add(!d)
+        .add(!r)
+        .add(x)
+        .end_with_defaults();
+    assert!(rhs.ok());
+    assert!(!rhs.local.is_null());
+
+    assert!(solver.assume(c));
+    assert!(solver.propagate());
+    assert!(solver.assume(d));
+    assert!(solver.propagate());
+    assert!(solver.assume(r));
+    assert!(solver.propagate());
+    assert!(solver.is_true(x));
+
+    let conflict = Box::into_raw(Box::new(Constraint::new(ConflictReasonConstraint {
+        ante: vec![x, r],
+    })));
+    assert!(!solver.force(lit_false, Antecedent::from_constraint_ptr(conflict)));
+    unsafe {
+        Constraint::destroy_raw(conflict, None, false);
+    }
+
+    assert!(solver.resolve_conflict());
+
+    let rhs_lits = unsafe { (*rhs.local).to_lits() };
+    assert_eq!(rhs_lits.len(), 3);
+    assert!(contains(&rhs_lits, &!c));
+    assert!(contains(&rhs_lits, &!d));
+    assert!(contains(&rhs_lits, &!r));
+    assert!(!contains(&rhs_lits, &x));
 }
 
 #[test]
@@ -2199,6 +2459,56 @@ fn solver_resolve_conflict_builds_first_uip_learnt_clause() {
     assert!(contains(reason.as_slice(), &!x3));
     assert!(contains(reason.as_slice(), &x6));
     assert!(contains(reason.as_slice(), &x15));
+}
+
+#[test]
+fn solver_resolve_conflict_can_replace_learnt_clause_with_decision_sequence() {
+    let mut ctx = SharedContext::default();
+    let a = pos_lit(ctx.add_var());
+    let b = pos_lit(ctx.add_var());
+    let c = pos_lit(ctx.add_var());
+    let d = pos_lit(ctx.add_var());
+    let e = pos_lit(ctx.add_var());
+    let x = pos_lit(ctx.add_var());
+
+    let _ = ctx.start_add_constraints();
+    assert!(ctx.end_init());
+
+    let solver = ctx.master();
+    solver.strategies_mut().compress = 0;
+    solver.strategies_mut().cc_rep_mode = CCRepMode::CcRepDecision as u32;
+
+    assert!(solver.assume(a));
+    assert!(solver.assume(b));
+    assert!(solver.force(e, Antecedent::from_literal(b)));
+    assert!(solver.assume(c));
+    assert!(solver.assume(d));
+    assert!(solver.force(x, Antecedent::from_literal(d)));
+
+    let conflict = Box::into_raw(Box::new(Constraint::new(ConflictReasonConstraint {
+        ante: vec![a, b, e, c, d, x],
+    })));
+    assert!(!solver.force(lit_false, Antecedent::from_constraint_ptr(conflict)));
+    unsafe {
+        Constraint::destroy_raw(conflict, None, false);
+    }
+
+    assert!(solver.resolve_conflict());
+    assert!(solver.is_true(!d));
+    assert_eq!(solver.decision_level(), 3);
+
+    let mut antecedent = *solver.reason(d.var());
+    assert_eq!(antecedent.type_(), Antecedent::GENERIC);
+    let mut reason = LitVec::new();
+    antecedent.reason(solver, !d, &mut reason);
+    reason.push_back(!d);
+
+    assert_eq!(reason.len(), 4);
+    assert!(contains(reason.as_slice(), &a));
+    assert!(contains(reason.as_slice(), &b));
+    assert!(contains(reason.as_slice(), &c));
+    assert!(contains(reason.as_slice(), &!d));
+    assert!(!contains(reason.as_slice(), &e));
 }
 
 #[test]
