@@ -1,19 +1,29 @@
 use rust_clasp::clasp::mt::parallel_solve::{
     ParallelAlgorithmOptions, ParallelDistributionMode, ParallelDistributionOptions,
-    ParallelGlobalRestarts, ParallelIntegrationTopology, ParallelSearchMode, ParallelSolveOptions,
+    ParallelGlobalRestarts, ParallelIntegrationFilter, ParallelIntegrationOptions,
+    ParallelIntegrationTopology, ParallelSearchMode, ParallelSolveOptions,
 };
 use rust_clasp::clasp::mt::thread::Thread;
+use rust_clasp::clasp::solve_algorithms::SolveLimits;
 use rust_clasp::clasp::solver_strategies::ScheduleStrategy;
 
 #[test]
 fn default_portfolio_is_true_only_for_competition_mode() {
     let compete = ParallelSolveOptions {
+        limit: SolveLimits::default(),
+        integrate: ParallelIntegrationOptions::default(),
+        distribute: ParallelDistributionOptions::default(),
+        restarts: ParallelGlobalRestarts::default(),
         algorithm: ParallelAlgorithmOptions {
             threads: 1,
             mode: ParallelSearchMode::Compete,
         },
     };
     let split = ParallelSolveOptions {
+        limit: SolveLimits::default(),
+        integrate: ParallelIntegrationOptions::default(),
+        distribute: ParallelDistributionOptions::default(),
+        restarts: ParallelGlobalRestarts::default(),
         algorithm: ParallelAlgorithmOptions {
             threads: 1,
             mode: ParallelSearchMode::Split,
@@ -27,6 +37,10 @@ fn default_portfolio_is_true_only_for_competition_mode() {
 #[test]
 fn num_solver_reads_the_configured_parallel_thread_count() {
     let opts = ParallelSolveOptions {
+        limit: SolveLimits::default(),
+        integrate: ParallelIntegrationOptions::default(),
+        distribute: ParallelDistributionOptions::default(),
+        restarts: ParallelGlobalRestarts::default(),
         algorithm: ParallelAlgorithmOptions {
             threads: 6,
             mode: ParallelSearchMode::Compete,
@@ -47,6 +61,10 @@ fn recommended_solvers_matches_thread_hardware_concurrency() {
 #[test]
 fn set_solvers_clamps_the_thread_count_to_at_least_one() {
     let mut opts = ParallelSolveOptions {
+        limit: SolveLimits::default(),
+        integrate: ParallelIntegrationOptions::default(),
+        distribute: ParallelDistributionOptions::default(),
+        restarts: ParallelGlobalRestarts::default(),
         algorithm: ParallelAlgorithmOptions {
             threads: 4,
             mode: ParallelSearchMode::Compete,
@@ -58,6 +76,33 @@ fn set_solvers_clamps_the_thread_count_to_at_least_one() {
 
     opts.set_solvers(7);
     assert_eq!(opts.num_solver(), 7);
+}
+
+#[test]
+fn parallel_solve_options_default_layout_matches_upstream_members() {
+    let opts = ParallelSolveOptions::default();
+
+    assert_eq!(opts.limit, SolveLimits::default());
+    assert_eq!(opts.integrate.grace, 1024);
+    assert_eq!(
+        opts.integrate.filter,
+        ParallelIntegrationFilter::GuidingPath
+    );
+    assert_eq!(opts.integrate.topology, ParallelIntegrationTopology::All);
+    assert_eq!(opts.distribute.mode, ParallelDistributionMode::Global);
+    assert_eq!(opts.restarts.max_restarts, 0);
+    assert_eq!(opts.algorithm.threads, 1);
+    assert_eq!(opts.algorithm.mode, ParallelSearchMode::Compete);
+}
+
+#[test]
+fn integration_defaults_match_upstream_values() {
+    let integration = ParallelIntegrationOptions::default();
+
+    assert_eq!(ParallelIntegrationOptions::GRACE_MAX, (1u32 << 28) - 1);
+    assert_eq!(integration.grace, 1024);
+    assert_eq!(integration.filter, ParallelIntegrationFilter::GuidingPath);
+    assert_eq!(integration.topology, ParallelIntegrationTopology::All);
 }
 
 #[test]

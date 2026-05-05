@@ -250,8 +250,9 @@ libpotassco/tests/test_smodels.cpp: ported
     tests/ported/potassco/test_convert.rs
     tests/ported_potassco_smodels.rs
     tests/ported_potassco_convert.rs
-clasp/logic_program.h: blocked by clasp/logic_program_types.h, clasp/program_builder.h, clasp/statistics.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/minimize_constraint.h, clasp/dependency_graph.h, clasp/parser.h, src/logic_program.cpp; header API is implemented jointly with those still-unported logic-program and solver integration units, rust stub only
+clasp/logic_program.h: blocked by clasp/logic_program_types.h, clasp/program_builder.h, clasp/statistics.h, clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/minimize_constraint.h, clasp/dependency_graph.h, clasp/parser.h, src/logic_program.cpp; RuleStats/BodyStats plus LogicProgram::AspOptions structure/default mutator layout are ported, but the remaining logic-program and solver integration runtime is still blocked
     src/clasp/logic_program.rs
+    tests/clasp_logic_program.rs
 libpotassco/src/application.cpp: ported
     src/potassco/application.rs
     tests/ported/potassco/test_application.rs
@@ -267,7 +268,7 @@ clasp/solver.h: partially ported, the Bundle A solver kernel subset is ported: S
     src/clasp/clause.rs
     src/clasp/shared_context.rs
     tests/ported/clasp/solver_test.rs
-clasp/mt/parallel_solve.h: partially ported, ParallelSolveOptions::defaultPortfolio, ParallelSolveOptions::fullPeerSet, ParallelSolveOptions::initPeerSet, ParallelSolveOptions::numSolver, ParallelSolveOptions::recommendedSolvers, ParallelSolveOptions::setSolvers, ParallelSolveOptions::supportedSolvers, ParallelSolveOptions::Distribution::Distribution, ParallelSolveOptions::Distribution::policy, and ParallelSolveOptions::GRestarts::GRestarts are ported; remaining runtime is blocked by clasp/shared_context.h, clasp/solve_algorithms.h, clasp/solver.h, clasp/clause.h, clasp/enumerator.h, src/parallel_solve.cpp
+clasp/mt/parallel_solve.h: partially ported, ParallelSolveOptions inherited/member layout (`limit`, `integrate`, `distribute`, `restarts`, `algorithm`), ParallelSolveOptions::defaultPortfolio, ParallelSolveOptions::fullPeerSet, ParallelSolveOptions::initPeerSet, ParallelSolveOptions::numSolver, ParallelSolveOptions::recommendedSolvers, ParallelSolveOptions::setSolvers, ParallelSolveOptions::supportedSolvers, ParallelSolveOptions::Distribution::Distribution, ParallelSolveOptions::Distribution::policy, ParallelSolveOptions::Integration default field semantics, and ParallelSolveOptions::GRestarts::GRestarts are ported; remaining runtime is blocked by clasp/shared_context.h, clasp/solve_algorithms.h, clasp/solver.h, clasp/clause.h, clasp/enumerator.h, src/parallel_solve.cpp
     src/clasp/mt/parallel_solve.rs
     tests/clasp_mt_parallel_solve.rs
 libpotassco/app/lpconvert.cpp: ported
@@ -347,7 +348,9 @@ tests/minimize_test.cpp: partially ported, SharedMinimizeData-only arithmetic/bo
     tests/ported/clasp/minimize_test.rs
 tests/weight_constraint_test.cpp: blocked by clasp/weight_constraint.h, src/weight_constraint.cpp, clasp/solver.h, clasp/shared_context.h, clasp/clause.h, clasp/solver_types.h; translated test target is still a stub because weight-constraint runtime prerequisites remain unresolved
     tests/ported/clasp/weight_constraint_test.rs
-clasp/clasp_facade.h: partially ported, SolveResult base/ext flag queries and SolveMode bitmask semantics are ported; ClaspConfig, ClaspFacade, SolveHandle, Summary, and runtime/statistics integration remain blocked by clasp/enumerator.h, clasp/logic_program.h, clasp/parser.h, clasp/program_builder.h, clasp/shared_context.h, clasp/solver_types.h, clasp/solver.h, clasp/dependency_graph.h, clasp/lookahead.h, clasp/minimize_constraint.h, clasp/model_enumerators.h, and src/clasp_facade.cpp
+clasp/clasp_facade.h: partially ported, SolveResult base/ext flag queries, SolveMode bitmask semantics, SolveOptions structure embedding, and layout-only member storage for ClaspConfig, ClaspFacade, SolveHandle, Summary, StepStart, StepReady, and Prepare are ported; runtime/statistics integration remains blocked by clasp/enumerator.h, clasp/logic_program.h, clasp/parser.h, clasp/program_builder.h, clasp/shared_context.h, clasp/solver_types.h, clasp/solver.h, clasp/dependency_graph.h, clasp/lookahead.h, clasp/minimize_constraint.h, clasp/model_enumerators.h, and src/clasp_facade.cpp
+    src/clasp/clasp_facade.rs
+    tests/clasp_facade.rs
     src/clasp/clasp_facade.rs
     tests/ported/clasp/facade_types_test.rs
 src/parallel_solve.cpp: blocked by clasp/shared_context.h, clasp/solve_algorithms.h, clasp/solver_types.h, clasp/solver.h, clasp/clause.h, clasp/enumerator.h; rust stub only because parallel solve still needs unported solver/shared-context/solve-algorithm runtime and parallel integration flows

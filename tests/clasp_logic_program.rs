@@ -1,5 +1,47 @@
-use rust_clasp::clasp::logic_program::{BodyStats, RuleStats, RuleStatsKey};
+use rust_clasp::clasp::logic_program::{
+    AspOptions, AtomSorting, BodyStats, ExtendedRuleMode, RuleStats, RuleStatsKey,
+};
 use rust_clasp::potassco::basic_types::{BodyType, HeadType};
+
+#[test]
+fn asp_options_defaults_match_upstream_layout() {
+    let options = AspOptions::default();
+
+    assert_eq!(options.er_mode, ExtendedRuleMode::Native);
+    assert_eq!(options.iters, 5);
+    assert_eq!(options.sort_atom, AtomSorting::Auto);
+    assert!(!options.no_scc);
+    assert!(!options.supp_mod);
+    assert!(!options.df_order);
+    assert!(!options.backprop);
+    assert!(!options.old_map);
+    assert!(!options.no_gamma);
+}
+
+#[test]
+fn asp_options_mutators_match_header_semantics() {
+    let mut options = AspOptions::default();
+
+    options
+        .iterations(AspOptions::MAX_EQ_ITERS + 9)
+        .depth_first()
+        .backpropagate()
+        .no_scc()
+        .disable_gamma()
+        .ext(ExtendedRuleMode::TransformNhcf)
+        .sort(AtomSorting::ArityNatural);
+
+    assert_eq!(options.iters, AspOptions::MAX_EQ_ITERS);
+    assert!(options.df_order);
+    assert!(options.backprop);
+    assert!(options.no_scc);
+    assert!(options.no_gamma);
+    assert_eq!(options.er_mode, ExtendedRuleMode::TransformNhcf);
+    assert_eq!(options.sort_atom, AtomSorting::ArityNatural);
+
+    options.no_eq();
+    assert_eq!(options.iters, 0);
+}
 
 #[test]
 fn body_stats_num_keys_matches_upstream_body_type_range() {

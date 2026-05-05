@@ -9,6 +9,107 @@ const BODY_STAT_KEY_COUNT: usize = BodyType::Count as usize + 1;
 const RULE_STAT_KEY_COUNT: usize = RuleStatsKey::KeyNum as usize;
 
 #[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ExtendedRuleMode {
+    #[default]
+    Native = 0,
+    Transform = 1,
+    TransformChoice = 2,
+    TransformCard = 3,
+    TransformWeight = 4,
+    TransformScc = 5,
+    TransformNhcf = 6,
+    TransformInteg = 7,
+    TransformDynamic = 8,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AtomSorting {
+    #[default]
+    Auto = 0,
+    No = 1,
+    Number = 2,
+    Name = 3,
+    Natural = 4,
+    Arity = 5,
+    ArityNatural = 6,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AspOptions {
+    pub er_mode: ExtendedRuleMode,
+    pub iters: u32,
+    pub sort_atom: AtomSorting,
+    pub no_scc: bool,
+    pub supp_mod: bool,
+    pub df_order: bool,
+    pub backprop: bool,
+    pub old_map: bool,
+    pub no_gamma: bool,
+}
+
+impl Default for AspOptions {
+    fn default() -> Self {
+        Self {
+            er_mode: ExtendedRuleMode::Native,
+            iters: 5,
+            sort_atom: AtomSorting::Auto,
+            no_scc: false,
+            supp_mod: false,
+            df_order: false,
+            backprop: false,
+            old_map: false,
+            no_gamma: false,
+        }
+    }
+}
+
+impl AspOptions {
+    pub const MAX_EQ_ITERS: u32 = (1u32 << 23) - 1;
+
+    pub fn iterations(&mut self, iterations: u32) -> &mut Self {
+        self.iters = iterations.min(Self::MAX_EQ_ITERS);
+        self
+    }
+
+    pub fn depth_first(&mut self) -> &mut Self {
+        self.df_order = true;
+        self
+    }
+
+    pub fn backpropagate(&mut self) -> &mut Self {
+        self.backprop = true;
+        self
+    }
+
+    pub fn no_scc(&mut self) -> &mut Self {
+        self.no_scc = true;
+        self
+    }
+
+    pub fn no_eq(&mut self) -> &mut Self {
+        self.iters = 0;
+        self
+    }
+
+    pub fn disable_gamma(&mut self) -> &mut Self {
+        self.no_gamma = true;
+        self
+    }
+
+    pub fn ext(&mut self, mode: ExtendedRuleMode) -> &mut Self {
+        self.er_mode = mode;
+        self
+    }
+
+    pub fn sort(&mut self, sorting: AtomSorting) -> &mut Self {
+        self.sort_atom = sorting;
+        self
+    }
+}
+
+#[repr(u32)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuleStatsKey {
     Normal = HeadType::Disjunctive as u32,

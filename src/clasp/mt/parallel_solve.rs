@@ -2,6 +2,7 @@
 //! `original_clasp/src/parallel_solve.cpp`.
 
 use crate::clasp::mt::thread::Thread;
+use crate::clasp::solve_algorithms::SolveLimits;
 use crate::clasp::solver_strategies::ScheduleStrategy;
 use crate::clasp::solver_types::SolverSet;
 use crate::potassco::bits::{bit_floor, bit_max, toggle_bit};
@@ -72,6 +73,41 @@ impl ParallelDistributionOptions {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ParallelIntegrationFilter {
+    No,
+    GuidingPath,
+    Sat,
+    Heuristic,
+}
+
+impl Default for ParallelIntegrationFilter {
+    fn default() -> Self {
+        Self::GuidingPath
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParallelIntegrationOptions {
+    pub grace: u32,
+    pub filter: ParallelIntegrationFilter,
+    pub topology: ParallelIntegrationTopology,
+}
+
+impl ParallelIntegrationOptions {
+    pub const GRACE_MAX: u32 = (1u32 << 28) - 1;
+}
+
+impl Default for ParallelIntegrationOptions {
+    fn default() -> Self {
+        Self {
+            grace: 1024,
+            filter: ParallelIntegrationFilter::GuidingPath,
+            topology: ParallelIntegrationTopology::All,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParallelGlobalRestarts {
     pub max_restarts: u32,
@@ -95,7 +131,26 @@ impl ParallelGlobalRestarts {
 }
 
 pub struct ParallelSolveOptions {
+    pub limit: SolveLimits,
+    pub integrate: ParallelIntegrationOptions,
+    pub distribute: ParallelDistributionOptions,
+    pub restarts: ParallelGlobalRestarts,
     pub algorithm: ParallelAlgorithmOptions,
+}
+
+impl Default for ParallelSolveOptions {
+    fn default() -> Self {
+        Self {
+            limit: SolveLimits::default(),
+            integrate: ParallelIntegrationOptions::default(),
+            distribute: ParallelDistributionOptions::default(),
+            restarts: ParallelGlobalRestarts::default(),
+            algorithm: ParallelAlgorithmOptions {
+                threads: 1,
+                mode: ParallelSearchMode::Compete,
+            },
+        }
+    }
 }
 
 impl ParallelSolveOptions {
