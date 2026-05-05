@@ -8,12 +8,14 @@
 //! unported concrete solver, shared context, minimize constraint, and clause
 //! runtime.
 
+use core::ptr::NonNull;
+
 use crate::clasp::cli::clasp_cli_options::ProjectMode;
 use crate::clasp::literal::{
-    Literal, SumVec, SumView, ValT, ValueView, Var_t, pos_lit, true_value, value_false, value_free,
-    value_true,
+    LitVec, Literal, SumVec, SumView, ValT, ValueVec, ValueView, Var_t, pos_lit, true_value,
+    value_false, value_free, value_true,
 };
-use crate::clasp::minimize_constraint::MinimizeMode;
+use crate::clasp::minimize_constraint::{MinimizeMode, SharedMinimizeData};
 use crate::clasp::solver_strategies::LowerBound;
 use crate::potassco::bits;
 
@@ -121,6 +123,7 @@ impl<'a> OutputProjection<'a> {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Model<'a> {
     pub num: u64,
+    pub ctx: Option<NonNull<Enumerator>>,
     pub values: ValueView<'a>,
     pub costs: SumView<'a>,
     pub lower: LowerBound,
@@ -146,6 +149,7 @@ impl<'a> Model<'a> {
     pub const fn new() -> Self {
         Self {
             num: 0,
+            ctx: None,
             values: &[],
             costs: &[],
             lower: LowerBound {
@@ -243,6 +247,55 @@ impl<'a> Model<'a> {
 
     pub const fn est_mask(lit: Literal) -> u8 {
         (ModelType::EST_MASK as u8) << lit.sign() as u8
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SharedQueue {
+    _private: (),
+}
+
+#[derive(Debug, Default)]
+pub struct Enumerator {
+    mini_: Option<NonNull<SharedMinimizeData>>,
+    queue_: Option<Box<SharedQueue>>,
+    values_: ValueVec,
+    costs_: SumVec,
+    sym_: LitVec,
+    model_: Model<'static>,
+}
+
+impl Enumerator {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn minimizer(&self) -> Option<NonNull<SharedMinimizeData>> {
+        self.mini_
+    }
+
+    pub fn has_queue(&self) -> bool {
+        self.queue_.is_some()
+    }
+
+    pub fn values_len(&self) -> usize {
+        self.values_.len()
+    }
+
+    pub fn costs_len(&self) -> usize {
+        self.costs_.len()
+    }
+
+    pub fn sym_len(&self) -> usize {
+        self.sym_.len()
+    }
+
+    pub fn enumerated(&self) -> u64 {
+        self.model_.num
+    }
+
+    pub fn last_model(&self) -> &Model<'static> {
+        &self.model_
     }
 }
 

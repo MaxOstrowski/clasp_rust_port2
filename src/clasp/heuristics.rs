@@ -9,7 +9,9 @@
 
 use crate::clasp::constraint::{ConstraintType, TypeSet};
 use crate::clasp::literal::{Literal, Var_t};
-use crate::clasp::solver_strategies::{HeuParams, Score, ScoreOther};
+use crate::clasp::solver_strategies::{DomMod, HeuParams, Score, ScoreOther};
+use crate::clasp::util::indexed_priority_queue::IndexedPriorityQueue;
+use crate::clasp::util::misc_types::Rng;
 
 pub const BERK_NUM_CANDIDATES: usize = 5;
 pub const BERK_MAX_MOMS_VARS: u32 = 9_999;
@@ -189,6 +191,110 @@ impl BerkminConfig {
     }
 }
 
+pub struct ClaspBerkmin {
+    order_: BerkminOrder,
+    cache_: Vec<Var_t>,
+    free_lits_: Vec<Literal>,
+    free_other_lits_: Vec<Literal>,
+    top_conflict_: u32,
+    top_other_: u32,
+    front_: Var_t,
+    cache_front_: usize,
+    cache_size_: u32,
+    num_vsids_: u32,
+    max_berkmin_: u32,
+    types_: TypeSet,
+    rng_: Rng,
+}
+
+impl Default for ClaspBerkmin {
+    fn default() -> Self {
+        Self::new(HeuParams::default())
+    }
+}
+
+impl ClaspBerkmin {
+    pub fn new(params: HeuParams) -> Self {
+        let mut heuristic = Self {
+            order_: BerkminOrder::default(),
+            cache_: Vec::new(),
+            free_lits_: Vec::new(),
+            free_other_lits_: Vec::new(),
+            top_conflict_: 0,
+            top_other_: 0,
+            front_: 0,
+            cache_front_: 0,
+            cache_size_: BERK_NUM_CANDIDATES as u32,
+            num_vsids_: 0,
+            max_berkmin_: u32::MAX,
+            types_: TypeSet::new(),
+            rng_: Rng::default(),
+        };
+        heuristic.set_config(params);
+        heuristic
+    }
+
+    pub fn set_config(&mut self, params: HeuParams) {
+        let config = BerkminConfig::new(params);
+        self.order_ = config.order;
+        self.max_berkmin_ = config.max_berkmin;
+        self.types_ = config.types;
+        self.cache_size_ = BERK_NUM_CANDIDATES as u32;
+    }
+
+    pub fn order(&self) -> &BerkminOrder {
+        &self.order_
+    }
+
+    pub fn cache_len(&self) -> usize {
+        self.cache_.len()
+    }
+
+    pub fn free_lits_len(&self) -> usize {
+        self.free_lits_.len()
+    }
+
+    pub fn free_other_lits_len(&self) -> usize {
+        self.free_other_lits_.len()
+    }
+
+    pub fn top_conflict(&self) -> u32 {
+        self.top_conflict_
+    }
+
+    pub fn top_other(&self) -> u32 {
+        self.top_other_
+    }
+
+    pub fn front(&self) -> Var_t {
+        self.front_
+    }
+
+    pub fn cache_front(&self) -> usize {
+        self.cache_front_
+    }
+
+    pub fn cache_size(&self) -> u32 {
+        self.cache_size_
+    }
+
+    pub fn num_vsids(&self) -> u32 {
+        self.num_vsids_
+    }
+
+    pub fn max_berkmin(&self) -> u32 {
+        self.max_berkmin_
+    }
+
+    pub fn types(&self) -> TypeSet {
+        self.types_
+    }
+
+    pub fn rng_seed(&self) -> u32 {
+        self.rng_.seed()
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VmtfVarInfo {
     pub prev: Var_t,
@@ -266,6 +372,92 @@ impl VmtfConfig {
         }
     }
 }
+
+pub struct ClaspVmtf {
+    score_: Vec<VmtfVarInfo>,
+    mtf_: Vec<Var_t>,
+    front_: Var_t,
+    decay_: u32,
+    n_move_: u32,
+    types_: TypeSet,
+    sc_type_: u32,
+    n_list_: u32,
+    nant_: bool,
+}
+
+impl Default for ClaspVmtf {
+    fn default() -> Self {
+        Self::new(HeuParams::default())
+    }
+}
+
+impl ClaspVmtf {
+    pub fn new(params: HeuParams) -> Self {
+        let mut heuristic = Self {
+            score_: Vec::new(),
+            mtf_: Vec::new(),
+            front_: 0,
+            decay_: 0,
+            n_move_: 8,
+            types_: TypeSet::new(),
+            sc_type_: 0,
+            n_list_: 0,
+            nant_: false,
+        };
+        heuristic.set_config(params);
+        heuristic
+    }
+
+    pub fn set_config(&mut self, params: HeuParams) {
+        let config = VmtfConfig::new(params);
+        self.n_move_ = config.n_move;
+        self.types_ = config.types;
+        self.sc_type_ = config.score_type;
+        self.nant_ = config.nant;
+    }
+
+    pub fn score_slots(&self) -> usize {
+        self.score_.len()
+    }
+
+    pub fn mtf_len(&self) -> usize {
+        self.mtf_.len()
+    }
+
+    pub fn front(&self) -> Var_t {
+        self.front_
+    }
+
+    pub fn decay(&self) -> u32 {
+        self.decay_
+    }
+
+    pub fn n_move(&self) -> u32 {
+        self.n_move_
+    }
+
+    pub fn types(&self) -> TypeSet {
+        self.types_
+    }
+
+    pub fn score_type(&self) -> u32 {
+        self.sc_type_
+    }
+
+    pub fn n_list(&self) -> u32 {
+        self.n_list_
+    }
+
+    pub fn nant(&self) -> bool {
+        self.nant_
+    }
+}
+
+fn vsids_shell_cmp(_: Var_t, _: Var_t) -> bool {
+    false
+}
+
+type VsidsVarOrder = IndexedPriorityQueue<Var_t, fn(Var_t, Var_t) -> bool>;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct VsidsScore {
@@ -422,6 +614,97 @@ impl VsidsConfig {
     }
 }
 
+pub struct ClaspVsidsBase<T> {
+    score_: Vec<T>,
+    occ_: Vec<i32>,
+    vars_: VsidsVarOrder,
+    dyn_: VsidsDynDecay,
+    decay_: f64,
+    inc_: f64,
+    types_: TypeSet,
+    sc_type_: u32,
+    acids_: bool,
+    nant_: bool,
+}
+
+impl<T> Default for ClaspVsidsBase<T> {
+    fn default() -> Self {
+        Self::new(HeuParams::default())
+    }
+}
+
+impl<T> ClaspVsidsBase<T> {
+    pub fn new(params: HeuParams) -> Self {
+        let mut heuristic = Self {
+            score_: Vec::new(),
+            occ_: Vec::new(),
+            vars_: IndexedPriorityQueue::new(vsids_shell_cmp),
+            dyn_: VsidsDynDecay::default(),
+            decay_: 1.0 / 0.95,
+            inc_: 1.0,
+            types_: TypeSet::new(),
+            sc_type_: Score::ScoreMin as u32,
+            acids_: false,
+            nant_: false,
+        };
+        heuristic.set_config(params);
+        heuristic
+    }
+
+    pub fn set_config(&mut self, params: HeuParams) {
+        let config = VsidsConfig::new(params);
+        self.dyn_ = config.dyn_decay;
+        self.decay_ = config.decay;
+        self.inc_ = config.inc;
+        self.types_ = config.types;
+        self.sc_type_ = config.score_type;
+        self.acids_ = config.acids;
+        self.nant_ = config.nant;
+    }
+
+    pub fn score_slots(&self) -> usize {
+        self.score_.len()
+    }
+
+    pub fn occ_slots(&self) -> usize {
+        self.occ_.len()
+    }
+
+    pub fn var_order_len(&self) -> usize {
+        self.vars_.size()
+    }
+
+    pub fn dyn_decay(&self) -> VsidsDynDecay {
+        self.dyn_
+    }
+
+    pub fn decay(&self) -> f64 {
+        self.decay_
+    }
+
+    pub fn inc(&self) -> f64 {
+        self.inc_
+    }
+
+    pub fn types(&self) -> TypeSet {
+        self.types_
+    }
+
+    pub fn score_type(&self) -> u32 {
+        self.sc_type_
+    }
+
+    pub fn acids(&self) -> bool {
+        self.acids_
+    }
+
+    pub fn nant(&self) -> bool {
+        self.nant_
+    }
+}
+
+pub type ClaspVsids = ClaspVsidsBase<VsidsScore>;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DomScore {
     pub value: f64,
@@ -468,6 +751,38 @@ impl DomScore {
             factor
         } else {
             f64::from(score.factor) * factor
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DomainAction {
+    pub var: Var_t,
+    pub mod_: DomMod,
+    pub undo: u32,
+    pub next: bool,
+    pub bias: i16,
+    pub prio: u16,
+}
+
+impl DomainAction {
+    pub const UNDO_NIL: u32 = (1u32 << 31) - 1;
+
+    pub const fn new(
+        var: Var_t,
+        mod_: DomMod,
+        undo: u32,
+        next: bool,
+        bias: i16,
+        prio: u16,
+    ) -> Self {
+        Self {
+            var,
+            mod_,
+            undo,
+            next,
+            bias,
+            prio,
         }
     }
 }
@@ -557,5 +872,82 @@ where
 {
     pub fn prefers(&self, lhs: Var_t, rhs: Var_t) -> bool {
         self.scores[lhs as usize] > self.scores[rhs as usize]
+    }
+}
+
+pub struct DomainHeuristic {
+    base: ClaspVsidsBase<DomScore>,
+    prios_: Vec<DomainDomPrio>,
+    actions_: Vec<DomainAction>,
+    frames_: Vec<DomainFrame>,
+    dom_seen_: u32,
+    def_max_: u32,
+    def_mod_: u16,
+    def_pref_: u16,
+}
+
+impl Default for DomainHeuristic {
+    fn default() -> Self {
+        Self::new(HeuParams::default())
+    }
+}
+
+impl DomainHeuristic {
+    pub fn new(params: HeuParams) -> Self {
+        Self {
+            base: ClaspVsidsBase::new(params),
+            prios_: Vec::new(),
+            actions_: Vec::new(),
+            frames_: Vec::new(),
+            dom_seen_: 0,
+            def_max_: 0,
+            def_mod_: 0,
+            def_pref_: 0,
+        }
+    }
+
+    pub fn set_default_mod(&mut self, mod_: DomMod, pref_set: u32) {
+        self.def_mod_ = mod_ as u16;
+        self.def_pref_ = pref_set as u16;
+    }
+
+    pub fn set_config(&mut self, params: HeuParams) {
+        self.base.set_config(params);
+    }
+
+    pub fn score(&self, var: Var_t) -> &DomScore {
+        &self.base.score_[var as usize]
+    }
+
+    pub fn base(&self) -> &ClaspVsidsBase<DomScore> {
+        &self.base
+    }
+
+    pub fn prio_table_len(&self) -> usize {
+        self.prios_.len()
+    }
+
+    pub fn action_len(&self) -> usize {
+        self.actions_.len()
+    }
+
+    pub fn frame_len(&self) -> usize {
+        self.frames_.len()
+    }
+
+    pub fn dom_seen(&self) -> u32 {
+        self.dom_seen_
+    }
+
+    pub fn def_max(&self) -> u32 {
+        self.def_max_
+    }
+
+    pub fn def_mod(&self) -> u16 {
+        self.def_mod_
+    }
+
+    pub fn def_pref(&self) -> u16 {
+        self.def_pref_
     }
 }

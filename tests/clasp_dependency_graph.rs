@@ -1,5 +1,10 @@
-use rust_clasp::clasp::dependency_graph::{CmpArc, ExtDepGraph, ExtDepGraphError};
+use rust_clasp::clasp::constraint::priority_reserved_ufs;
+use rust_clasp::clasp::dependency_graph::{
+    ACYCLICITY_CHECK_PRIO, AcyclicityCheck, AcyclicityStrategy, CmpArc, ExtDepGraph,
+    ExtDepGraphError, SolveTestEvent,
+};
 use rust_clasp::clasp::literal::{pos_lit, to_lit};
+use rust_clasp::clasp::shared_context::SharedContext;
 
 #[test]
 fn ext_dep_graph_finalization_orders_forward_and_inverse_arcs() {
@@ -204,4 +209,49 @@ fn ext_dep_graph_cmp_arc_matches_cpp_ordering_rules() {
     assert!(!by_tail.less_node_arc(1, &right));
     assert!(by_tail.less_arc_arc(&left, &right));
     assert!(by_head.less_arc_arc(&right, &last));
+}
+
+#[test]
+fn solve_test_event_matches_upstream_default_delta_tracking() {
+    let mut ctx = SharedContext::default();
+    let _ = ctx.add_var();
+    let _ = ctx.start_add_constraints();
+    assert!(ctx.end_init());
+
+    let solver = ctx.master_ref();
+    let event = SolveTestEvent::new(solver, 7, true);
+
+    assert_eq!(event.result, -1);
+    assert_eq!(event.hcc, 7);
+    assert!(event.partial);
+    assert_eq!(event.time, 0.0);
+    assert_eq!(event.conf_delta, solver.stats().core.conflicts);
+    assert_eq!(event.choice_delta, solver.stats().core.choices);
+    assert_eq!(event.conflicts(), 0);
+    assert_eq!(event.choices(), 0);
+}
+
+#[test]
+fn acyclicity_check_starts_with_empty_structural_state() {
+    let mut check = AcyclicityCheck::default();
+
+    assert_eq!(ACYCLICITY_CHECK_PRIO, priority_reserved_ufs + 1);
+    assert_eq!(check.priority(), ACYCLICITY_CHECK_PRIO);
+    assert_eq!(check.strategy(), AcyclicityStrategy::PropFull);
+    assert!(check.graph().is_none());
+    assert!(!check.solver_bound());
+    assert!(!check.has_reason_store());
+    assert_eq!(check.tag_counter(), 0);
+    assert_eq!(check.todo_count(), 0);
+    assert_eq!(check.tag_slots(), 0);
+    assert_eq!(check.parent_slots(), 0);
+    assert_eq!(check.node_stack_len(), 0);
+    assert_eq!(check.reason_len(), 0);
+    assert_eq!(check.generation_id(), 0);
+
+    check.set_strategy(AcyclicityStrategy::PropFwd);
+    assert_eq!(check.strategy(), AcyclicityStrategy::PropFwd);
+
+    check.set_strategy(AcyclicityStrategy::PropFullImp);
+    assert_eq!(check.strategy(), AcyclicityStrategy::PropFullImp);
 }

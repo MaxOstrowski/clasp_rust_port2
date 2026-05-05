@@ -1,6 +1,7 @@
 use rust_clasp::clasp::cli::clasp_cli_options::ProjectMode;
 use rust_clasp::clasp::enumerator::{
-    EnumMode, EnumOptions, Model, ModelType, OutputPredicate, OutputProjection, model_type,
+    EnumMode, EnumOptions, Enumerator, Model, ModelType, OutputPredicate, OutputProjection,
+    model_type,
 };
 use rust_clasp::clasp::literal::{SumVec, pos_lit, value_false, value_true};
 use rust_clasp::clasp::minimize_constraint::MinimizeMode;
@@ -151,6 +152,28 @@ fn model_helpers_report_assignment_and_consequence_flags() {
     model.def = true;
     assert!(!model.is_est(pos_lit(1)));
     assert!(model.is_def(pos_lit(1)));
+}
+
+#[test]
+fn model_constructor_starts_without_enumerator_context() {
+    let model = Model::new();
+
+    assert!(model.ctx.is_none());
+}
+
+#[test]
+fn enumerator_constructor_starts_with_empty_structural_state() {
+    let enumerator = Enumerator::new();
+
+    assert!(enumerator.minimizer().is_none());
+    assert!(!enumerator.has_queue());
+    assert_eq!(enumerator.values_len(), 0);
+    assert_eq!(enumerator.costs_len(), 0);
+    assert_eq!(enumerator.sym_len(), 0);
+    assert_eq!(enumerator.enumerated(), 0);
+    assert!(enumerator.last_model().ctx.is_none());
+    assert!(enumerator.last_model().values.is_empty());
+    assert!(enumerator.last_model().costs.is_empty());
 }
 
 #[test]

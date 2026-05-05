@@ -1,6 +1,8 @@
 use rust_clasp::clasp::constraint::priority_reserved_ufs;
+use rust_clasp::clasp::solver_strategies::FwdCheck;
 use rust_clasp::clasp::unfounded_check::{
-    AtomData, BodyData, DEFAULT_UNFOUNDED_CHECK_PRIO, ExtData, ReasonStrategy, UfsType, WatchType,
+    AtomData, BodyData, BodyPtr, DEFAULT_UNFOUNDED_CHECK_PRIO, DefaultUnfoundedCheck, ExtData,
+    ExtWatch, MinimalityCheck, ReasonStrategy, UfsType, WatchType,
 };
 
 #[test]
@@ -99,4 +101,58 @@ fn ext_data_word_and_pos_follow_upstream_packing() {
     assert_eq!(ExtData::pos(32), 0);
     assert_eq!(ExtData::word(63), 1);
     assert_eq!(ExtData::pos(63), 31);
+}
+
+#[test]
+fn default_unfounded_check_starts_with_empty_structural_state() {
+    let mut check = DefaultUnfoundedCheck::default();
+
+    assert_eq!(check.priority(), priority_reserved_ufs);
+    assert_eq!(check.reason_strategy(), ReasonStrategy::CommonReason);
+    assert!(check.graph().is_none());
+    assert!(!check.solver_bound());
+    assert!(!check.has_minimality_check());
+    assert_eq!(check.nodes(), 0);
+    assert_eq!(check.todo_count(), 0);
+    assert_eq!(check.ufs_count(), 0);
+    assert_eq!(check.source_queue_count(), 0);
+    assert_eq!(check.extended_len(), 0);
+    assert_eq!(check.watch_count(), 0);
+    assert_eq!(check.picked_ext_len(), 0);
+    assert_eq!(check.loop_atom_count(), 0);
+    assert_eq!(check.active_clause_len(), 0);
+    assert_eq!(check.reason_slots(), 0);
+    assert_eq!(check.invalid_len(), 0);
+    assert!(!check.info().tagged());
+
+    check.set_reason_strategy(ReasonStrategy::SharedReason);
+    assert_eq!(check.reason_strategy(), ReasonStrategy::SharedReason);
+}
+
+#[test]
+fn minimality_check_and_nested_structs_preserve_upstream_layout_defaults() {
+    let fwd = FwdCheck {
+        high_step: 3,
+        high_pct: 25,
+        sign_def: 1,
+        disable: 0,
+    };
+    let minimality = MinimalityCheck::new(fwd);
+    let body_ptr = BodyPtr::new(None, 17);
+    let watch = ExtWatch {
+        body_id: 12,
+        data: 9,
+    };
+
+    assert_eq!(minimality.fwd, fwd);
+    assert_eq!(minimality.high, 0);
+    assert_eq!(minimality.low, 0);
+    assert_eq!(minimality.next, 0);
+    assert_eq!(minimality.scc, 0);
+
+    assert!(body_ptr.node.is_none());
+    assert_eq!(body_ptr.id, 17);
+
+    assert_eq!(watch.body_id, 12);
+    assert_eq!(watch.data, 9);
 }

@@ -4,11 +4,21 @@
 //! upstream unfounded-set checker. The solver-coupled propagator itself remains
 //! blocked on the still-incomplete solver/shared-context/runtime integration.
 
+use core::ptr::NonNull;
+
+use crate::clasp::claspfwd::Asp::PrgDepGraph;
+use crate::clasp::constraint::ConstraintInfo;
 use crate::clasp::constraint::priority_reserved_ufs;
-use crate::clasp::literal::Weight_t;
+use crate::clasp::literal::{LitVec, VarVec, Weight_t};
+use crate::clasp::pod_vector::{PodQueue, PodVectorT};
+use crate::clasp::solver::Solver;
+use crate::clasp::solver_strategies::FwdCheck;
 use crate::potassco::bits::Bitset;
 
 pub const DEFAULT_UNFOUNDED_CHECK_PRIO: u32 = priority_reserved_ufs;
+pub type NodeId = u32;
+pub type GraphPtr = NonNull<PrgDepGraph>;
+pub type ConstGraphPtr = NonNull<PrgDepGraph>;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -156,5 +166,139 @@ impl Default for AtomData {
             ufs: false,
             valid_source: false,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BodyPtr {
+    pub node: Option<NonNull<()>>,
+    pub id: NodeId,
+}
+
+impl BodyPtr {
+    pub const fn new(node: Option<NonNull<()>>, id: NodeId) -> Self {
+        Self { node, id }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExtWatch {
+    pub body_id: NodeId,
+    pub data: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MinimalityCheck {
+    pub fwd: FwdCheck,
+    pub high: u32,
+    pub low: u32,
+    pub next: u32,
+    pub scc: u32,
+}
+
+impl MinimalityCheck {
+    pub const fn new(fwd: FwdCheck) -> Self {
+        Self {
+            fwd,
+            high: 0,
+            low: 0,
+            next: 0,
+            scc: 0,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct DefaultUnfoundedCheck {
+    solver_: Option<NonNull<Solver>>,
+    graph_: Option<GraphPtr>,
+    mini_: Option<Box<MinimalityCheck>>,
+    atoms_: PodVectorT<AtomData>,
+    bodies_: PodVectorT<BodyData>,
+    todo_: PodQueue<NodeId>,
+    ufs_: PodQueue<NodeId>,
+    source_q_: PodQueue<NodeId>,
+    invalid_: VarVec,
+    extended_: Vec<Option<Box<ExtData>>>,
+    watches_: PodVectorT<ExtWatch>,
+    picked_ext_: VarVec,
+    loop_atoms_: LitVec,
+    active_clause_: LitVec,
+    reasons_: Option<Vec<LitVec>>,
+    info_: ConstraintInfo,
+    strategy_: ReasonStrategy,
+}
+
+impl DefaultUnfoundedCheck {
+    pub fn priority(&self) -> u32 {
+        DEFAULT_UNFOUNDED_CHECK_PRIO
+    }
+
+    pub fn reason_strategy(&self) -> ReasonStrategy {
+        self.strategy_
+    }
+
+    pub fn set_reason_strategy(&mut self, strategy: ReasonStrategy) {
+        self.strategy_ = strategy;
+    }
+
+    pub fn graph(&self) -> Option<ConstGraphPtr> {
+        self.graph_
+    }
+
+    pub fn nodes(&self) -> u32 {
+        self.atoms_.len() as u32 + self.bodies_.len() as u32
+    }
+
+    pub fn solver_bound(&self) -> bool {
+        self.solver_.is_some()
+    }
+
+    pub fn has_minimality_check(&self) -> bool {
+        self.mini_.is_some()
+    }
+
+    pub fn extended_len(&self) -> usize {
+        self.extended_.len()
+    }
+
+    pub fn active_clause_len(&self) -> usize {
+        self.active_clause_.len()
+    }
+
+    pub fn reason_slots(&self) -> usize {
+        self.reasons_.as_ref().map_or(0, Vec::len)
+    }
+
+    pub fn invalid_len(&self) -> usize {
+        self.invalid_.len()
+    }
+
+    pub fn watch_count(&self) -> usize {
+        self.watches_.len()
+    }
+
+    pub fn picked_ext_len(&self) -> usize {
+        self.picked_ext_.len()
+    }
+
+    pub fn loop_atom_count(&self) -> usize {
+        self.loop_atoms_.len()
+    }
+
+    pub fn todo_count(&self) -> u32 {
+        self.todo_.size()
+    }
+
+    pub fn ufs_count(&self) -> u32 {
+        self.ufs_.size()
+    }
+
+    pub fn source_queue_count(&self) -> u32 {
+        self.source_q_.size()
+    }
+
+    pub fn info(&self) -> ConstraintInfo {
+        self.info_
     }
 }

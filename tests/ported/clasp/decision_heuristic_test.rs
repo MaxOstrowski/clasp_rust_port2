@@ -2,9 +2,10 @@
 
 use rust_clasp::clasp::constraint::ConstraintType;
 use rust_clasp::clasp::heuristics::{
-    BERK_MAX_DECAY, BerkminConfig, BerkminHScore, BerkminOrder, BerkminOrderCompare, DomScore,
-    DomainDomPrio, DomainFrame, VmtfConfig, VmtfVarInfo, VsidsCmpScore, VsidsConfig, VsidsDynDecay,
-    VsidsScore, add_other, init_decay, moms_score_from_counts, normalize_activity_scores,
+    BERK_MAX_DECAY, BerkminConfig, BerkminHScore, BerkminOrder, BerkminOrderCompare, ClaspBerkmin,
+    ClaspVmtf, ClaspVsids, DomScore, DomainAction, DomainDomPrio, DomainFrame, DomainHeuristic,
+    VmtfConfig, VmtfVarInfo, VsidsCmpScore, VsidsConfig, VsidsDynDecay, VsidsScore, add_other,
+    init_decay, moms_score_from_counts, normalize_activity_scores,
 };
 use rust_clasp::clasp::literal::{neg_lit, pos_lit};
 use rust_clasp::clasp::solver_strategies::{DomMod, HeuParams, Score, ScoreOther, VsidsDecay};
@@ -316,6 +317,90 @@ fn dom_score_orders_by_level_before_value_and_applies_factor() {
     assert!(high > low);
     assert!(high.is_dom());
     assert_eq!(DomScore::apply_factor(&[low, high], 1, 2.0), -6.0);
+}
+
+#[test]
+fn berkmin_shell_starts_with_upstream_member_defaults() {
+    let heuristic = ClaspBerkmin::default();
+
+    assert!(heuristic.order().score.is_empty());
+    assert_eq!(heuristic.cache_len(), 0);
+    assert_eq!(heuristic.free_lits_len(), 0);
+    assert_eq!(heuristic.free_other_lits_len(), 0);
+    assert_eq!(heuristic.top_conflict(), 0);
+    assert_eq!(heuristic.top_other(), 0);
+    assert_eq!(heuristic.front(), 0);
+    assert_eq!(heuristic.cache_front(), 0);
+    assert_eq!(heuristic.cache_size(), 5);
+    assert_eq!(heuristic.num_vsids(), 0);
+    assert_eq!(heuristic.max_berkmin(), u32::MAX);
+    assert!(heuristic.types().contains(ConstraintType::Static));
+    assert!(heuristic.types().contains(ConstraintType::Loop));
+    assert_eq!(heuristic.rng_seed(), 1);
+}
+
+#[test]
+fn vmtf_shell_starts_with_upstream_member_defaults() {
+    let heuristic = ClaspVmtf::default();
+
+    assert_eq!(heuristic.score_slots(), 0);
+    assert_eq!(heuristic.mtf_len(), 0);
+    assert_eq!(heuristic.front(), 0);
+    assert_eq!(heuristic.decay(), 0);
+    assert_eq!(heuristic.n_move(), 8);
+    assert_eq!(heuristic.score_type(), Score::ScoreMin as u32);
+    assert_eq!(heuristic.n_list(), 0);
+    assert!(!heuristic.nant());
+    assert!(heuristic.types().contains(ConstraintType::Conflict));
+    assert!(heuristic.types().contains(ConstraintType::Static));
+}
+
+#[test]
+fn vsids_shell_starts_with_upstream_member_defaults() {
+    let heuristic = ClaspVsids::default();
+
+    assert_eq!(heuristic.score_slots(), 0);
+    assert_eq!(heuristic.occ_slots(), 0);
+    assert_eq!(heuristic.var_order_len(), 0);
+    assert_eq!(heuristic.dyn_decay(), VsidsDynDecay::default());
+    assert!((heuristic.decay() - (1.0 / 0.95)).abs() < f64::EPSILON);
+    assert_eq!(heuristic.inc(), 1.0);
+    assert_eq!(heuristic.score_type(), Score::ScoreMin as u32);
+    assert!(!heuristic.acids());
+    assert!(!heuristic.nant());
+    assert!(heuristic.types().contains(ConstraintType::Conflict));
+    assert!(heuristic.types().contains(ConstraintType::Static));
+}
+
+#[test]
+fn domain_heuristic_shell_tracks_base_and_default_modifiers() {
+    let mut heuristic = DomainHeuristic::default();
+
+    assert_eq!(heuristic.base().score_slots(), 0);
+    assert_eq!(heuristic.base().occ_slots(), 0);
+    assert_eq!(heuristic.prio_table_len(), 0);
+    assert_eq!(heuristic.action_len(), 0);
+    assert_eq!(heuristic.frame_len(), 0);
+    assert_eq!(heuristic.dom_seen(), 0);
+    assert_eq!(heuristic.def_max(), 0);
+    assert_eq!(heuristic.def_mod(), 0);
+    assert_eq!(heuristic.def_pref(), 0);
+
+    heuristic.set_default_mod(DomMod::ModInit, 7);
+    assert_eq!(heuristic.def_mod(), DomMod::ModInit as u16);
+    assert_eq!(heuristic.def_pref(), 7);
+}
+
+#[test]
+fn domain_action_shell_matches_header_fields() {
+    let action = DomainAction::new(4, DomMod::ModLevel, DomainAction::UNDO_NIL, true, -3, 9);
+
+    assert_eq!(action.var, 4);
+    assert_eq!(action.mod_, DomMod::ModLevel);
+    assert_eq!(action.undo, DomainAction::UNDO_NIL);
+    assert!(action.next);
+    assert_eq!(action.bias, -3);
+    assert_eq!(action.prio, 9);
 }
 
 #[test]

@@ -7,13 +7,153 @@
 //! context and solver infrastructure.
 
 use core::cmp::Ordering;
+use core::ptr::NonNull;
 
-use crate::clasp::literal::{Literal, Var_t};
+use crate::clasp::literal::{LitVec, Literal, Var_t, VarVec};
+use crate::clasp::pod_vector::{PodQueue, PodVectorT};
+use crate::clasp::solver::Solver;
+use crate::clasp::solver_strategies::SolveEvent;
+use crate::clasp::util::misc_types::Verbosity;
 
 const INVALID_OFFSET: u32 = u32::MAX;
 const FROZEN_SENTINEL_NODE: u32 = u32::MAX;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug)]
+pub struct SolveTestEvent {
+    pub base: SolveEvent,
+    pub result: i32,
+    pub hcc: u32,
+    pub partial: bool,
+    pub conf_delta: u64,
+    pub choice_delta: u64,
+    pub time: f64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SolveTestEventTag;
+
+impl SolveTestEvent {
+    pub fn new(solver: &Solver, hcc: u32, partial: bool) -> Self {
+        Self {
+            base: SolveEvent::new::<SolveTestEventTag>(solver, Verbosity::VerbosityMax),
+            result: -1,
+            hcc,
+            partial,
+            conf_delta: solver.stats().core.conflicts,
+            choice_delta: solver.stats().core.choices,
+            time: 0.0,
+        }
+    }
+
+    pub fn conflicts(&self) -> u64 {
+        // SAFETY: SolveEvent stores the solver pointer captured during event
+        // creation. The event shell is only intended to be used while that
+        // solver is still alive, matching the upstream event lifetime.
+        let current = unsafe { (*self.base.solver).stats().core.conflicts };
+        current.saturating_sub(self.conf_delta)
+    }
+
+    pub fn choices(&self) -> u64 {
+        // SAFETY: See `conflicts()`.
+        let current = unsafe { (*self.base.solver).stats().core.choices };
+        current.saturating_sub(self.choice_delta)
+    }
+}
+
+pub const ACYCLICITY_CHECK_PRIO: u32 = crate::clasp::constraint::priority_reserved_ufs + 1;
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AcyclicityStrategy {
+    #[default]
+    PropFull = 0,
+    PropFullImp = 1,
+    PropFwd = 2,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct AcyclicityParent {
+    lit: Literal,
+    node: u32,
+}
+
+#[derive(Debug)]
+struct ReasonStore;
+
+#[derive(Debug, Default)]
+pub struct AcyclicityCheck {
+    graph_: Option<NonNull<ExtDepGraph>>,
+    solver_: Option<NonNull<Solver>>,
+    nogoods_: Option<Box<ReasonStore>>,
+    strat_: u32,
+    tag_cnt_: u32,
+    todo_: PodQueue<Arc>,
+    tags_: PodVectorT<u32>,
+    parent_: PodVectorT<AcyclicityParent>,
+    n_stack_: VarVec,
+    reason_: LitVec,
+    gen_id_: u64,
+}
+
+impl AcyclicityCheck {
+    pub fn priority(&self) -> u32 {
+        ACYCLICITY_CHECK_PRIO
+    }
+
+    pub fn strategy(&self) -> AcyclicityStrategy {
+        match self.strat_ & 3u32 {
+            1 => AcyclicityStrategy::PropFullImp,
+            2 => AcyclicityStrategy::PropFwd,
+            _ => AcyclicityStrategy::PropFull,
+        }
+    }
+
+    pub fn set_strategy(&mut self, strategy: AcyclicityStrategy) {
+        self.strat_ = (self.strat_ & !3u32) | strategy as u32;
+    }
+
+    pub fn graph(&self) -> Option<NonNull<ExtDepGraph>> {
+        self.graph_
+    }
+
+    pub fn solver_bound(&self) -> bool {
+        self.solver_.is_some()
+    }
+
+    pub fn has_reason_store(&self) -> bool {
+        self.nogoods_.is_some()
+    }
+
+    pub fn tag_counter(&self) -> u32 {
+        self.tag_cnt_
+    }
+
+    pub fn todo_count(&self) -> u32 {
+        self.todo_.size()
+    }
+
+    pub fn tag_slots(&self) -> usize {
+        self.tags_.len()
+    }
+
+    pub fn parent_slots(&self) -> usize {
+        self.parent_.len()
+    }
+
+    pub fn node_stack_len(&self) -> usize {
+        self.n_stack_.len()
+    }
+
+    pub fn reason_len(&self) -> usize {
+        self.reason_.len()
+    }
+
+    pub fn generation_id(&self) -> u64 {
+        self.gen_id_
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct Arc {
     lit: Literal,
     node: [u32; 2],
