@@ -637,6 +637,190 @@ impl PrgHead {
     }
 }
 
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrgAtomDependency {
+    Pos = 0,
+    Neg = 1,
+    All = 2,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrgAtom {
+    head: PrgHead,
+    deps: PodVectorT<Literal>,
+}
+
+impl PrgAtom {
+    const FREEZE_NO: u8 = 0;
+    const FREEZE_FREE: u8 = 1;
+    const FREEZE_FALSE: u8 = 3;
+
+    pub fn new(id: u32) -> Self {
+        Self {
+            head: PrgHead::new(id, NodeType::Atom, PrgNode::SCC_NOT_SET),
+            deps: PodVectorT::new(),
+        }
+    }
+
+    pub const fn node_type() -> NodeType {
+        NodeType::Atom
+    }
+
+    pub const fn head(&self) -> &PrgHead {
+        &self.head
+    }
+
+    pub fn head_mut(&mut self) -> &mut PrgHead {
+        &mut self.head
+    }
+
+    pub const fn node(&self) -> &PrgNode {
+        self.head.node()
+    }
+
+    pub fn node_mut(&mut self) -> &mut PrgNode {
+        self.head.node_mut()
+    }
+
+    pub const fn scc(&self) -> u32 {
+        self.head.data
+    }
+
+    pub const fn has_scc(&self) -> bool {
+        self.scc() != PrgNode::SCC_NOT_SET
+    }
+
+    pub const fn in_scc(&self) -> bool {
+        self.scc() < PrgNode::SCC_TRIV
+    }
+
+    pub fn eq_goal(&self, sign: bool) -> Literal {
+        if !PrgNode::eq(*self.node()) || sign || self.head.data == PrgNode::SCC_NOT_SET {
+            Literal::new(self.node().id(), sign)
+        } else {
+            Literal::new(self.head.data, true)
+        }
+    }
+
+    pub fn in_disj(&self) -> bool {
+        self.head.supports().iter().copied().any(PrgEdge::is_disj)
+    }
+
+    pub const fn frozen(&self) -> bool {
+        self.head.freeze != Self::FREEZE_NO
+    }
+
+    pub const fn freeze_value(&self) -> Val_t {
+        self.head.freeze - ((self.head.freeze != Self::FREEZE_NO) as u8)
+    }
+
+    pub fn assumption(&self) -> Literal {
+        if self.head.freeze > Self::FREEZE_FREE {
+            self.node().literal() ^ (self.head.freeze == Self::FREEZE_FALSE)
+        } else {
+            lit_true
+        }
+    }
+
+    pub const fn is_fact(&self) -> bool {
+        self.head.fact
+    }
+
+    pub const fn fixed(&self) -> Val_t {
+        if self.node().value() == value_false {
+            value_false
+        } else {
+            value_free + (self.head.fact as Val_t)
+        }
+    }
+
+    pub const fn dom_var(&self) -> Var_t {
+        self.head.dom
+    }
+
+    pub fn deps(&self) -> LitView<'_> {
+        self.deps.as_slice()
+    }
+
+    pub fn has_dep(&self, dependency: PrgAtomDependency) -> bool {
+        self.deps.as_slice().iter().copied().any(|lit| {
+            dependency == PrgAtomDependency::All || (lit.sign() as u32) == dependency as u32
+        })
+    }
+
+    pub fn add_dep(&mut self, body_id: Id_t, pos: bool) {
+        self.deps.push_back(Literal::new(body_id, !pos));
+    }
+
+    pub fn remove_dep(&mut self, body_id: Id_t, pos: bool) {
+        let target = Literal::new(body_id, !pos);
+        if let Some(index) = self.deps.as_slice().iter().position(|lit| *lit == target) {
+            self.deps.erase(index);
+        }
+    }
+
+    pub fn clear_deps(&mut self, dependency: PrgAtomDependency) {
+        match dependency {
+            PrgAtomDependency::All => self.deps.clear(),
+            _ => {
+                let sign = matches!(dependency, PrgAtomDependency::Neg);
+                let len = self.deps.len();
+                let mut write = 0usize;
+                {
+                    let deps = self.deps.as_mut_slice();
+                    for read in 0..len {
+                        if deps[read].sign() != sign {
+                            if write != read {
+                                deps[write] = deps[read];
+                            }
+                            write += 1;
+                        }
+                    }
+                }
+                let _ = self.deps.erase_range(write..len);
+            }
+        }
+    }
+
+    pub fn assign_value(&mut self, value: Val_t) -> bool {
+        let no_weak = self.scc() == PrgNode::SCC_TRIV && !self.frozen();
+        self.node_mut().assign_value_impl(value, no_weak)
+    }
+
+    pub fn set_eq_goal(&mut self, goal: Literal) {
+        if PrgNode::eq(*self.node()) {
+            assert!(!goal.sign() || goal.var() < PrgNode::SCC_NOT_SET);
+            self.head.data = if goal.sign() {
+                goal.var()
+            } else {
+                PrgNode::SCC_NOT_SET
+            };
+        }
+    }
+
+    pub fn set_scc(&mut self, scc: u32) {
+        self.head.data = scc;
+    }
+
+    pub fn mark_frozen(&mut self, value: Val_t) {
+        self.head.freeze = value + Self::FREEZE_FREE;
+    }
+
+    pub fn clear_frozen(&mut self) {
+        self.head.freeze = Self::FREEZE_NO;
+        self.head.mark_dirty();
+    }
+
+    pub fn set_fact(&mut self, fact: bool) {
+        self.head.fact = fact;
+    }
+
+    pub fn set_dom_var(&mut self, var: Var_t) {
+        self.head.dom = var;
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NonHcfSet {
     values: PodVectorT<u32>,

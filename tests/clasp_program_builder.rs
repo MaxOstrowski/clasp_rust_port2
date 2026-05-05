@@ -1,5 +1,7 @@
+use std::cell::Cell;
 use std::io::Read;
 use std::ptr::NonNull;
+use std::rc::Rc;
 
 use rust_clasp::clasp::claspfwd::{ProblemType, SharedContext};
 use rust_clasp::clasp::parser::{ParserOptions, ProgramParserApi};
@@ -34,14 +36,14 @@ impl ProgramParserApi for DummyParser {
 
 struct DummyBuilder {
     state: ProgramBuilderState,
-    parser: DummyParser,
+    parser_creations: Rc<Cell<usize>>,
 }
 
 impl Default for DummyBuilder {
     fn default() -> Self {
         Self {
             state: ProgramBuilderState::default(),
-            parser: DummyParser,
+            parser_creations: Rc::new(Cell::new(0)),
         }
     }
 }
@@ -79,12 +81,14 @@ impl ProgramBuilder for DummyBuilder {
         unreachable!("not needed for do_get_weak_bounds test")
     }
 
-    fn do_type(&self) -> ProblemType {
-        ProblemType::Asp
+    fn do_create_parser(&mut self) -> Box<dyn ProgramParserApi> {
+        self.parser_creations
+            .set(self.parser_creations.get().saturating_add(1));
+        Box::new(DummyParser)
     }
 
-    fn parser(&mut self) -> &mut (dyn ProgramParserApi + '_) {
-        &mut self.parser
+    fn do_type(&self) -> ProblemType {
+        ProblemType::Asp
     }
 }
 
@@ -140,4 +144,30 @@ fn program_builder_set_frozen_updates_stored_flag() {
     assert!(!builder.frozen());
     builder.set_frozen(true);
     assert!(builder.frozen());
+}
+
+#[test]
+fn program_builder_parser_lazily_creates_and_caches_parser() {
+    let mut builder = DummyBuilder::default();
+
+    assert!(!builder.state().has_parser());
+    assert_eq!(builder.parser_creations.get(), 0);
+
+    let _ = builder.parser();
+    assert!(builder.state().has_parser());
+    assert_eq!(builder.parser_creations.get(), 1);
+
+    let _ = builder.parser();
+    assert_eq!(builder.parser_creations.get(), 1);
+}
+
+#[test]
+fn program_builder_parser_reuses_preseeded_state_parser() {
+    let mut builder = DummyBuilder::default();
+    builder.state.set_parser(Box::new(DummyParser));
+
+    let _ = builder.parser();
+
+    assert!(builder.state().has_parser());
+    assert_eq!(builder.parser_creations.get(), 0);
 }

@@ -93,7 +93,7 @@ clasp/constraint.h: ported
     tests/clasp_constraint.rs
     tests/ported/clasp/constraint_test.rs
     tests/ported/clasp/literal_test.rs
-clasp/program_builder.h: partially ported, ProgramBuilder boundary trait plus LitVec/SumVec aliases, owned base state for ctx_/parser_/frozen_, and the solver-independent ProgramBuilder::ProgramBuilder/ctx/frozen/ok/setCtx/setFrozen/doGetWeakBounds/doType/type methods are ported; start/update/end flow, parser creation/caching behavior, output marking, and concrete builder runtime remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h
+clasp/program_builder.h: partially ported, ProgramBuilder boundary trait plus LitVec/SumVec aliases, owned base state for ctx_/parser_/frozen_, lazy ProgramBuilder::parser caching via the abstract doCreateParser hook, and the solver-independent ProgramBuilder::ProgramBuilder/ctx/frozen/ok/setCtx/setFrozen/doGetWeakBounds/doType/type methods are ported; start/update/end flow, output marking, and concrete Sat/PB builder runtime remain blocked by clasp/shared_context.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, clasp/parser.h
     src/clasp/program_builder.rs
     tests/clasp_program_builder.rs
 libpotassco/potassco/clingo.h: ported
@@ -165,7 +165,7 @@ libpotassco/potassco/smodels.h: ported
 libpotassco/src/match_basic_types.cpp: ported
     src/potassco/match_basic_types.rs
     tests/ported/potassco/test_match_basic_types.rs
-clasp/logic_program_types.h: partially ported, with PrgNode/PrgEdge/AtomState/SmallEdgeList plus NonHcfSet and PrgHead support-storage accessors in Rust; RuleTransform, SCC checking, and LogicProgram/solver/clause/weight-constraint integrated PrgAtom/PrgBody/PrgHead/PrgDisj methods remain blocked by clasp/logic_program.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, src/logic_program_types.cpp
+clasp/logic_program_types.h: partially ported, with PrgNode/PrgEdge/AtomState/SmallEdgeList plus NonHcfSet, PrgHead support-storage accessors, and PrgAtom local owner-state/dependency accessors in Rust; RuleTransform, SCC checking, and LogicProgram/solver/clause/weight-constraint integrated PrgAtom/PrgBody/PrgHead/PrgDisj methods remain blocked by clasp/logic_program.h, clasp/solver.h, clasp/clause.h, clasp/weight_constraint.h, src/logic_program_types.cpp
     src/clasp/logic_program_types.rs
     tests/clasp_logic_program_types.rs
 libpotassco/src/rule_utils.cpp: ported

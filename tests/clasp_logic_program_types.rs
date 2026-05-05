@@ -3,8 +3,8 @@ use std::panic;
 use rust_clasp::clasp::claspfwd::Configuration;
 use rust_clasp::clasp::literal::{neg_lit, pos_lit, value_false, value_free, value_true};
 use rust_clasp::clasp::logic_program_types::{
-    AtomState, EdgeType, NodeType, NonHcfSet, PrgEdge, PrgHead, PrgHeadSimplify, PrgNode,
-    SmallEdgeList, SmallEdgeListTag, value_weak_true,
+    AtomState, EdgeType, NodeType, NonHcfSet, PrgAtom, PrgAtomDependency, PrgEdge, PrgHead,
+    PrgHeadSimplify, PrgNode, SmallEdgeList, SmallEdgeListTag, value_weak_true,
 };
 
 #[test]
@@ -223,6 +223,94 @@ fn prg_head_in_upper_requires_a_relevant_node() {
 
     head.node_mut().mark_removed();
     assert!(!head.in_upper());
+}
+
+#[test]
+fn prg_atom_tracks_local_state_freeze_and_dependency_lists() {
+    let mut atom = PrgAtom::new(12);
+
+    assert_eq!(PrgAtom::node_type(), NodeType::Atom);
+    assert_eq!(atom.scc(), PrgNode::SCC_NOT_SET);
+    assert!(!atom.has_scc());
+    assert!(!atom.in_scc());
+    assert!(!atom.frozen());
+    assert_eq!(atom.assumption(), rust_clasp::clasp::literal::lit_true);
+    assert_eq!(atom.fixed(), value_free);
+
+    atom.node_mut().set_literal(pos_lit(5));
+    atom.mark_frozen(value_true);
+    assert!(atom.frozen());
+    assert_eq!(atom.freeze_value(), value_true);
+    assert_eq!(atom.assumption(), pos_lit(5));
+
+    atom.mark_frozen(value_false);
+    assert_eq!(atom.freeze_value(), value_false);
+    assert_eq!(atom.assumption(), neg_lit(5));
+
+    atom.clear_frozen();
+    assert!(!atom.frozen());
+    assert!(atom.head().dirty());
+
+    atom.set_fact(true);
+    atom.set_dom_var(21);
+    assert!(atom.is_fact());
+    assert_eq!(atom.dom_var(), 21);
+    assert_eq!(atom.fixed(), value_true);
+
+    atom.add_dep(7, true);
+    atom.add_dep(8, false);
+    atom.add_dep(9, true);
+    assert_eq!(atom.deps(), &[pos_lit(7), neg_lit(8), pos_lit(9)]);
+    assert!(atom.has_dep(PrgAtomDependency::Pos));
+    assert!(atom.has_dep(PrgAtomDependency::Neg));
+    assert!(atom.has_dep(PrgAtomDependency::All));
+
+    atom.remove_dep(7, true);
+    assert_eq!(atom.deps(), &[neg_lit(8), pos_lit(9)]);
+
+    atom.clear_deps(PrgAtomDependency::Neg);
+    assert_eq!(atom.deps(), &[pos_lit(9)]);
+    assert!(atom.has_dep(PrgAtomDependency::Pos));
+    assert!(!atom.has_dep(PrgAtomDependency::Neg));
+
+    atom.clear_deps(PrgAtomDependency::All);
+    assert!(atom.deps().is_empty());
+}
+
+#[test]
+fn prg_atom_matches_upstream_eq_goal_scc_and_disj_support_rules() {
+    let mut atom = PrgAtom::new(14);
+
+    atom.head_mut().add_support(
+        PrgEdge::new(4, NodeType::Body, EdgeType::Normal),
+        PrgHeadSimplify::ForceSimplify,
+    );
+    assert!(!atom.in_disj());
+
+    atom.head_mut().add_support(
+        PrgEdge::new(6, NodeType::Disj, EdgeType::Choice),
+        PrgHeadSimplify::ForceSimplify,
+    );
+    assert!(atom.in_disj());
+
+    atom.node_mut().set_eq(23);
+    assert_eq!(atom.eq_goal(false), pos_lit(23));
+    assert_eq!(atom.eq_goal(true), neg_lit(23));
+
+    atom.set_eq_goal(neg_lit(17));
+    assert_eq!(atom.eq_goal(false), neg_lit(17));
+
+    atom.set_eq_goal(pos_lit(9));
+    assert_eq!(atom.eq_goal(false), pos_lit(23));
+
+    atom.set_scc(PrgNode::SCC_TRIV);
+    assert!(atom.has_scc());
+    assert!(!atom.in_scc());
+    assert!(atom.assign_value(value_weak_true));
+    assert_eq!(atom.node().value(), value_true);
+
+    atom.set_scc(7);
+    assert!(atom.in_scc());
 }
 
 #[test]

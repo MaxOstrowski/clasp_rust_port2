@@ -103,13 +103,23 @@ pub trait ProgramBuilder {
     fn get_assumptions(&self, out: &mut LitVec);
     fn get_weak_bounds(&self, out: &mut SumVec);
 
+    fn do_create_parser(&mut self) -> Box<dyn ProgramParserApi>;
+
     fn do_type(&self) -> ProblemType;
 
     fn problem_type(&self) -> ProblemType {
         self.do_type()
     }
 
-    fn parser(&mut self) -> &mut (dyn ProgramParserApi + '_);
+    fn parser(&mut self) -> &mut (dyn ProgramParserApi + '_) {
+        if !self.state().has_parser() {
+            let parser = self.do_create_parser();
+            self.state_mut().set_parser(parser);
+        }
+        self.state_mut()
+            .parser_mut()
+            .expect("ProgramBuilder::parser() requires do_create_parser() to return a parser")
+    }
 
     fn r#type(&self) -> ProblemType {
         self.do_type()
