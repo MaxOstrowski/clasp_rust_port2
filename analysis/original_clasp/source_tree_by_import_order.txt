@@ -403,9 +403,10 @@ tests/satelite_test.cpp: partially ported, simple subsumption/strengthening sema
 clasp/cli/clasp_options.h: partially ported, config-key defaults/config-iterator helpers, complex option string conversions, and root/solver key navigation introspection are ported; missing are stateful ClaspCliConfig value storage/readback, mutation, validation, tester/runtime semantics, and full ProgramOptions integration, and full parity remains blocked by missing ClaspConfig/ClaspFacade runtime
     src/clasp/cli/clasp_options.rs
     tests/ported/clasp/clasp_options_test.rs
-clasp/cli/clasp_output.h: partially ported, OutputSink adapters and ColorStyleSpec parsing are ported; Output base API, JsonOutput, TextOutput, event/model/summary formatting, and statistics/reporting traversal remain missing and are blocked by missing facade/runtime event and statistics object model support
+clasp/cli/clasp_output.h: partially ported, OutputSink adapters, ColorStyleSpec parsing, and the CatAtom/CatTemplate/CatAssign/CatCost/CatStep storage shells used by ClaspAppOptions are ported; Output base API, JsonOutput, TextOutput runtime formatting/parsing, event/model/summary formatting, and statistics/reporting traversal remain missing and are blocked by missing facade/runtime event and statistics object model support
     src/clasp/cli/clasp_output.rs
     tests/ported/clasp/clasp_output_test.rs
+    tests/clasp_cli_clasp_output.rs
 tests/facade_test.cpp: partially ported, ClingoAssignment basic/problem-var/decision-helper/precondition coverage plus SolveResult/SolveMode facade-type semantics are ported; Facade runtime, statistics, propagator, async, and MT coverage remain blocked by clasp/clasp_facade.h, src/clasp_facade.cpp, clasp/clingo.h, src/clingo.cpp, clasp/solver.h, clasp/shared_context.h, clasp/dependency_graph.h, clasp/heuristics.h, clasp/lookahead.h, and clasp/model_enumerators.h
     tests/ported/clasp/facade_test.rs
     tests/ported/clasp/facade_types_test.rs
@@ -425,8 +426,9 @@ tests/unfounded_check_test.cpp: blocked by clasp/unfounded_check.h, src/unfounde
 src/clasp_options.cpp: partially ported, conversion/parsing serializers and key navigation metadata are ported; missing are option application, mutable value storage, defaults/finalization, ParseContext-driven program-options integration, and solver/search validation integration, with end-to-end behavior blocked by missing ClaspApp/ClaspFacade runtime wiring
     src/clasp/cli/clasp_options.rs
     tests/ported/clasp/clasp_options_test.rs
-clasp/cli/clasp_app.h: partially ported, only PreFormat mapping is present; ExitCode/output enums, ClaspAppOptions option schema/apply/validate, ClaspAppBase lifecycle/runtime API, ClaspApp wrapper, WriteCnf, and LemmaLogger are missing and are blocked by unported Output and ClaspFacade runtime types
+clasp/cli/clasp_app.h: partially ported, PreFormat/ExitCode/output enum shells plus WriteCnf, LemmaLoggerOptions, LemmaLogger, the full ClaspAppOptions member layout, and ClaspAppBase/ClaspApp storage shells are ported; option schema/apply/validate, application lifecycle/runtime API, and real Output/ClaspFacade-driven execution remain blocked by missing Output runtime, Potassco Application/EventHandler parity, and ClaspFacade/Solver/Parser/ProgramBuilder integration
     src/clasp/cli/clasp_app.rs
+    tests/clasp_cli_clasp_app.rs
 src/clasp_output.cpp: partially ported, signal-name lookup and alarm-vs-interrupt status text plus sink/style parsing helpers are ported; Output runtime state machine, solve-event formatting, JsonOutput and TextOutput implementations, and statistics/reporting traversal remain missing and are blocked by missing facade/solver/shared-context/statistics runtime
     src/clasp/cli/clasp_output.rs
 tests/cli_test.cpp: partially ported, enum/catalog/path metadata and selected option parser helpers are ported; Cat* template parsing/formatting, full ClaspCliConfig mutation/query/init flows, argv/file/program-options integration, TextOutput/JsonOutput runtime formatting, and facade-driven CLI behavior remain missing and are blocked by missing clasp_app/clasp_output/clasp_options runtime and ClaspFacade solve integration

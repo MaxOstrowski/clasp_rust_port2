@@ -3,6 +3,7 @@
 //! This module currently covers the sink abstraction and color-style parsing used
 //! by the CLI output layer. The higher-level output printers remain unported.
 
+use crate::potassco::basic_types::AtomArg;
 use crate::potassco::format::{
     BasicCharBuffer, Color, Emphasis, TextStyle, TextStyleParseError, TextStyleSpec,
 };
@@ -52,6 +53,169 @@ pub fn interrupted_string(signal: i32) -> &'static str {
         "TIME LIMIT"
     } else {
         "INTERRUPTED"
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CatAtom {
+    buffer_: String,
+    atom_sep_: u32,
+    var_start_: u32,
+    var_sep_: u32,
+}
+
+impl CatAtom {
+    pub const EMPTY_POS: u32 = u32::MAX;
+
+    pub fn new() -> Self {
+        Self {
+            buffer_: String::new(),
+            atom_sep_: Self::EMPTY_POS,
+            var_start_: Self::EMPTY_POS,
+            var_sep_: Self::EMPTY_POS,
+        }
+    }
+
+    pub fn has_atom(&self) -> bool {
+        self.atom_sep_ != Self::EMPTY_POS
+    }
+
+    pub fn has_var(&self) -> bool {
+        self.var_start_ != Self::EMPTY_POS && self.var_sep_ != Self::EMPTY_POS
+    }
+
+    pub fn active(&self) -> bool {
+        self.has_atom() || self.has_var()
+    }
+
+    pub fn buffer(&self) -> &str {
+        &self.buffer_
+    }
+
+    pub fn atom_sep(&self) -> u32 {
+        self.atom_sep_
+    }
+
+    pub fn var_start(&self) -> u32 {
+        self.var_start_
+    }
+
+    pub fn var_sep(&self) -> u32 {
+        self.var_sep_
+    }
+
+    pub fn set_layout_for_test(
+        &mut self,
+        buffer: &str,
+        atom_sep: u32,
+        var_start: u32,
+        var_sep: u32,
+    ) {
+        self.buffer_.clear();
+        self.buffer_.push_str(buffer);
+        self.atom_sep_ = atom_sep;
+        self.var_start_ = var_start;
+        self.var_sep_ = var_sep;
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CatTemplate {
+    data_: String,
+    cap_start_: u32,
+    fmt_start_: u32,
+    arity_: u8,
+    max_arg_: u8,
+}
+
+impl CatTemplate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn active(&self) -> bool {
+        !self.data_.is_empty()
+    }
+
+    pub fn data(&self) -> &str {
+        &self.data_
+    }
+
+    pub fn cap_start(&self) -> u32 {
+        self.cap_start_
+    }
+
+    pub fn fmt_start(&self) -> u32 {
+        self.fmt_start_
+    }
+
+    pub fn arity(&self) -> u8 {
+        self.arity_
+    }
+
+    pub fn max_arg(&self) -> u8 {
+        self.max_arg_
+    }
+
+    pub fn set_layout_for_test(
+        &mut self,
+        data: &str,
+        cap_start: u32,
+        fmt_start: u32,
+        arity: u8,
+        max_arg: u8,
+    ) {
+        self.data_.clear();
+        self.data_.push_str(data);
+        self.cap_start_ = cap_start;
+        self.fmt_start_ = fmt_start;
+        self.arity_ = arity;
+        self.max_arg_ = max_arg;
+    }
+}
+
+pub type CatAssign = CatTemplate;
+pub type CatCost = CatTemplate;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CatStep {
+    caption_: String,
+    arg_: AtomArg,
+    active_: bool,
+}
+
+impl Default for CatStep {
+    fn default() -> Self {
+        Self {
+            caption_: String::new(),
+            arg_: AtomArg::Last,
+            active_: false,
+        }
+    }
+}
+
+impl CatStep {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn active(&self) -> bool {
+        self.active_
+    }
+
+    pub fn step_arg(&self) -> AtomArg {
+        self.arg_
+    }
+
+    pub fn arg_name(&self) -> &str {
+        &self.caption_
+    }
+
+    pub fn set_layout_for_test(&mut self, caption: &str, arg: AtomArg, active: bool) {
+        self.caption_.clear();
+        self.caption_.push_str(caption);
+        self.arg_ = arg;
+        self.active_ = active;
     }
 }
 
