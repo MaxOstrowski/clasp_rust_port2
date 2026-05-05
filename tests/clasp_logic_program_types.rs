@@ -3,8 +3,8 @@ use std::panic;
 use rust_clasp::clasp::claspfwd::Configuration;
 use rust_clasp::clasp::literal::{neg_lit, pos_lit, value_false, value_free, value_true};
 use rust_clasp::clasp::logic_program_types::{
-    AtomState, EdgeType, NodeType, NonHcfSet, PrgEdge, PrgNode, SmallEdgeList, SmallEdgeListTag,
-    value_weak_true,
+    AtomState, EdgeType, NodeType, NonHcfSet, PrgEdge, PrgHead, PrgHeadSimplify, PrgNode,
+    SmallEdgeList, SmallEdgeListTag, value_weak_true,
 };
 
 #[test]
@@ -172,6 +172,57 @@ fn small_edge_list_preserves_small_and_large_storage_behaviour() {
     small_tag = unsafe { small.shrink_to(small_tag, small_ptr.wrapping_add(1)) };
     assert_eq!(small_tag, SmallEdgeListTag::S1);
     assert_eq!(small.span(small_tag), &[e1]);
+}
+
+#[test]
+fn prg_head_tracks_support_storage_and_dirty_state() {
+    let e1 = PrgEdge::new(1, NodeType::Body, EdgeType::Normal);
+    let e2 = PrgEdge::new(2, NodeType::Disj, EdgeType::Choice);
+    let mut head = PrgHead::new(7, NodeType::Atom, 19);
+
+    assert_eq!(head.node_type(), NodeType::Atom);
+    assert_eq!(head.data(), 19);
+    assert_eq!(head.num_supports(), 0);
+    assert_eq!(head.support(), PrgEdge::no_edge());
+    assert!(!head.in_upper());
+    assert!(!head.dirty());
+
+    head.set_in_upper(true);
+    head.add_support(e1, PrgHeadSimplify::ForceSimplify);
+    assert!(head.in_upper());
+    assert_eq!(head.supports(), &[e1]);
+    assert!(!head.dirty());
+
+    head.add_support(e2, PrgHeadSimplify::ForceSimplify);
+    assert_eq!(head.support(), e1);
+    assert_eq!(head.supports(), &[e1, e2]);
+    assert!(head.dirty());
+
+    head.mark_dirty();
+    head.add_support(e1, PrgHeadSimplify::NoSimplify);
+    assert_eq!(head.supports(), &[e1, e2, e1]);
+
+    head.remove_support(e1);
+    assert_eq!(head.supports(), &[e2]);
+    assert!(head.dirty());
+
+    head.clear_supports();
+    assert_eq!(head.num_supports(), 0);
+    assert_eq!(head.support(), PrgEdge::no_edge());
+    assert!(!head.in_upper());
+    assert!(!head.dirty());
+}
+
+#[test]
+fn prg_head_in_upper_requires_a_relevant_node() {
+    let mut head = PrgHead::new(8, NodeType::Disj, 3);
+
+    assert_eq!(head.node_type(), NodeType::Disj);
+    head.set_in_upper(true);
+    assert!(head.in_upper());
+
+    head.node_mut().mark_removed();
+    assert!(!head.in_upper());
 }
 
 #[test]

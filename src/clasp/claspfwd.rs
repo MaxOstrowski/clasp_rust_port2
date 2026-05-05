@@ -48,6 +48,8 @@ impl ProblemType {
 }
 
 pub mod asp {
+    pub use crate::clasp::logic_program::LpStats;
+
     macro_rules! opaque_type {
         ($name:ident) => {
             #[derive(Debug)]
@@ -59,7 +61,6 @@ pub mod asp {
 
     opaque_type!(LogicProgram);
     opaque_type!(Preprocessor);
-    opaque_type!(LpStats);
     opaque_type!(PrgAtom);
     opaque_type!(PrgBody);
     opaque_type!(PrgDisj);

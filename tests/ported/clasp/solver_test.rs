@@ -1243,6 +1243,17 @@ fn solver_update_vars_matches_shared_problem_var_growth_and_shrink() {
 }
 
 #[test]
+fn solver_problem_vars_iterates_only_problem_variable_range() {
+    let mut solver = Solver::new();
+    solver.set_num_problem_vars(4);
+    solver.set_num_vars(6);
+
+    assert_eq!(solver.problem_vars(1).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+    assert_eq!(solver.problem_vars(3).collect::<Vec<_>>(), vec![3, 4]);
+    assert!(solver.problem_vars(5).collect::<Vec<_>>().is_empty());
+}
+
+#[test]
 fn solver_end_step_forgets_signs_and_heuristics_and_removes_reserved_look_post() {
     let mut ctx = SharedContext::default();
     let atom = ctx.add_var();

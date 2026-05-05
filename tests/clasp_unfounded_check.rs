@@ -130,7 +130,7 @@ fn default_unfounded_check_starts_with_empty_structural_state() {
 }
 
 #[test]
-fn minimality_check_and_nested_structs_preserve_upstream_layout_defaults() {
+fn minimality_check_ctor_normalizes_forward_check_parameters_like_upstream() {
     let fwd = FwdCheck {
         high_step: 3,
         high_pct: 25,
@@ -138,17 +138,47 @@ fn minimality_check_and_nested_structs_preserve_upstream_layout_defaults() {
         disable: 0,
     };
     let minimality = MinimalityCheck::new(fwd);
+
+    assert_eq!(minimality.fwd, fwd);
+    assert_eq!(minimality.high, 3);
+    assert_eq!(minimality.low, 0);
+    assert_eq!(minimality.next, 0);
+    assert_eq!(minimality.scc, 0);
+
+    let clamped = MinimalityCheck::new(FwdCheck {
+        high_step: 7,
+        high_pct: 125,
+        sign_def: 0,
+        disable: 0,
+    });
+    assert_eq!(clamped.fwd.high_pct, 100);
+    assert_eq!(clamped.high, 7);
+
+    let unlimited = MinimalityCheck::new(FwdCheck {
+        high_step: 0,
+        high_pct: 10,
+        sign_def: 0,
+        disable: 0,
+    });
+    assert_eq!(unlimited.fwd.high_step, u32::MAX);
+    assert_eq!(unlimited.high, u32::MAX);
+
+    let disabled = MinimalityCheck::new(FwdCheck {
+        high_step: 9,
+        high_pct: 20,
+        sign_def: 0,
+        disable: 1,
+    });
+    assert_eq!(disabled.next, u32::MAX);
+}
+
+#[test]
+fn body_ptr_and_ext_watch_preserve_simple_storage_state() {
     let body_ptr = BodyPtr::new(None, 17);
     let watch = ExtWatch {
         body_id: 12,
         data: 9,
     };
-
-    assert_eq!(minimality.fwd, fwd);
-    assert_eq!(minimality.high, 0);
-    assert_eq!(minimality.low, 0);
-    assert_eq!(minimality.next, 0);
-    assert_eq!(minimality.scc, 0);
 
     assert!(body_ptr.node.is_none());
     assert_eq!(body_ptr.id, 17);

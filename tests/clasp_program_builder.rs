@@ -1,8 +1,9 @@
 use std::io::Read;
+use std::ptr::NonNull;
 
 use rust_clasp::clasp::claspfwd::{ProblemType, SharedContext};
 use rust_clasp::clasp::parser::{ParserOptions, ProgramParserApi};
-use rust_clasp::clasp::program_builder::{LitVec, ProgramBuilder, SumVec};
+use rust_clasp::clasp::program_builder::{LitVec, ProgramBuilder, ProgramBuilderState, SumVec};
 
 #[derive(Default)]
 struct DummyParser;
@@ -31,12 +32,29 @@ impl ProgramParserApi for DummyParser {
     fn reset(&mut self) {}
 }
 
-#[derive(Default)]
 struct DummyBuilder {
+    state: ProgramBuilderState,
     parser: DummyParser,
 }
 
+impl Default for DummyBuilder {
+    fn default() -> Self {
+        Self {
+            state: ProgramBuilderState::default(),
+            parser: DummyParser,
+        }
+    }
+}
+
 impl ProgramBuilder for DummyBuilder {
+    fn state(&self) -> &ProgramBuilderState {
+        &self.state
+    }
+
+    fn state_mut(&mut self) -> &mut ProgramBuilderState {
+        &mut self.state
+    }
+
     fn start_program(&mut self, _ctx: &mut SharedContext) -> bool {
         unreachable!("not needed for do_get_weak_bounds test")
     }
@@ -88,4 +106,38 @@ fn program_builder_type_delegates_to_problem_type_hook() {
 fn program_builder_problem_type_delegates_to_do_type_hook() {
     let builder = DummyBuilder::default();
     assert_eq!(builder.problem_type(), ProblemType::Asp);
+}
+
+#[test]
+fn program_builder_state_defaults_match_upstream_constructor() {
+    let builder = DummyBuilder::default();
+    assert!(builder.frozen());
+    assert!(builder.ctx().is_none());
+    assert!(!builder.ok());
+    assert!(!builder.state().has_parser());
+}
+
+#[test]
+fn program_builder_ctx_and_ok_follow_stored_context_pointer() {
+    let mut builder = DummyBuilder::default();
+    let mut ctx = SharedContext::default();
+
+    builder.set_ctx(Some(NonNull::from(&mut ctx)));
+
+    let stored = builder.ctx().expect("context should be stored");
+    assert!(std::ptr::eq(stored, &ctx));
+    assert_eq!(builder.ok(), ctx.ok());
+
+    builder.set_ctx(None);
+    assert!(builder.ctx().is_none());
+    assert!(!builder.ok());
+}
+
+#[test]
+fn program_builder_set_frozen_updates_stored_flag() {
+    let mut builder = DummyBuilder::default();
+    builder.set_frozen(false);
+    assert!(!builder.frozen());
+    builder.set_frozen(true);
+    assert!(builder.frozen());
 }

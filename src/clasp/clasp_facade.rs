@@ -243,6 +243,16 @@ impl ClaspConfig {
         Self::default()
     }
 
+    pub fn reset(&mut self) {
+        if let Some(tester) = self.tester.as_mut() {
+            tester.reset();
+        }
+        self.sat.reset();
+        self.solve = SolveOptions::default();
+        self.asp = AspOptions::default();
+        self.prepared = false;
+    }
+
     pub fn tester_config(&self) -> Option<&BasicSatConfig> {
         self.tester.as_deref()
     }

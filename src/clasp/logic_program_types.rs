@@ -439,6 +439,14 @@ impl SmallEdgeList {
         }
     }
 
+    pub fn span_mut(&mut self, tag: SmallEdgeListTag) -> &mut [PrgEdge] {
+        if matches!(tag, SmallEdgeListTag::Large) {
+            self.large.as_mut_slice()
+        } else {
+            &mut self.small[..tag.as_u32() as usize]
+        }
+    }
+
     pub fn data_ptr(&self, tag: SmallEdgeListTag) -> *const PrgEdge {
         if matches!(tag, SmallEdgeListTag::Large) {
             self.large.as_slice().as_ptr()
@@ -502,6 +510,130 @@ impl SmallEdgeList {
         let size = unsafe { last.offset_from(base) } as usize;
         self.large.resize(size, PrgEdge::no_edge());
         tag
+    }
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PrgHeadSimplify {
+    NoSimplify = 0,
+    ForceSimplify = 1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrgHead {
+    node: PrgNode,
+    data: u32,
+    upper: bool,
+    dirty: bool,
+    freeze: u8,
+    fact: bool,
+    dom: Var_t,
+    support_tag: SmallEdgeListTag,
+    support_storage: SmallEdgeList,
+}
+
+impl PrgHead {
+    pub fn new(id: u32, node_type: NodeType, data: u32) -> Self {
+        Self {
+            node: PrgNode::new(id, node_type),
+            data,
+            upper: false,
+            dirty: false,
+            freeze: 0,
+            fact: false,
+            dom: 0,
+            support_tag: SmallEdgeListTag::S0,
+            support_storage: SmallEdgeList::default(),
+        }
+    }
+
+    pub const fn node(&self) -> &PrgNode {
+        &self.node
+    }
+
+    pub fn node_mut(&mut self) -> &mut PrgNode {
+        &mut self.node
+    }
+
+    pub const fn node_type(&self) -> NodeType {
+        if self.node.is_atom() {
+            NodeType::Atom
+        } else {
+            NodeType::Disj
+        }
+    }
+
+    pub const fn data(&self) -> u32 {
+        self.data
+    }
+
+    pub const fn in_upper(&self) -> bool {
+        self.node.relevant() && self.upper
+    }
+
+    pub const fn dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn num_supports(&self) -> u32 {
+        self.support_storage.size(self.support_tag)
+    }
+
+    pub fn support(&self) -> PrgEdge {
+        self.supports()
+            .first()
+            .copied()
+            .unwrap_or_else(PrgEdge::no_edge)
+    }
+
+    pub fn supports(&self) -> EdgeSpan<'_> {
+        self.support_storage.span(self.support_tag)
+    }
+
+    pub fn add_support(&mut self, edge: PrgEdge, simplify: PrgHeadSimplify) {
+        self.support_tag = self.support_storage.push(self.support_tag, edge);
+        if matches!(simplify, PrgHeadSimplify::ForceSimplify) {
+            self.dirty = self.num_supports() > 1;
+        }
+    }
+
+    pub fn remove_support(&mut self, edge: PrgEdge) {
+        let tag = self.support_tag;
+        if self.node.relevant() {
+            let new_last = {
+                let supports = self.support_storage.span_mut(tag);
+                let mut write = 0usize;
+                let len = supports.len();
+                for read in 0..len {
+                    if supports[read] != edge {
+                        if write != read {
+                            supports[write] = supports[read];
+                        }
+                        write += 1;
+                    }
+                }
+                (write != len).then(|| supports.as_ptr().wrapping_add(write))
+            };
+            if let Some(last) = new_last {
+                self.support_tag = unsafe { self.support_storage.shrink_to(tag, last) };
+            }
+        }
+        self.dirty = true;
+    }
+
+    pub fn clear_supports(&mut self) {
+        self.upper = false;
+        self.dirty = false;
+        self.support_tag = self.support_storage.clear(self.support_tag);
+    }
+
+    pub fn set_in_upper(&mut self, in_upper: bool) {
+        self.upper = in_upper;
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 }
 

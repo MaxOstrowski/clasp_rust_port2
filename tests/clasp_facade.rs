@@ -9,6 +9,7 @@ use rust_clasp::clasp::mt::parallel_solve::{
     ParallelIntegrationFilter, ParallelIntegrationTopology, ParallelSearchMode,
 };
 use rust_clasp::clasp::parser::ParserOptions;
+use rust_clasp::clasp::solver_strategies::Configuration;
 use rust_clasp::clasp::util::misc_types::{Subsystem, Verbosity};
 
 struct DummyConfigurator;
@@ -71,6 +72,40 @@ fn clasp_config_allocates_tester_and_stores_configurator_slot() {
     assert!(config.tester_config().is_some());
     assert!(config.has_configurator());
     assert!(config.notify_detach());
+}
+
+#[test]
+fn clasp_config_reset_matches_upstream_preserve_and_reset_split() {
+    let mut config = ClaspConfig::default();
+
+    config.sat.resize(3, 2);
+    config.solve.set_solvers(4);
+    config.asp.no_eq();
+    config.parse.enable_heuristic();
+    config.only_pre = true;
+    config.prepared = true;
+    let tester = config.add_tester_config();
+    tester.resize(5, 4);
+
+    config.reset();
+
+    assert_eq!(config.sat.num_solver(), 1);
+    assert_eq!(config.sat.num_search(), 1);
+    assert_eq!(config.solve.num_solver(), 1);
+    assert_eq!(config.asp, AspOptions::default());
+    assert!(
+        config
+            .parse
+            .is_enabled(rust_clasp::clasp::parser::Extension::ParseHeuristic)
+    );
+    assert!(config.only_pre);
+    assert!(!config.prepared);
+
+    let tester = config
+        .tester_config()
+        .expect("tester config should be preserved");
+    assert_eq!(tester.num_solver(), 1);
+    assert_eq!(tester.num_search(), 1);
 }
 
 #[test]

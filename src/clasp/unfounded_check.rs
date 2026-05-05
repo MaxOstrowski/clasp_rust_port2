@@ -197,12 +197,18 @@ pub struct MinimalityCheck {
 }
 
 impl MinimalityCheck {
-    pub const fn new(fwd: FwdCheck) -> Self {
+    pub const fn new(mut fwd: FwdCheck) -> Self {
+        if fwd.high_pct > 100 {
+            fwd.high_pct = 100;
+        }
+        if fwd.high_step == 0 {
+            fwd.high_step = u32::MAX;
+        }
         Self {
             fwd,
-            high: 0,
+            high: fwd.high_step,
             low: 0,
-            next: 0,
+            next: if fwd.disable != 0 { u32::MAX } else { 0 },
             scc: 0,
         }
     }

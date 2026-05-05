@@ -10,6 +10,7 @@ use crate::clasp::literal::{Literal, ValT, value_free};
 use crate::clasp::shared_context::VarInfo;
 use crate::clasp::solver_strategies::{Configuration, SearchStrategy, SolveParams, UpdateMode};
 use crate::clasp::solver_types::ValueSet;
+use crate::clasp::util::misc_types::irange_from;
 use crate::potassco::enums::EnumTag;
 
 pub use crate::clasp::constraint::{
@@ -85,6 +86,10 @@ impl Solver {
 
     pub fn num_aux_vars(&self) -> u32 {
         self.num_vars().saturating_sub(self.num_problem_vars())
+    }
+
+    pub fn problem_vars(&self, off: u32) -> std::ops::Range<u32> {
+        irange_from(off, self.num_problem_vars().saturating_add(1))
     }
 
     pub fn num_free_vars(&self) -> u32 {
